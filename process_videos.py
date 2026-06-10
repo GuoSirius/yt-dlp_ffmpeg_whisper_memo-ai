@@ -138,6 +138,11 @@ def _build_platform_config() -> dict:
         cfg["cookies_from_browser"] = cfb  # e.g. "chrome", "firefox", "edge"
         cfg["cookie_file"] = str(BASE_DIR / cookie_file) if cookie_file else None
 
+        # Proxy（如 http://127.0.0.1:7890）
+        proxy = os.getenv(f"{prefix}_PROXY", "")
+        if proxy:
+            cfg["proxy"] = proxy
+
         # Extra headers
         ua = os.getenv(f"{prefix}_USER_AGENT", "")
         extra_headers = []
@@ -579,6 +584,11 @@ def step_download(
         cmd += ["--cookies-from-browser", cfb]
     elif cookie_file and Path(cookie_file).exists():
         cmd += ["--cookies", cookie_file]
+
+    # Proxy（如 http://127.0.0.1:7890）
+    proxy = PLATFORM_CONFIG[pkey].get("proxy", "")
+    if proxy:
+        cmd += ["--proxy", proxy]
 
     extra_headers = PLATFORM_CONFIG[pkey].get("extra_headers", [])
     if extra_headers:
