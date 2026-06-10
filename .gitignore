@@ -3,5 +3,6 @@
 downloads/
 reports/
 transcoded/
+__pycache__/
 
 ~*
