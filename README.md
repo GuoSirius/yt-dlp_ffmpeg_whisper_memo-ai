@@ -65,6 +65,19 @@ cp .env.example .env
 | 服务 | `WHISPER_SERVICE_MODEL` | 模型文件路径 (仅 backend=service)，如 models/ggml-base.bin |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 
+### .env 配置项变更权限
+
+`.env.example` 中每个配置项都带有变更权限标记，含义如下：
+
+| 标记 | 含义 | 涵盖的配置项 | 示例 |
+|------|------|-------------|------|
+| **【自由】** | 值可随意改为任意合法内容 | 路径、开关、数字、字符串、URL、UA、格式参数等 | `EXCEL_FILE`, `YOUTUBE_PROXY`, `WHISPER_MODEL` |
+| **【调序】** | 只能从固定集合中增减/排序，不能用集合外的值 | `PLATFORM_PRIORITY` | 只能包含 `bilibiliBvid` / `youtubeId` / `tencentVid` / `youkuId` |
+| **【关联】** | 值需与脚本内约定的 Key 名一致 | URL 模板中的 `{占位符}` | `{youtubeId}` 必须跟 `COL_YOUTUBEID` 的后缀一致 |
+| **【固定】** | 除非 Excel 列名或脚本内部逻辑改变，否则不应修改 | 列名映射 | `COL_ID=extra.id`、`COL_TITLE=title` 等 |
+
+> **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktokId`、`douyinId` 等无效 key 会导致脚本无法识别。
+
 ### Whisper 语音识别
 
 支持两种后端，通过 `WHISPER_BACKEND` 切换：
@@ -98,7 +111,6 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ├── .env                           # 实际环境变量（已 gitignore，按需修改）
 ├── export_2026-06-10_split.xlsx   # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
 ├── cookies/
-│   ├── bilibili.txt               # B站 cookie（Netscape 格式）
 │   ├── bilibili.txt               # B站 cookie（Netscape 格式）
 │   └── youtube.txt                # YouTube cookie 备用（Firefox 直读方案不需要）
 ├── downloads/                     # yt-dlp 下载输出（mp4）
