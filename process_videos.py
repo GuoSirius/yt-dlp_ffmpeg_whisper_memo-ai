@@ -45,73 +45,130 @@ from dataclasses import dataclass, field, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread
 
+from dotenv import load_dotenv
 import requests
 import pandas as pd
 from openpyxl import load_workbook
 
+load_dotenv()
+
 # ─────────────────────────────── 路径配置 ───────────────────────────────────
 
 BASE_DIR = Path(__file__).parent.resolve()
-EXCEL_FILE = BASE_DIR / "export_2026-06-10_split.xlsx"
-DOWNLOADS_DIR = BASE_DIR / "downloads"
-TRANSCODED_DIR = BASE_DIR / "transcoded"
-COOKIES_DIR = BASE_DIR / "cookies"
-REPORTS_DIR = BASE_DIR / "reports"
 
-YTDLP = "yt-dlp"
-FFMPEG = "ffmpeg"
-FFPROBE = "ffprobe"
-WHISPER_SERVICE = "http://localhost:9588"
+def _env_path(key: str, default: str) -> Path:
+    """读取环境变量，如果是相对路径则相对于 BASE_DIR，绝对路径则直接使用"""
+    val = os.getenv(key, default)
+    p = Path(val)
+    return p if p.is_absolute() else BASE_DIR / p
 
-TRANSCODE_EXT = ".wav"
-FFMPEG_TRANSCODE_ARGS = ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]
+EXCEL_FILE = _env_path("EXCEL_FILE", "export_2026-06-10_split.xlsx")
+DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "downloads")
+TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "transcoded")
+COOKIES_DIR = _env_path("COOKIES_DIR", "cookies")
+REPORTS_DIR = _env_path("REPORTS_DIR", "reports")
+
+YTDLP = os.getenv("YTDLP", "yt-dlp")
+FFMPEG = os.getenv("FFMPEG", "ffmpeg")
+FFPROBE = os.getenv("FFPROBE", "ffprobe")
+WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")
+
+TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
+FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s16le").split()
+
+# ─────────────────────────────── Excel 字段映射 ─────────────────────────────
+
+COL_ID = os.getenv("COL_ID", "extra.id")
+COL_TITLE = os.getenv("COL_TITLE", "title")
+COL_CONTENT = os.getenv("COL_CONTENT", "content")
+COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencentVid")
+COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibiliBvid")
+COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtubeId")
+COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youkuId")
 
 # ──────────────────────────────── 平台配置 ──────────────────────────────────
 
-PLATFORM_CONFIG = {
-    "tencentVid": {
-        "url_tpl": "https://v.qq.com/x/page/{tencentVid}.html",
-        "cookie_file": None,
-        "field": "extra.tencentVid",
-    },
-    "bilibiliBvid": {
-        "url_tpl": "https://www.bilibili.com/video/{bilibiliBvid}/",
-        "cookie_file": str(COOKIES_DIR / "bilibili.txt"),
-        "field": "extra.bilibiliBvid",
-        "extra_headers": [
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-            "--add-header", "Referer:https://www.bilibili.com/",
-            "--add-header", "Accept-Language:zh,en;q=0.9",
-        ],
-        "concurrent_fragments": 4,
-        # 720p 优先（音频码率相同，画质够用，下载快 3-5 倍）
-        "format": "bestvideo[height<=720]+bestaudio/bestvideo+bestaudio/best",
-    },
-    "youtubeId": {
-        "url_tpl": "https://youtu.be/{youtubeId}",
-        "cookie_file": str(COOKIES_DIR / "youtube.txt"),
-        "field": "extra.youtubeId",
-        "extra_headers": [
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
-            "--add-header", "Accept-Language:zh,en;q=0.9",
-        ],
-        # YouTube 需要 JS 运行时 + ejs 远程组件解 n-sig 挑战
-        "extra_args": [
-            "--js-runtimes", "node",
-            "--remote-components", "ejs:github",
-        ],
-        # YouTube 720p 优先（有音频合流，画质够用，下载快）
-        "format": "bestvideo[height<=720]+bestaudio/bestvideo+bestaudio/best",
-    },
-    "youkuId": {
-        "url_tpl": "https://v.youku.com/v_show/id_{youkuId}.html",
-        "cookie_file": None,
-        "field": "extra.youkuId",
-    },
+# 平台 ID 列映射
+_PLATFORM_COL_MAP = {
+    "tencentVid": COL_TENCENTVID,
+    "bilibiliBvid": COL_BILIBILIBVID,
+    "youtubeId": COL_YOUTUBEID,
+    "youkuId": COL_YOUKUID,
 }
 
-PLATFORM_PRIORITY = ["bilibiliBvid", "youtubeId", "tencentVid", "youkuId"]
-VIDEO_SHEETS = ["YouTube视频", "普诺赛中文站"]
+# 平台优先级
+PLATFORM_PRIORITY = [p.strip() for p in os.getenv(
+    "PLATFORM_PRIORITY", "bilibiliBvid,youtubeId,tencentVid,youkuId").split(",") if p.strip()]
+
+# 视频 Sheet 列表
+_VIDEO_SHEETS_RAW = os.getenv("VIDEO_SHEETS", "")
+VIDEO_SHEETS = [s.strip() for s in _VIDEO_SHEETS_RAW.split(",") if s.strip()] if _VIDEO_SHEETS_RAW else []
+
+
+# 平台 key → 环境变量前缀（使 .env 中的变量名简短可读）
+_PKEY_ENV_PREFIX = {
+    "tencentVid":    "TENCENT",
+    "bilibiliBvid":  "BILIBILI",
+    "youtubeId":     "YOUTUBE",
+    "youkuId":       "YOUKU",
+}
+
+
+def _build_platform_config() -> dict:
+    """从环境变量动态构建平台配置字典"""
+    config = {}
+    for pkey in PLATFORM_PRIORITY:
+        prefix = _PKEY_ENV_PREFIX.get(pkey, pkey.upper())
+        cfg: dict = {
+            "field": _PLATFORM_COL_MAP.get(pkey, f"extra.{pkey}"),
+            "url_tpl": os.getenv(f"{prefix}_URL_TPL", ""),
+        }
+
+        # Cookie
+        cookie_file = os.getenv(f"{prefix}_COOKIE_FILE", "")
+        cfg["cookie_file"] = str(BASE_DIR / cookie_file) if cookie_file else None
+
+        # Extra headers
+        ua = os.getenv(f"{prefix}_USER_AGENT", "")
+        extra_headers = []
+        if ua:
+            extra_headers += ["--user-agent", ua]
+        if pkey == "bilibiliBvid":
+            referer = os.getenv(f"{prefix}_REFERER", "")
+            if referer:
+                extra_headers += ["--add-header", f"Referer:{referer}"]
+        if ua or (pkey == "bilibiliBvid" and os.getenv(f"{prefix}_REFERER", "")):
+            extra_headers += ["--add-header", "Accept-Language:zh,en;q=0.9"]
+        if extra_headers:
+            cfg["extra_headers"] = extra_headers
+
+        # Concurrent fragments
+        cf = os.getenv(f"{prefix}_CONCURRENT_FRAGMENTS", "")
+        if cf:
+            cfg["concurrent_fragments"] = int(cf)
+
+        # Extra args (YouTube-specific: JS runtime, remote components)
+        if pkey == "youtubeId":
+            js_rt = os.getenv(f"{prefix}_JS_RUNTIMES", "")
+            rc = os.getenv(f"{prefix}_REMOTE_COMPONENTS", "")
+            extra_args = []
+            if js_rt:
+                extra_args += ["--js-runtimes", js_rt]
+            if rc:
+                extra_args += ["--remote-components", rc]
+            if extra_args:
+                cfg["extra_args"] = extra_args
+
+        # Format
+        fmt = os.getenv(f"{prefix}_FORMAT", "")
+        if fmt:
+            cfg["format"] = fmt
+
+        config[pkey] = cfg
+    return config
+
+
+PLATFORM_CONFIG = _build_platform_config()
 
 # ─────────────────────────────── 日志配置 ───────────────────────────────────
 
@@ -214,18 +271,18 @@ def build_url(pkey: str, vid: str) -> str:
 
 
 def stem_name(row: pd.Series) -> str:
-    eid = row.get("extra.id")
+    eid = row.get(COL_ID)
     if pd.notna(eid) and str(eid).strip():
         return safe_filename(str(int(float(eid))))
-    return safe_filename(str(row.get("title", "unknown")))
+    return safe_filename(str(row.get(COL_TITLE, "unknown")))
 
 
 def row_key(row: pd.Series) -> str:
-    """返回行的唯一键 (extra.id 或 title)"""
-    eid = row.get("extra.id")
+    """返回行的唯一键 (COL_ID 或 COL_TITLE)"""
+    eid = row.get(COL_ID)
     if pd.notna(eid) and str(eid).strip():
         return str(int(float(eid)))
-    return str(row.get("title", "unknown"))
+    return str(row.get(COL_TITLE, "unknown"))
 
 
 def find_downloaded_file(dl_dir: Path, stem: str) -> Path | None:
@@ -648,13 +705,13 @@ def write_all_contents_to_excel(results: list[TaskResult]):
         ws = wb[sheet_name]
         headers = {cell.value: cell.column for cell in ws[1]}
 
-        if "content" not in headers:
-            log.warning(f"[{sheet_name}] 找不到 content 列，跳过写入")
+        if COL_CONTENT not in headers:
+            log.warning(f"[{sheet_name}] 找不到 {COL_CONTENT} 列，跳过写入")
             continue
 
-        content_col = headers["content"]
-        id_col = headers.get("extra.id")
-        title_col = headers.get("title")
+        content_col = headers[COL_CONTENT]
+        id_col = headers.get(COL_ID)
+        title_col = headers.get(COL_TITLE)
 
         matched = False
         for row in ws.iter_rows(min_row=2):
@@ -779,7 +836,7 @@ def process_one_task(
     pkey, vid = get_video_id(row)
     stem = stem_name(row)
     key = row_key(row)
-    title = str(row.get("title", ""))
+    title = str(row.get(COL_TITLE, ""))
     url = build_url(pkey, vid) if pkey else None
 
     result = TaskResult(
@@ -921,15 +978,15 @@ def run(
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
         if target_id:
             mask = pd.Series([False] * len(df))
-            if "extra.id" in df.columns:
+            if COL_ID in df.columns:
                 try:
-                    mask = mask | (df["extra.id"].apply(
+                    mask = mask | (df[COL_ID].apply(
                         lambda x: str(int(float(x))) if pd.notna(x) else ""
                     ) == str(target_id))
                 except Exception:
                     pass
-            if "title" in df.columns:
-                mask = mask | (df["title"].astype(str) == str(target_id))
+            if COL_TITLE in df.columns:
+                mask = mask | (df[COL_TITLE].astype(str) == str(target_id))
             df = df[mask]
             if df.empty:
                 log.error(f"Sheet [{sheet_name}] 中找不到 id/title = {target_id}")
@@ -990,7 +1047,7 @@ def run(
                 log.error(f"[{stem}] 任务执行异常: {e}\n{traceback.format_exc()}")
                 tr = TaskResult(
                     sheet=sheet_name, id_val=row_key(row),
-                    title=str(row.get("title", "")), stem=stem,
+                    title=str(row.get(COL_TITLE, "")), stem=stem,
                     overall_status="failed", error=f"未捕获异常: {str(e)[:500]}",
                 )
                 results.append(tr)
@@ -1047,15 +1104,15 @@ def run_from_report(
 
         # 匹配行
         mask = pd.Series([False] * len(df))
-        if "extra.id" in df.columns:
+        if COL_ID in df.columns:
             try:
-                mask = mask | (df["extra.id"].apply(
+                mask = mask | (df[COL_ID].apply(
                     lambda x: str(int(float(x))) if pd.notna(x) else ""
                 ) == key)
             except Exception:
                 pass
-        if "title" in df.columns:
-            mask = mask | (df["title"].astype(str) == key)
+        if COL_TITLE in df.columns:
+            mask = mask | (df[COL_TITLE].astype(str) == key)
 
         df = df[mask]
         if df.empty:
@@ -1102,7 +1159,7 @@ def run_from_report(
                 log.error(f"[{stem}] 任务执行异常: {e}")
                 tr = TaskResult(
                     sheet=sheet_name, id_val=row_key(row),
-                    title=str(row.get("title", "")), stem=stem,
+                    title=str(row.get(COL_TITLE, "")), stem=stem,
                     overall_status="failed", error=str(e)[:500],
                 )
                 results.append(tr)

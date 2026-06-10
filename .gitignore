@@ -1,4 +1,5 @@
 # cookies/
+.env
 downloads/
 reports/
 transcoded/

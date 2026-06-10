@@ -23,13 +23,39 @@ YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式�
 | Node.js（推荐） | [nodejs.org](https://nodejs.org/) 下载 LTS 版，安装后 `node --version` 验证 |
 | Deno | `winget install DenoLand.Deno` 或 [deno.com](https://deno.com/) |
 
-> 脚本默认使用 `--js-runtimes node`，如果你装的是 deno，修改 `process_videos.py` 中 `youtubeId.extra_args` 的 `"node"` 为 `"deno"`。
+> 脚本默认使用 `--js-runtimes node`，如果你装的是 deno，修改 `.env` 中 `YOUTUBE_JS_RUNTIMES=deno`。
 
 ### Python 依赖
 
 ```bash
-pip install pandas openpyxl requests
+pip install pandas openpyxl requests python-dotenv
 ```
+
+### 环境变量配置（.env）
+
+**从 v2 开始，所有路径、字段映射、平台参数均通过 `.env` 文件配置。** 这意味着同一套脚本可以直接用于其他 Excel 文件，只需修改 `.env` 中的值即可。
+
+```bash
+# 首次使用：复制模板
+cp .env.example .env
+
+# 编辑 .env 适配你的 Excel 结构
+# 详见 .env.example 中的注释
+```
+
+**核心配置项说明：**
+
+| 分类 | 变量 | 说明 |
+|------|------|------|
+| 输入 | `EXCEL_FILE` | Excel 文件路径 |
+| 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` | 唯一标识列 / 标题列 / 输出列 |
+| 列映射 | `COL_TENCENTVID` / `COL_BILIBILIBVID` / `COL_YOUTUBEID` / `COL_YOUKUID` | 各平台视频 ID 所在列 |
+| Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
+| 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
+| 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
+| 平台 | `{平台}_COOKIE_FILE` / `{平台}_FORMAT` | cookie 路径 / 下载格式 |
+| 服务 | `WHISPER_SERVICE` | whisper 识别地址 |
+| 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 
 ### Whisper 服务（语音识别）
 
@@ -38,7 +64,7 @@ pip install pandas openpyxl requests
 - 端点：`POST /inference` ← 上传 wav 文件，返回识别文本
 - 可选端点：`POST /load` ← 切换模型
 
-如 whisper 服务部署在其他地址，修改 `process_videos.py` 中的 `WHISPER_SERVICE` 变量。
+如 whisper 服务部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE` 变量即可。
 
 ---
 
@@ -46,6 +72,8 @@ pip install pandas openpyxl requests
 
 ```
 ├── process_videos.py              # 主流程脚本
+├── .env.example                   # 环境变量模板（可提交 Git）
+├── .env                           # 实际环境变量（已 gitignore，按需修改）
 ├── export_2026-06-10_split.xlsx   # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
 ├── cookies/
 │   ├── bilibili.txt               # B站 cookie（Netscape 格式）
@@ -302,7 +330,20 @@ python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 
 ## 换电脑使用
 
 1. 安装上述所有必装工具，确保 `yt-dlp`、`ffmpeg`、`ffprobe`、`node` 均在 PATH
-2. `pip install pandas openpyxl requests`
-3. 重新导出 B站和 YouTube cookie（浏览器登录后导出）
-4. 复制整个项目目录到新电脑
-5. `python process_videos.py --dry-run` 验证
+2. `pip install pandas openpyxl requests python-dotenv`
+3. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径和字段映射
+4. 重新导出 B站和 YouTube cookie（浏览器登录后导出）
+5. 复制整个项目目录到新电脑
+6. `python process_videos.py --dry-run` 验证
+
+## 适配其他 Excel
+
+如果需要用这套脚本处理**其他项目的 Excel**（列名不同、平台不同）：
+
+1. 复制 `.env.example` 为新 `.env`（或修改现有 `.env`）
+2. 修改 `EXCEL_FILE` 指向新 Excel
+3. 修改列映射（`COL_ID`、`COL_TITLE`、`COL_CONTENT` 及各平台列名）
+4. 修改 `VIDEO_SHEETS` 为新的 sheet 名称
+5. 如需新平台，在 `PLATFORM_PRIORITY` 中添加 key，并配置对应的 `{KEY}_URL_TPL`
+6. `python process_videos.py --dry-run` 验证配置
+7. 跑全量
