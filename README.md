@@ -152,7 +152,7 @@ python process_videos.py \
 | `--sheet` | str | 全部 | 指定 sheet：`YouTube视频` 或 `普诺赛中文站` |
 | `--id` | str | — | 指定 extra.id 或 title（单条测试） |
 | `--step` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` |
-| `--force` | flag | off | 强制重做，忽略已有文件 |
+| `--force` | flag | off | 强制重做下载+转码，忽略已有文件 |
 | `--concurrency` | int | 1 | 并发数，建议 2~3 |
 | `--retry` | int | 0 | 每步失败最大重试次数 |
 | `--retry-delay` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
@@ -172,6 +172,20 @@ python process_videos.py \
 | yt-dlp 下载中断 | 视频已删除 / 私有 |
 | whisper 服务超时 | 无效 URL、文件不存在 |
 | **步骤级超时（任务卡死）** | 参数错误（ValueError/TypeError） |
+
+---
+
+## 智能跳过与自动重转码
+
+脚本默认不会重复处理已有文件，但会在以下情况自动触发重做：
+
+| 步骤 | 跳过条件 | 自动重做条件 |
+|---|---|---|
+| 下载 | 同名文件已存在（非 `--force`） | `--force` 或文件不存在 |
+| 转码 | WAV 已存在 **且** MP4 时间戳 ≤ WAV 时间戳 | `--force` 或 **MP4 比 WAV 新**（重新下载过） |
+| 识别 | —（每次必跑，覆盖写入 Excel） | — |
+
+> 关键设计：即使不加 `--force`，只要视频重新下载过（MP4 的修改时间晚于 WAV），转码也会自动重新执行，**确保下载和转码内容始终保持一致**。
 
 ---
 

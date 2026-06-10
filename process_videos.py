@@ -157,7 +157,7 @@ class OverallProgress:
         with self._lock:
             pct = self.completed / self.total * 100 if self.total else 0
             return (f"[总进度 {self.completed}/{self.total} ({pct:.1f}%)] "
-                    f"✅{self.success} ❌{self.failed} ⚠️{self.partial} ⏭️{self.no_video}")
+                    f"成功:{self.success} 失败:{self.failed} 部分:{self.partial} 无视频:{self.no_video}")
 
     def position_label(self) -> str:
         """返回当前任务在总体中的序号标签"""
@@ -310,45 +310,44 @@ def retry_call(fn, *args, max_retries: int = 3, base_delay: float = 5.0,
 def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600):
     """
     执行命令并实时输出进度。
-    parser_fn 接收 stderr 的每一行，返回进度字符串或 None。
-    返回 (完整 stderr, returncode)。
+    同步读取 stdout（已合并 stderr），免除线程竞态。
+    parser_fn 接收每一行，返回进度字符串或 None。
+    返回 (完整输出, returncode)。
     """
     proc = subprocess.Popen(
-        cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE,
+        cmd, stdin=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT, stdout=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
     )
 
-    stderr_lines: list[str] = []
+    output_lines: list[str] = []
     last_progress = ""
     last_print_time = 0.0
+    start = time.monotonic()
+    line_count = 0
 
-    def _read():
-        nonlocal last_progress, last_print_time
-        for line in iter(proc.stderr.readline, ""):
-            stderr_lines.append(line)
-            progress = parser_fn(line)
-            if progress:
-                now = time.time()
-                # 进度变化或距上次打印超过 2s 时输出
-                if progress != last_progress or now - last_print_time > 2:
-                    with _print_lock:
-                        print(f"  [{label}] {progress}", flush=True)
-                    last_progress = progress
-                    last_print_time = now
+    for line in proc.stdout:
+        line_count += 1
+        print(f"  [{label}] L{line_count}: {line.rstrip()[:80]}", flush=True)
+        output_lines.append(line)
+        progress = parser_fn(line)
+        if progress:
+            now = time.monotonic()
+            # 进度变化或距上次打印超过 2s 时输出
+            if progress != last_progress or now - last_print_time > 2:
+                print(f"  [{label}] {progress}", flush=True)
+                last_progress = progress
+                last_print_time = now
 
-    reader = Thread(target=_read, daemon=True)
-    reader.start()
+        # 同步超时检测：每读一行检查一次
+        if time.monotonic() - start > timeout:
+            proc.kill()
+            proc.wait()
+            raise subprocess.TimeoutExpired(cmd, timeout, output="".join(output_lines))
 
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        reader.join(timeout=2)
-        raise
-
-    reader.join(timeout=3)
-    return "".join(stderr_lines), proc.returncode
+    proc.wait()
+    print(f"  [{label}] DEBUG: read {line_count} lines, {len(output_lines)} stored", flush=True)
+    return "".join(output_lines), proc.returncode
 
 
 def parse_ytdlp_progress(line: str) -> str | None:
@@ -442,6 +441,7 @@ def step_download(
         YTDLP, url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
+        "--newline",               # 进度行以 \n 结尾，确保逐行可读
         "--merge-output-format", "mp4",
         "-f", PLATFORM_CONFIG[pkey].get("format", "bestvideo+bestaudio/best"),
     ]
@@ -504,9 +504,14 @@ def step_transcode(
     stem = src_file.stem
 
     if not force and out_file.exists() and out_file.stat().st_size > 0:
-        with _print_lock:
-            print(f"  [{stem}] 已存在转码文件，跳过", flush=True)
-        return out_file, 0, None
+        # 如果源文件比转码文件更新（重新下载过），强制重转码
+        if src_file.stat().st_mtime > out_file.stat().st_mtime:
+            with _print_lock:
+                print(f"  [{stem}] 源文件已更新（下载时间晚于转码时间），重新转码", flush=True)
+        else:
+            with _print_lock:
+                print(f"  [{stem}] 已存在转码文件，跳过", flush=True)
+            return out_file, 0, None
 
     with _print_lock:
         print(f"  [{stem}] 开始转码 -> {out_file.name}", flush=True)
