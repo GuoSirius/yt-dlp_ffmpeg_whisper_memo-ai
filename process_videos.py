@@ -76,6 +76,10 @@ WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 仅 b
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # 模型名: tiny/base/small/medium/large
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 空=多语言自动检测
+# 仅 backend=service 且 whisper.cpp server 时: 模型文件路径（如 models/ggml-base.bin）
+# 留空则跳过 /load（使用服务器当前已加载的模型）
+WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
+_SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
 FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s16le").split()
@@ -692,9 +696,14 @@ def step_transcribe(
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
     with _print_lock:
-        lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
-        mode_label = f"{WHISPER_MODEL}/{lang_label}"
-        backend_label = f"本地({mode_label})" if WHISPER_BACKEND == "local" else f"服务({mode_label})"
+        if WHISPER_BACKEND == "local":
+            lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+            mode_label = f"{WHISPER_MODEL}/{lang_label}"
+            backend_label = f"本地({mode_label})"
+        else:
+            model_label = WHISPER_SERVICE_MODEL or WHISPER_MODEL or "(server default)"
+            backend_label = f"服务({model_label})"
+        print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
         print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     if WHISPER_BACKEND == "local":
@@ -753,7 +762,8 @@ def _transcribe_service(
     max_retries: int, retry_delay: float,
     timeout: int = 600,
 ) -> tuple[str | None, int, str | None]:
-    """远程 whisper 服务识别（原有逻辑）"""
+    """远程 whisper.cpp server 识别"""
+    global _SERVICE_MODEL_LOADED
     start_time = time.time()
     done = [False]  # 用列表实现闭包内可变
 
@@ -771,14 +781,24 @@ def _transcribe_service(
     def _run():
         reporter.start()
         try:
+            # ── 按需切换模型（/load） ──
+            if WHISPER_SERVICE_MODEL and WHISPER_SERVICE_MODEL != _SERVICE_MODEL_LOADED:
+                with _print_lock:
+                    print(f"  [{stem}] 切换模型: {WHISPER_SERVICE_MODEL}", flush=True)
+                resp = requests.post(
+                    f"{WHISPER_SERVICE}/load",
+                    files={"model": (None, WHISPER_SERVICE_MODEL)},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                _SERVICE_MODEL_LOADED = WHISPER_SERVICE_MODEL
+
+            # ── 语音识别（/inference） ──
             with open(audio_file, "rb") as f:
-                post_data = {"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json", "model": WHISPER_MODEL}
-                if WHISPER_LANGUAGE:
-                    post_data["language"] = WHISPER_LANGUAGE
                 resp = requests.post(
                     f"{WHISPER_SERVICE}/inference",
                     files={"file": (audio_file.name, f, "audio/wav")},
-                    data=post_data,
+                    data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json"},
                     timeout=timeout,
                 )
             resp.raise_for_status()

@@ -55,22 +55,23 @@ cp .env.example .env
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
 | 平台 | `{平台}_COOKIE_FILE` / `{平台}_FORMAT` | cookie 路径 / 下载格式 |
 | 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
-| 服务 | `WHISPER_MODEL` | 模型 (tiny/base/small/medium/large)，两种后端通用 |
+| 服务 | `WHISPER_MODEL` | 模型名 (tiny/base/small/medium/large)，两种后端通用 |
 | 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
-| 服务 | `WHISPER_LANGUAGE` | 语言代码，两种后端通用，空=多语言自动检测（默认） |
+| 服务 | `WHISPER_LANGUAGE` | 语言代码 (仅 backend=local)，空=多语言自动检测（默认） |
+| 服务 | `WHISPER_SERVICE_MODEL` | 模型文件路径 (仅 backend=service)，如 models/ggml-base.bin |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 
 ### Whisper 语音识别
 
 支持两种后端，通过 `WHISPER_BACKEND` 切换：
 
-**远程服务模式**（默认）：
-需要本地或远程运行 whisper 服务，监听 `http://localhost:9588`：
-- 端点：`POST /inference` ← 上传 wav 文件，`model` 参数指定模型，返回识别文本
-- 可选端点：`POST /load` ← 切换模型
-- 如部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE`
-- 模型通过 `WHISPER_MODEL` 指定（默认 base），会作为 `model` 参数传给服务
-- 语言通过 `WHISPER_LANGUAGE` 指定，空=多语言自动检测（默认），设置后作为 `language` 参数传给服务
+**远程服务模式**（默认，whisper.cpp server）：
+需要本地或远程运行 whisper.cpp server，监听 `http://localhost:9588`：
+- `POST /inference` ← 上传 wav 文件，返回识别文本（参数: file/temperature/temperature_inc/response_format）
+- `POST /load` ← 切换模型（参数: model=模型文件路径），如 `models/ggml-base.bin`
+- 语言由 whisper.cpp 自动检测，无需配置
+- 通过 `WHISPER_SERVICE_MODEL` 指定模型文件路径（留空则使用服务当前已加载的模型）
+- 脚本首次识别时会自动 `/load`，同一模型只加载一次（缓存）
 
 **本地 CLI 模式**：
 需要在本地安装 `openai-whisper`：`pip install openai-whisper`
@@ -79,7 +80,7 @@ cp .env.example .env
 WHISPER_BACKEND=local
 WHISPER_MODEL=base          # tiny / base / small / medium / large
 WHISPER_DEVICE=cpu          # cpu 或 cuda
-WHISPER_LANGUAGE=            # 空=多语言自动检测（默认），需要指定时填 zh/en/ja 等
+WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指定时填 zh/en/ja 等
 ```
 脚本会直接调用 `whisper` CLI，无需额外服务进程。
 
