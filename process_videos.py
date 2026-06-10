@@ -437,17 +437,22 @@ def retry_call(fn, *args, max_retries: int = 3, base_delay: float = 5.0,
 
 # ─────────────────────────────── 进度显示 ───────────────────────────────────
 
-def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600):
+def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600, extra_env: dict[str, str] | None = None):
     """
     执行命令并实时输出进度。
     同步读取 stdout（已合并 stderr），免除线程竞态。
     parser_fn 接收每一行，返回进度字符串或 None。
+    extra_env 会合并到当前环境变量中（优先于默认值）。
     返回 (完整输出, returncode)。
     """
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.Popen(
         cmd, stdin=subprocess.DEVNULL,
         stderr=subprocess.STDOUT, stdout=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace",
+        env=env,
     )
 
     output_lines: list[str] = []
@@ -586,9 +591,13 @@ def step_download(
         cmd += ["--cookies", cookie_file]
 
     # Proxy（如 http://127.0.0.1:7890）
+    # 同时设置子进程环境变量，确保 yt-dlp 内的 node/ejs 等子进程也走代理
     proxy = PLATFORM_CONFIG[pkey].get("proxy", "")
+    extra_env: dict[str, str] = {}
     if proxy:
         cmd += ["--proxy", proxy]
+        extra_env["HTTPS_PROXY"] = proxy
+        extra_env["HTTP_PROXY"] = proxy
 
     extra_headers = PLATFORM_CONFIG[pkey].get("extra_headers", [])
     if extra_headers:
@@ -599,7 +608,7 @@ def step_download(
         cmd += extra_args
 
     def _run():
-        stderr_text, rc = run_with_progress(cmd, stem, parse_ytdlp_progress, timeout=timeout)
+        stderr_text, rc = run_with_progress(cmd, stem, parse_ytdlp_progress, timeout=timeout, extra_env=extra_env)
         if rc != 0:
             raise subprocess.CalledProcessError(rc, cmd, stderr=stderr_text)
 
