@@ -132,8 +132,10 @@ def _build_platform_config() -> dict:
             "url_tpl": os.getenv(f"{prefix}_URL_TPL", ""),
         }
 
-        # Cookie
+        # Cookie: cookies-from-browser 优先于 cookies file
+        cfb = os.getenv(f"{prefix}_COOKIES_FROM_BROWSER", "")
         cookie_file = os.getenv(f"{prefix}_COOKIE_FILE", "")
+        cfg["cookies_from_browser"] = cfb  # e.g. "chrome", "firefox", "edge"
         cfg["cookie_file"] = str(BASE_DIR / cookie_file) if cookie_file else None
 
         # Extra headers
@@ -570,8 +572,12 @@ def step_download(
     if cf:
         cmd += ["--concurrent-fragments", str(cf)]
 
-    cookie_file = PLATFORM_CONFIG[pkey]["cookie_file"]
-    if cookie_file and Path(cookie_file).exists():
+    # Cookie: cookies-from-browser 优先于 cookies file
+    cfb = PLATFORM_CONFIG[pkey].get("cookies_from_browser", "")
+    cookie_file = PLATFORM_CONFIG[pkey].get("cookie_file")
+    if cfb:
+        cmd += ["--cookies-from-browser", cfb]
+    elif cookie_file and Path(cookie_file).exists():
         cmd += ["--cookies", cookie_file]
 
     extra_headers = PLATFORM_CONFIG[pkey].get("extra_headers", [])
