@@ -53,9 +53,13 @@ cp .env.example .env
 | Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
-| 平台 | `{平台}_COOKIE_FILE` / `{平台}_FORMAT` | cookie 路径 / 下载格式 |
+| 平台 | `{平台}_COOKIES_FROM_BROWSER` | 从浏览器直读 cookie（推荐 Firefox，替代手动导出文件） |
+| 平台 | `{平台}_COOKIE_FILE` | cookie 文件路径（备用方案，需定期更新） |
+| 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge） |
+| 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
+| 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
 | 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
-| 服务 | `WHISPER_MODEL` | 模型名 (tiny/base/small/medium/large)，两种后端通用 |
+| 服务 | `WHISPER_MODEL` | 模型名 (tiny/base/small/medium/large)，仅 backend=local |
 | 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
 | 服务 | `WHISPER_LANGUAGE` | 语言代码 (仅 backend=local)，空=多语言自动检测（默认） |
 | 服务 | `WHISPER_SERVICE_MODEL` | 模型文件路径 (仅 backend=service)，如 models/ggml-base.bin |
@@ -95,7 +99,8 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ├── export_2026-06-10_split.xlsx   # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
 ├── cookies/
 │   ├── bilibili.txt               # B站 cookie（Netscape 格式）
-│   └── youtube.txt                # YouTube cookie（Netscape 格式）
+│   ├── bilibili.txt               # B站 cookie（Netscape 格式）
+│   └── youtube.txt                # YouTube cookie 备用（Firefox 直读方案不需要）
 ├── downloads/                     # yt-dlp 下载输出（mp4）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
@@ -108,15 +113,29 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 
 ---
 
-## Cookie 导出（首次使用必须）
+## Cookie 设置（首次使用必须）
 
-### YouTube
+### YouTube（推荐：Firefox 浏览器直读）
+
+yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
+
+1. 用 Firefox 浏览器登录 [youtube.com](https://www.youtube.com)
+2. 在 `.env` 中设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
+3. 脚本自动通过 `--cookies-from-browser firefox` 读取
+
+> Firefox 在 Windows 上的 cookie 加密格式 yt-dlp 可稳定解密，只要浏览器保持登录态即可。
+> **Chrome/Edge 在 Windows 上 DPAPI 解密已知失败**，不推荐使用。
+
+### YouTube（备用：手动导出文件）
+
+如果无法使用 Firefox，可手动导出 cookie 文件：
 
 1. Chrome 安装扩展 [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
 2. 访问 [youtube.com](https://www.youtube.com) 并登录
-3. 点击扩展图标 → Export → 保存为 `cookies/youtube.txt`（覆盖已有文件）
+3. 点击扩展图标 → Export → 保存为 `cookies/youtube.txt`
+4. 在 `.env` 中注释掉 `YOUTUBE_COOKIES_FROM_BROWSER`，启用 `YOUTUBE_COOKIE_FILE=cookies/youtube.txt`
 
-> Cookie 有效期约 1-2 周，过期后需重新导出。下载时如果报 `Sign in to confirm you're not a bot`，说明 cookie 已失效。
+> ⚠️ YouTube cookie 有效期约 48 小时，过期后需重新导出。下载时如果报 `cookies does no longer seem to be valid`，说明 cookie 已失效。**优先用 Firefox 方案，免维护。**
 
 ### B站（bilibili）
 
@@ -235,6 +254,20 @@ python process_videos.py \
 
 ---
 
+## 临时文件自动清理
+
+yt-dlp 下载过程中会生成 `.part`（未完成分片）和 `.ytdl`（元数据）临时文件。脚本在以下时机自动清理这些残留：
+
+| 时机 | 说明 |
+|------|------|
+| 下载开始前 | 清除上次中断留下的 `.part` / `.ytdl`，确保干净环境 |
+| 跳过已有文件时 | 检查并清除该视频的历史残留 |
+| 下载失败后 | 立即清理，避免无效文件占磁盘 |
+
+> 例如：`2152.mp4.part` + `2152.mp4.ytdl` 会在下次下载该视频时自动删除，无需手动清理。
+
+---
+
 ## 文件名去重
 
 脚本默认使用 `COL_ID`（即 `extra.id`）作为文件名 stem。当同一个 sheet 内出现重复 id 时，自动应用以下去重策略：
@@ -345,19 +378,25 @@ python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 
 | 平台 | 字段 | 反爬措施 |
 |---|---|---|
 | B站 (bilibili) | `extra.bilibiliBvid` | Chrome UA + Referer 头 + 有效 cookie + 并发分片 |
-| YouTube | `extra.youtubeId` | Chrome UA + 有效 cookie + Node.js/Deno JS 运行时解 n-sig 挑战 |
+| YouTube | `extra.youtubeId` | Chrome UA + Firefox cookie 直读 + 代理 + Node.js 解 n-sig |
 | 腾讯视频 | `extra.tencentVid` | 无需特殊配置 |
 | 优酷 | `extra.youkuId` | 无需特殊配置（部分视频需会员） |
+
+> YouTube 反爬最强：需要 **代理** + **登录态 cookie** + **JS runtime 解 n-sig** 三者配合。
+> 脚本会自动给 yt-dlp 及其 node/ejs 子进程注入 `HTTPS_PROXY` 环境变量，确保所有流量走代理。
 
 ### 常见下载错误
 
 | 错误 | 平台 | 原因 | 解决方案 |
 |---|---|---|---|
-| `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` |
-| `Sign in to confirm you're not a bot` | YouTube | cookie 过期 | 重新导出 `cookies/youtube.txt` |
-| `n challenge solving failed` | YouTube | 无 JS 运行时 | 安装 Node.js 或 Deno |
+| `Sign in to confirm you're not a bot` | YouTube | cookie 过期或无效 | 检查 Firefox 登录态，或重新导出 cookie 文件 |
+| `cookies does no longer seem to be valid` | YouTube | cookie 文件超过 48h | 用 Firefox cookies-from-browser 方案（免维护） |
+| `Unable to download webpage: HTTP Error 403` | YouTube | IP 被识别为非 YouTube 地区 | 确保代理运行（端口 7897），检查 `YOUTUBE_PROXY` |
+| `n challenge solving failed` | YouTube | 无 JS 运行时 | 安装 Node.js，确保 `YOUTUBE_JS_RUNTIMES=node` |
 | `Requested format is not available` | YouTube | n-sig 未解开，格式不可用 | 同上，安装 JS 运行时 |
+| `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` |
 | `HTTP Error 403` | B站 | 地区限制或视频已删除 | 检查视频是否可访问 |
+| `dpapi decryption failed` | YouTube | Windows Chrome cookie 加密 | **改用 Firefox**（`.env` 中设 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`） |
 
 ---
 
@@ -365,10 +404,11 @@ python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 
 
 1. 安装上述所有必装工具，确保 `yt-dlp`、`ffmpeg`、`ffprobe`、`node` 均在 PATH
 2. `pip install pandas openpyxl requests python-dotenv`
-3. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径和字段映射
-4. 重新导出 B站和 YouTube cookie（浏览器登录后导出）
-5. 复制整个项目目录到新电脑
-6. `python process_videos.py --dry-run` 验证
+3. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径、代理端口和字段映射
+4. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
+5. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
+6. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
+7. `python process_videos.py --dry-run` 验证
 
 ## 适配其他 Excel
 

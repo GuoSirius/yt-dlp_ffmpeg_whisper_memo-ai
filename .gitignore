@@ -1,8 +1,9 @@
-# cookies/
 .env
+
+~*
+
+__pycache__/
+# cookies/
 downloads/
 reports/
 transcoded/
-__pycache__/
-
-~*
