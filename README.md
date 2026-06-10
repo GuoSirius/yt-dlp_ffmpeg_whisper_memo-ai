@@ -157,7 +157,7 @@ python process_videos.py \
 | `--retry` | int | 0 | 每步失败最大重试次数 |
 | `--retry-delay` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
 | `--download-timeout` | int | 600 | 单个下载任务最长执行时间（秒） |
-| `--transcode-timeout` | int | 300 | 单个转码任务最长执行时间（秒） |
+| `--transcode-timeout` | int | 600 | 单个转码任务最长执行时间（秒） |
 | `--transcribe-timeout` | int | 600 | 单个识别任务最长执行时间（秒） |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
 | `--retry-failed` | path | — | 从报告 JSON 重跑失败项 |
