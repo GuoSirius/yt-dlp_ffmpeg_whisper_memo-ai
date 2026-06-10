@@ -71,7 +71,11 @@ REPORTS_DIR = _env_path("REPORTS_DIR", "reports")
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE", "ffprobe")
-WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "service")  # "service" 或 "local"
+WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 仅 backend=service 时使用
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # 模型名: tiny/base/small/medium/large
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
 FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s16le").split()
@@ -270,7 +274,65 @@ def build_url(pkey: str, vid: str) -> str:
     return PLATFORM_CONFIG[pkey]["url_tpl"].replace(f"{{{pkey}}}", vid)
 
 
-def stem_name(row: pd.Series) -> str:
+# ─────────────────────────────── 文件名去重 ──────────────────────────────────
+
+# key: (sheet_name, pandas_row_index) → deduplicated stem
+_STEM_CACHE: dict[tuple, str] = {}
+
+
+def precompute_stems(df: pd.DataFrame, sheet_name: str) -> None:
+    """为一个 sheet 的所有行预计算去重后的文件名。
+
+    去重策略（同 sheet 内）：
+    1. 优先用 id 作为 stem
+    2. 同 sheet 内有重复 id → 用 id_title
+    3. 仍重复 → 追加对应平台视频 ID（如 bvid）
+    """
+    from collections import Counter
+
+    n = len(df)
+    # Pass 1: base stems (id or title fallback)
+    base_stems: dict[int, str] = {}
+    for idx, row in df.iterrows():
+        eid = row.get(COL_ID)
+        if pd.notna(eid) and str(eid).strip():
+            base_stems[idx] = safe_filename(str(int(float(eid))))
+        else:
+            base_stems[idx] = safe_filename(str(row.get(COL_TITLE, "unknown")))
+
+    # Pass 2: resolve duplicates with id_title
+    counts1 = Counter(base_stems.values())
+    resolved: dict[int, str] = {}
+    for idx, stem in base_stems.items():
+        if counts1[stem] > 1:
+            row = df.loc[idx]
+            title_part = safe_filename(str(row.get(COL_TITLE, "")))
+            resolved[idx] = f"{stem}_{title_part}" if title_part else stem
+        else:
+            resolved[idx] = stem
+
+    # Pass 3: still duplicates? append platform video ID
+    counts2 = Counter(resolved.values())
+    for idx, stem in resolved.items():
+        if counts2[stem] > 1:
+            row = df.loc[idx]
+            pkey, vid = get_video_id(row)
+            if pkey and vid:
+                resolved[idx] = f"{stem}_{safe_filename(vid)}"
+
+    # Store
+    for idx, stem in resolved.items():
+        _STEM_CACHE[(sheet_name, idx)] = stem
+
+
+def stem_name(row: pd.Series, sheet_name: str = "") -> str:
+    """获取去重后的文件名 stem。优先使用预计算缓存。"""
+    idx = row.name  # pandas row index
+    if sheet_name:
+        cache_key = (sheet_name, idx)
+        if cache_key in _STEM_CACHE:
+            return _STEM_CACHE[cache_key]
+    # Fallback: 无缓存时用 id 或 title
     eid = row.get(COL_ID)
     if pd.notna(eid) and str(eid).strip():
         return safe_filename(str(int(float(eid))))
@@ -470,7 +532,7 @@ def step_download(
 ) -> tuple[Path | None, int, str | None]:
     """下载视频。返回 (文件路径, 重试次数, 错误信息)"""
     pkey, vid = get_video_id(row)
-    stem = stem_name(row)
+    stem = stem_name(row, sheet_name)
 
     if not pkey:
         return None, 0, "无可用视频 ID"
@@ -597,13 +659,21 @@ def step_transcode(
         return None, max_retries, (stderr_text or str(e))[:500]
 
 
-def _check_whisper_service() -> bool:
-    """检测 whisper 服务是否可达"""
-    try:
-        r = requests.get(WHISPER_SERVICE, timeout=3)
-        return True
-    except Exception:
-        return False
+def _check_whisper_available() -> bool:
+    """检测 whisper 是否可用（按 WHISPER_BACKEND 判断）"""
+    if WHISPER_BACKEND == "local":
+        try:
+            subprocess.run(["whisper", "--help"], capture_output=True, timeout=5)
+            return True
+        except Exception:
+            log.error("本地 whisper CLI 不可用，请确认: pip install openai-whisper")
+            return False
+    else:
+        try:
+            r = requests.get(WHISPER_SERVICE, timeout=3)
+            return True
+        except Exception:
+            return False
 
 
 def step_transcribe(
@@ -611,18 +681,74 @@ def step_transcribe(
     max_retries: int, retry_delay: float,
     timeout: int = 600,
 ) -> tuple[str | None, int, str | None]:
-    """调用 whisper 服务识别。返回 (文本, 重试次数, 错误信息)"""
+    """调用 whisper 识别（支持 service 和 local 两种后端）。返回 (文本, 重试次数, 错误信息)"""
     stem = audio_file.stem
 
-    if not _check_whisper_service():
-        msg = f"whisper 服务不可达 ({WHISPER_SERVICE})"
+    if not _check_whisper_available():
+        backend_info = f"本地 whisper CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+        msg = f"whisper 不可用 ({backend_info})"
         log.warning(f"[{stem}] {msg}")
         return None, 0, msg
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
     with _print_lock:
-        print(f"  [{stem}] 开始识别 (文件 {file_size_mb:.1f}MB)...", flush=True)
+        backend_label = f"本地({WHISPER_MODEL})" if WHISPER_BACKEND == "local" else "服务"
+        print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
+    if WHISPER_BACKEND == "local":
+        return _transcribe_local(audio_file, stem, max_retries, retry_delay)
+    else:
+        return _transcribe_service(audio_file, stem, max_retries, retry_delay, timeout)
+
+
+def _transcribe_local(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+) -> tuple[str | None, int, str | None]:
+    """本地 whisper CLI 识别"""
+    start_time = time.time()
+    out_dir = audio_file.parent
+
+    def _run():
+        cmd = [
+            "whisper", str(audio_file),
+            "--model", WHISPER_MODEL,
+            "--device", WHISPER_DEVICE,
+            "--language", WHISPER_LANGUAGE,
+            "--output_format", "txt",
+            "--output_dir", str(out_dir),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "")[-500:]
+            raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}: {stderr_tail}")
+        # whisper 输出文件: {stem}.txt
+        out_txt = out_dir / f"{stem}.txt"
+        if not out_txt.exists():
+            raise RuntimeError("whisper 输出文件未生成")
+        return out_txt.read_text(encoding="utf-8").strip()
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        elapsed = time.time() - start_time
+        if err:
+            return None, retries_used, err
+        with _print_lock:
+            print(f"  [{stem}] 识别完成 ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
+        return text, 0, None
+    except Exception as e:
+        log.error(f"[{stem}] 本地 whisper 识别失败: {e}")
+        return None, max_retries, str(e)[:500]
+
+
+def _transcribe_service(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 600,
+) -> tuple[str | None, int, str | None]:
+    """远程 whisper 服务识别（原有逻辑）"""
     start_time = time.time()
     done = [False]  # 用列表实现闭包内可变
 
@@ -834,7 +960,7 @@ def process_one_task(
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
     pkey, vid = get_video_id(row)
-    stem = stem_name(row)
+    stem = stem_name(row, sheet_name)
     key = row_key(row)
     title = str(row.get(COL_TITLE, ""))
     url = build_url(pkey, vid) if pkey else None
@@ -991,6 +1117,8 @@ def run(
             if df.empty:
                 log.error(f"Sheet [{sheet_name}] 中找不到 id/title = {target_id}")
                 continue
+        # 预计算 stems（同 sheet 内去重）
+        precompute_stems(df, sheet_name)
         for _, row in df.iterrows():
             tasks.append((row, sheet_name))
 
@@ -1003,7 +1131,7 @@ def run(
         print(f"{'='*60}")
         for i, (row, sheet_name) in enumerate(tasks):
             pkey, vid = get_video_id(row)
-            stem = stem_name(row)
+            stem = stem_name(row, sheet_name)
             url = build_url(pkey, vid) if pkey else "N/A"
             dl_exists = (DOWNLOADS_DIR / sheet_name / stem).with_suffix(".mp4").exists()
             tc_exists = (TRANSCODED_DIR / sheet_name / (stem + TRANSCODE_EXT)).exists()
@@ -1015,9 +1143,10 @@ def run(
         return
 
     # ── 检测 whisper ──
-    whisper_available = _check_whisper_service() if "transcribe" in steps else False
+    whisper_available = _check_whisper_available() if "transcribe" in steps else False
     if "transcribe" in steps and not whisper_available:
-        log.warning(f"⚠️ whisper 服务不可达 ({WHISPER_SERVICE})，识别步骤将跳过")
+        backend_info = f"本地 whisper CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+        log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
 
     # ── 并发执行 ──
     results: list[TaskResult] = []
@@ -1043,7 +1172,7 @@ def run(
                 overall.add_result(result.overall_status)
             except Exception as e:
                 row, sheet_name = future_map[future]
-                stem = stem_name(row)
+                stem = stem_name(row, sheet_name)
                 log.error(f"[{stem}] 任务执行异常: {e}\n{traceback.format_exc()}")
                 tr = TaskResult(
                     sheet=sheet_name, id_val=row_key(row),
@@ -1096,12 +1225,17 @@ def run_from_report(
 
     log.info(f"从报告加载 {len(failed_items)} 条失败项")
 
+    # 按 sheet 分组，预计算 stems（处理去重）
+    sheet_dfs: dict[str, pd.DataFrame] = {}
     tasks = []
     for item in failed_items:
         sheet_name = item["sheet"]
         key = str(item["id"])
-        df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
 
+        if sheet_name not in sheet_dfs:
+            sheet_dfs[sheet_name] = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
+
+        df = sheet_dfs[sheet_name]
         # 匹配行
         mask = pd.Series([False] * len(df))
         if COL_ID in df.columns:
@@ -1114,11 +1248,15 @@ def run_from_report(
         if COL_TITLE in df.columns:
             mask = mask | (df[COL_TITLE].astype(str) == key)
 
-        df = df[mask]
-        if df.empty:
+        matched = df[mask]
+        if matched.empty:
             log.warning(f"[{sheet_name}] 找不到 {key}，跳过")
             continue
-        tasks.append((df.iloc[0], sheet_name))
+        tasks.append((matched.iloc[0], sheet_name))
+
+    # 预计算 stems（按 sheet 去重）
+    for sheet_name, sdf in sheet_dfs.items():
+        precompute_stems(sdf, sheet_name)
 
     if not tasks:
         log.info("无有效失败项可重跑")
@@ -1127,10 +1265,10 @@ def run_from_report(
     if dry_run:
         print(f"\n  干跑模式 - 重跑 {len(tasks)} 条失败项")
         for i, (row, sheet_name) in enumerate(tasks):
-            print(f"  {i + 1}. [{sheet_name}] {stem_name(row)}")
+            print(f"  {i + 1}. [{sheet_name}] {stem_name(row, sheet_name)}")
         return
 
-    whisper_available = _check_whisper_service() if "transcribe" in steps else False
+    whisper_available = _check_whisper_available() if "transcribe" in steps else False
 
     results: list[TaskResult] = []
     overall = OverallProgress(total=len(tasks))
@@ -1155,7 +1293,7 @@ def run_from_report(
                 overall.add_result(result.overall_status)
             except Exception as e:
                 row, sheet_name = future_map[future]
-                stem = stem_name(row)
+                stem = stem_name(row, sheet_name)
                 log.error(f"[{stem}] 任务执行异常: {e}")
                 tr = TaskResult(
                     sheet=sheet_name, id_val=row_key(row),

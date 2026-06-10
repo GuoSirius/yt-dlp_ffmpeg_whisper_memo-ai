@@ -54,17 +54,32 @@ cp .env.example .env
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
 | 平台 | `{平台}_COOKIE_FILE` / `{平台}_FORMAT` | cookie 路径 / 下载格式 |
-| 服务 | `WHISPER_SERVICE` | whisper 识别地址 |
+| 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
+| 服务 | `WHISPER_MODEL` | 本地模式模型 (tiny/base/small/medium/large) |
+| 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
+| 服务 | `WHISPER_LANGUAGE` | 本地模式语言代码 (zh) |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 
-### Whisper 服务（语音识别）
+### Whisper 语音识别
 
+支持两种后端，通过 `WHISPER_BACKEND` 切换：
+
+**远程服务模式**（默认）：
 需要本地或远程运行 whisper 服务，监听 `http://localhost:9588`：
-
 - 端点：`POST /inference` ← 上传 wav 文件，返回识别文本
 - 可选端点：`POST /load` ← 切换模型
+- 如部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE`
 
-如 whisper 服务部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE` 变量即可。
+**本地 CLI 模式**：
+需要在本地安装 `openai-whisper`：`pip install openai-whisper`
+```bash
+# .env 配置
+WHISPER_BACKEND=local
+WHISPER_MODEL=base          # tiny / base / small / medium / large
+WHISPER_DEVICE=cpu          # cpu 或 cuda
+WHISPER_LANGUAGE=zh
+```
+脚本会直接调用 `whisper` CLI，无需额外服务进程。
 
 ---
 
@@ -214,6 +229,22 @@ python process_videos.py \
 | 识别 | —（每次必跑，覆盖写入 Excel） | — |
 
 > 关键设计：即使不加 `--force`，只要视频重新下载过（MP4 的修改时间晚于 WAV），转码也会自动重新执行，**确保下载和转码内容始终保持一致**。
+
+---
+
+## 文件名去重
+
+脚本默认使用 `COL_ID`（即 `extra.id`）作为文件名 stem。当同一个 sheet 内出现重复 id 时，自动应用以下去重策略：
+
+| 优先级 | 格式 | 示例 |
+|--------|------|------|
+| 1 | `{id}` | `2143` |
+| 2 | `{id}_{title}` | `2143_产品介绍` |
+| 3 | `{id}_{title}_{platformVid}` | `2143_产品介绍_BV1xx4y1z7Ab` |
+
+> 去重仅在同 sheet 内生效，不同 sheet 之间允许同名文件（存放在不同子目录）。
+
+---
 
 ---
 
