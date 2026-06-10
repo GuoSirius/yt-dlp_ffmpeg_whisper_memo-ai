@@ -692,7 +692,7 @@ def step_transcribe(
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
     with _print_lock:
-        backend_label = f"本地({WHISPER_MODEL})" if WHISPER_BACKEND == "local" else "服务"
+        backend_label = f"本地({WHISPER_MODEL})" if WHISPER_BACKEND == "local" else f"服务({WHISPER_MODEL})"
         print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     if WHISPER_BACKEND == "local":
@@ -770,7 +770,7 @@ def _transcribe_service(
                 resp = requests.post(
                     f"{WHISPER_SERVICE}/inference",
                     files={"file": (audio_file.name, f, "audio/wav")},
-                    data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json"},
+                    data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json", "model": WHISPER_MODEL},
                     timeout=timeout,
                 )
             resp.raise_for_status()

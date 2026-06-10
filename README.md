@@ -55,7 +55,7 @@ cp .env.example .env
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
 | 平台 | `{平台}_COOKIE_FILE` / `{平台}_FORMAT` | cookie 路径 / 下载格式 |
 | 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
-| 服务 | `WHISPER_MODEL` | 本地模式模型 (tiny/base/small/medium/large) |
+| 服务 | `WHISPER_MODEL` | 模型 (tiny/base/small/medium/large)，两种后端通用 |
 | 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
 | 服务 | `WHISPER_LANGUAGE` | 本地模式语言代码 (zh) |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
@@ -66,9 +66,10 @@ cp .env.example .env
 
 **远程服务模式**（默认）：
 需要本地或远程运行 whisper 服务，监听 `http://localhost:9588`：
-- 端点：`POST /inference` ← 上传 wav 文件，返回识别文本
+- 端点：`POST /inference` ← 上传 wav 文件，`model` 参数指定模型，返回识别文本
 - 可选端点：`POST /load` ← 切换模型
 - 如部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE`
+- 模型通过 `WHISPER_MODEL` 指定（默认 base），会作为 `model` 参数传给服务
 
 **本地 CLI 模式**：
 需要在本地安装 `openai-whisper`：`pip install openai-whisper`
