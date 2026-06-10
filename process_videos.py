@@ -324,11 +324,8 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600)
     last_progress = ""
     last_print_time = 0.0
     start = time.monotonic()
-    line_count = 0
 
     for line in proc.stdout:
-        line_count += 1
-        print(f"  [{label}] L{line_count}: {line.rstrip()[:80]}", flush=True)
         output_lines.append(line)
         progress = parser_fn(line)
         if progress:
@@ -346,7 +343,6 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600)
             raise subprocess.TimeoutExpired(cmd, timeout, output="".join(output_lines))
 
     proc.wait()
-    print(f"  [{label}] DEBUG: read {line_count} lines, {len(output_lines)} stored", flush=True)
     return "".join(output_lines), proc.returncode
 
 
@@ -776,7 +772,7 @@ def process_one_task(
     whisper_available: bool,
     position_label: str = "",
     download_timeout: int = 600,
-    transcode_timeout: int = 300,
+    transcode_timeout: int = 600,
     transcribe_timeout: int = 600,
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
