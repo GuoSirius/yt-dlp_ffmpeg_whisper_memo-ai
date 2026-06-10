@@ -69,7 +69,7 @@ cp .env.example .env
 需要本地或远程运行 whisper.cpp server，监听 `http://localhost:9588`：
 - `POST /inference` ← 上传 wav 文件，返回识别文本（参数: file/temperature/temperature_inc/response_format）
 - `POST /load` ← 切换模型（参数: model=模型文件路径），如 `models/ggml-base.bin`
-- 语言由 whisper.cpp 自动检测，无需配置
+- 语言需在 whisper.cpp server 启动参数或管理后台设置，不支持通过 API 指定
 - 通过 `WHISPER_SERVICE_MODEL` 指定模型文件路径（留空则使用服务当前已加载的模型）
 - 脚本首次识别时会自动 `/load`，同一模型只加载一次（缓存）
 
