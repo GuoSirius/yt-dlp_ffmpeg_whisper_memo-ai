@@ -541,6 +541,18 @@ def make_ffmpeg_parser(total_duration: float | None) -> callable:
         return None
     return _parse
 
+def _cleanup_partial_files(dl_dir: Path, stem: str) -> None:
+    """清理下载残留文件（.part 和 .ytdl）"""
+    for pattern in [f"{stem}.*.part", f"{stem}.*.ytdl", f"{stem}.part", f"{stem}.ytdl"]:
+        for f in dl_dir.glob(pattern):
+            try:
+                f.unlink()
+                with _print_lock:
+                    print(f"  [{stem}] 已清理残留文件: {f.name}", flush=True)
+            except OSError:
+                pass
+
+
 def step_download(
     row: pd.Series, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
@@ -559,11 +571,16 @@ def step_download(
     if not force:
         existing = find_downloaded_file(dl_dir, stem)
         if existing:
+            # 清理该 stem 的残留 .part/.ytdl（如果有过中断下载）
+            _cleanup_partial_files(dl_dir, stem)
             with _print_lock:
                 print(f"  [{stem}] 已存在 {existing.name}，跳过下载", flush=True)
             return existing, 0, None
 
     url = build_url(pkey, vid)
+    # 开始前清理残留的 .part/.ytdl（上次中断的下载）
+    _cleanup_partial_files(dl_dir, stem)
+
     with _print_lock:
         print(f"  [{stem}] 开始下载 (平台={pkey})", flush=True)
         print(f"  [{stem}] {url}", flush=True)
@@ -617,6 +634,7 @@ def step_download(
             _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
         )
         if err:
+            _cleanup_partial_files(dl_dir, stem)
             return None, retries_used, err
     except Exception as e:
         stderr_text = ""
@@ -624,6 +642,7 @@ def step_download(
             stderr_text = (e.stderr or "")[-2000:]
         log.error(f"[{stem}] yt-dlp 下载失败:\n{stderr_text or str(e)}")
         retries = max_retries if isinstance(e, subprocess.CalledProcessError) else 0
+        _cleanup_partial_files(dl_dir, stem)
         return None, retries, (stderr_text or str(e))[:500]
 
     downloaded = find_downloaded_file(dl_dir, stem)
