@@ -75,7 +75,7 @@ WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "service")  # "service" 或 "loca
 WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 仅 backend=service 时使用
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # 模型名: tiny/base/small/medium/large
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 空=多语言自动检测
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
 FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s16le").split()
@@ -692,7 +692,9 @@ def step_transcribe(
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
     with _print_lock:
-        backend_label = f"本地({WHISPER_MODEL})" if WHISPER_BACKEND == "local" else f"服务({WHISPER_MODEL})"
+        lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+        mode_label = f"{WHISPER_MODEL}/{lang_label}"
+        backend_label = f"本地({mode_label})" if WHISPER_BACKEND == "local" else f"服务({mode_label})"
         print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     if WHISPER_BACKEND == "local":
@@ -714,7 +716,10 @@ def _transcribe_local(
             "whisper", str(audio_file),
             "--model", WHISPER_MODEL,
             "--device", WHISPER_DEVICE,
-            "--language", WHISPER_LANGUAGE,
+        ]
+        if WHISPER_LANGUAGE:
+            cmd += ["--language", WHISPER_LANGUAGE]
+        cmd += [
             "--output_format", "txt",
             "--output_dir", str(out_dir),
         ]
@@ -767,10 +772,13 @@ def _transcribe_service(
         reporter.start()
         try:
             with open(audio_file, "rb") as f:
+                post_data = {"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json", "model": WHISPER_MODEL}
+                if WHISPER_LANGUAGE:
+                    post_data["language"] = WHISPER_LANGUAGE
                 resp = requests.post(
                     f"{WHISPER_SERVICE}/inference",
                     files={"file": (audio_file.name, f, "audio/wav")},
-                    data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json", "model": WHISPER_MODEL},
+                    data=post_data,
                     timeout=timeout,
                 )
             resp.raise_for_status()

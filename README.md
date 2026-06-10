@@ -57,7 +57,7 @@ cp .env.example .env
 | 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
 | 服务 | `WHISPER_MODEL` | 模型 (tiny/base/small/medium/large)，两种后端通用 |
 | 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
-| 服务 | `WHISPER_LANGUAGE` | 本地模式语言代码 (zh) |
+| 服务 | `WHISPER_LANGUAGE` | 语言代码，两种后端通用，空=多语言自动检测（默认） |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 
 ### Whisper 语音识别
@@ -70,6 +70,7 @@ cp .env.example .env
 - 可选端点：`POST /load` ← 切换模型
 - 如部署在其他地址，修改 `.env` 中的 `WHISPER_SERVICE`
 - 模型通过 `WHISPER_MODEL` 指定（默认 base），会作为 `model` 参数传给服务
+- 语言通过 `WHISPER_LANGUAGE` 指定，空=多语言自动检测（默认），设置后作为 `language` 参数传给服务
 
 **本地 CLI 模式**：
 需要在本地安装 `openai-whisper`：`pip install openai-whisper`
@@ -78,7 +79,7 @@ cp .env.example .env
 WHISPER_BACKEND=local
 WHISPER_MODEL=base          # tiny / base / small / medium / large
 WHISPER_DEVICE=cpu          # cpu 或 cuda
-WHISPER_LANGUAGE=zh
+WHISPER_LANGUAGE=            # 空=多语言自动检测（默认），需要指定时填 zh/en/ja 等
 ```
 脚本会直接调用 `whisper` CLI，无需额外服务进程。
 
