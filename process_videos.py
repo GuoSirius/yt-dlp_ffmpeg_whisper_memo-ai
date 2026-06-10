@@ -58,8 +58,9 @@ TRANSCODED_DIR = BASE_DIR / "transcoded"
 COOKIES_DIR = BASE_DIR / "cookies"
 REPORTS_DIR = BASE_DIR / "reports"
 
-YTDLP = r"C:\Users\Admin\AppData\Local\Programs\Memo\resources\yt-dlp\yt-dlp.exe"
-FFMPEG = r"C:\Users\Admin\AppData\Local\Programs\Memo\resources\addon\ffmpeg\ffmpeg.exe"
+YTDLP = "yt-dlp"
+FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
 WHISPER_SERVICE = "http://localhost:9588"
 
 TRANSCODE_EXT = ".wav"
@@ -90,6 +91,17 @@ PLATFORM_CONFIG = {
         "url_tpl": "https://youtu.be/{youtubeId}",
         "cookie_file": str(COOKIES_DIR / "youtube.txt"),
         "field": "extra.youtubeId",
+        "extra_headers": [
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "--add-header", "Accept-Language:zh,en;q=0.9",
+        ],
+        # YouTube 需要 JS 运行时 + ejs 远程组件解 n-sig 挑战
+        "extra_args": [
+            "--js-runtimes", "node",
+            "--remote-components", "ejs:github",
+        ],
+        # YouTube 720p 优先（有音频合流，画质够用，下载快）
+        "format": "bestvideo[height<=720]+bestaudio/bestvideo+bestaudio/best",
     },
     "youkuId": {
         "url_tpl": "https://v.youku.com/v_show/id_{youkuId}.html",
@@ -368,14 +380,13 @@ def get_duration(filepath: Path) -> float | None:
     """用 ffprobe 获取媒体时长（秒）。失败返回 None。"""
     try:
         result = subprocess.run(
-            [FFMPEG, "-i", str(filepath)],
+            [FFPROBE, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(filepath)],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
         )
-        # ffmpeg 把信息输出到 stderr
-        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", result.stderr)
-        if m:
-            h, mm, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
-            return h * 3600 + mm * 60 + s
+        duration_str = result.stdout.strip()
+        if duration_str:
+            return float(duration_str)
     except Exception:
         pass
     return None
@@ -403,6 +414,7 @@ def make_ffmpeg_parser(total_duration: float | None) -> callable:
 def step_download(
     row: pd.Series, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
+    timeout: int = 600,
 ) -> tuple[Path | None, int, str | None]:
     """下载视频。返回 (文件路径, 重试次数, 错误信息)"""
     pkey, vid = get_video_id(row)
@@ -430,7 +442,6 @@ def step_download(
         YTDLP, url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
-        "--ffmpeg-location", str(Path(FFMPEG).parent),
         "--merge-output-format", "mp4",
         "-f", PLATFORM_CONFIG[pkey].get("format", "bestvideo+bestaudio/best"),
     ]
@@ -448,8 +459,12 @@ def step_download(
     if extra_headers:
         cmd += extra_headers
 
+    extra_args = PLATFORM_CONFIG[pkey].get("extra_args", [])
+    if extra_args:
+        cmd += extra_args
+
     def _run():
-        stderr_text, rc = run_with_progress(cmd, stem, parse_ytdlp_progress, timeout=600)
+        stderr_text, rc = run_with_progress(cmd, stem, parse_ytdlp_progress, timeout=timeout)
         if rc != 0:
             raise subprocess.CalledProcessError(rc, cmd, stderr=stderr_text)
 
@@ -480,6 +495,7 @@ def step_download(
 def step_transcode(
     src_file: Path, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
+    timeout: int = 300,
 ) -> tuple[Path | None, int, str | None]:
     """转码。返回 (转码文件路径, 重试次数, 错误信息)"""
     tc_dir = TRANSCODED_DIR / sheet_name
@@ -501,7 +517,7 @@ def step_transcode(
     def _run():
         parser = make_ffmpeg_parser(total_dur)
         cmd = [FFMPEG, "-y", "-i", str(src_file)] + FFMPEG_TRANSCODE_ARGS + [str(out_file)]
-        stderr_text, rc = run_with_progress(cmd, stem, parser, timeout=300)
+        stderr_text, rc = run_with_progress(cmd, stem, parser, timeout=timeout)
         if rc != 0:
             raise subprocess.CalledProcessError(rc, cmd, stderr=stderr_text)
         return out_file
@@ -535,6 +551,7 @@ def _check_whisper_service() -> bool:
 def step_transcribe(
     audio_file: Path,
     max_retries: int, retry_delay: float,
+    timeout: int = 600,
 ) -> tuple[str | None, int, str | None]:
     """调用 whisper 服务识别。返回 (文本, 重试次数, 错误信息)"""
     stem = audio_file.stem
@@ -570,7 +587,7 @@ def step_transcribe(
                     f"{WHISPER_SERVICE}/inference",
                     files={"file": (audio_file.name, f, "audio/wav")},
                     data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json"},
-                    timeout=600,
+                    timeout=timeout,
                 )
             resp.raise_for_status()
             data = resp.json()
@@ -753,6 +770,9 @@ def process_one_task(
     max_retries: int, retry_delay: float, force: bool,
     whisper_available: bool,
     position_label: str = "",
+    download_timeout: int = 600,
+    transcode_timeout: int = 300,
+    transcribe_timeout: int = 600,
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
     pkey, vid = get_video_id(row)
@@ -782,7 +802,7 @@ def process_one_task(
             return result
 
         try:
-            dl_file, retries, err = step_download(row, sheet_name, max_retries, retry_delay, force)
+            dl_file, retries, err = step_download(row, sheet_name, max_retries, retry_delay, force, download_timeout)
         except Exception as e:
             dl_file, retries, err = None, max_retries, str(e)[:500]
 
@@ -808,7 +828,7 @@ def process_one_task(
     # ── 转码 ──
     if "transcode" in steps and dl_file:
         try:
-            tc_file, retries, err = step_transcode(dl_file, sheet_name, max_retries, retry_delay, force)
+            tc_file, retries, err = step_transcode(dl_file, sheet_name, max_retries, retry_delay, force, transcode_timeout)
         except Exception as e:
             tc_file, retries, err = None, max_retries, str(e)[:500]
 
@@ -842,7 +862,7 @@ def process_one_task(
             return result
 
         try:
-            text, retries, err = step_transcribe(tc_file, max_retries, retry_delay)
+            text, retries, err = step_transcribe(tc_file, max_retries, retry_delay, transcribe_timeout)
         except Exception as e:
             text, retries, err = None, max_retries, str(e)[:500]
 
@@ -882,12 +902,16 @@ def run(
     force: bool,
     dry_run: bool,
     retry_failed: str | None,
+    download_timeout: int = 600,
+    transcode_timeout: int = 300,
+    transcribe_timeout: int = 600,
 ):
     """主执行流程"""
     # ── 重跑失败模式 ──
     if retry_failed:
         return run_from_report(retry_failed, steps, max_retries, retry_delay,
-                               concurrency, force, dry_run)
+                               concurrency, force, dry_run,
+                               download_timeout, transcode_timeout, transcribe_timeout)
 
     # ── 构建任务列表 ──
     sheets = [target_sheet] if target_sheet else VIDEO_SHEETS
@@ -950,6 +974,7 @@ def run(
                     process_one_task, row, sheet_name, steps,
                     max_retries, retry_delay, force, whisper_available,
                     pos_label,
+                    download_timeout, transcode_timeout, transcribe_timeout,
                 )
             ] = (row, sheet_name)
 
@@ -998,6 +1023,9 @@ def run_from_report(
     report_path: str, steps: list[str],
     max_retries: int, retry_delay: float,
     concurrency: int, force: bool, dry_run: bool,
+    download_timeout: int = 600,
+    transcode_timeout: int = 300,
+    transcribe_timeout: int = 600,
 ):
     """从报告加载失败项，重新执行"""
     with open(report_path, "r", encoding="utf-8") as f:
@@ -1058,6 +1086,7 @@ def run_from_report(
                     process_one_task, row, sheet_name, steps,
                     max_retries, retry_delay, force, whisper_available,
                     pos_label,
+                    download_timeout, transcode_timeout, transcribe_timeout,
                 )
             ] = (row, sheet_name)
 
@@ -1130,6 +1159,18 @@ if __name__ == "__main__":
         "--retry-delay", type=float, default=5.0,
         help="重试间隔基数（秒），指数退避，默认 5s",
     )
+    parser.add_argument(
+        "--download-timeout", type=int, default=600,
+        help="单个下载任务的最长执行时间（秒），默认 600s（10 分钟）",
+    )
+    parser.add_argument(
+        "--transcode-timeout", type=int, default=300,
+        help="单个转码任务的最长执行时间（秒），默认 300s（5 分钟）",
+    )
+    parser.add_argument(
+        "--transcribe-timeout", type=int, default=600,
+        help="单个识别任务的最长执行时间（秒），默认 600s（10 分钟）",
+    )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
         "--retry-failed",
@@ -1148,4 +1189,7 @@ if __name__ == "__main__":
         force=args.force,
         dry_run=args.dry_run,
         retry_failed=args.retry_failed,
+        download_timeout=args.download_timeout,
+        transcode_timeout=args.transcode_timeout,
+        transcribe_timeout=args.transcribe_timeout,
     )

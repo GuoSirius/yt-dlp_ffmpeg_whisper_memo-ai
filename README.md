@@ -2,39 +2,85 @@
 
 基于 `process_videos.py`，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → 写回 Excel。
 
+## 环境依赖
+
+### 必装工具
+
+| 工具 | 版本要求 | 安装方式 | 用途 |
+|---|---|---|---|
+| Python | 3.9+ | [python.org](https://www.python.org/) | 脚本运行 |
+| yt-dlp | 最新 | `pip install yt-dlp` 或 [GitHub Release](https://github.com/yt-dlp/yt-dlp/releases) | 视频下载 |
+| ffmpeg + ffprobe | 4.0+ | [ffmpeg.org](https://ffmpeg.org/download.html) 或 `winget install ffmpeg` | 音频转码 + 时长检测 |
+
+> **验证安装**：在终端执行 `yt-dlp --version`、`ffmpeg -version`、`ffprobe -version`，确保均在 PATH 中。
+
+### 必装 Node.js（YouTube n-sig 挑战）
+
+YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式。
+
+| 方式 | 安装命令 |
+|---|---|
+| Node.js（推荐） | [nodejs.org](https://nodejs.org/) 下载 LTS 版，安装后 `node --version` 验证 |
+| Deno | `winget install DenoLand.Deno` 或 [deno.com](https://deno.com/) |
+
+> 脚本默认使用 `--js-runtimes node`，如果你装的是 deno，修改 `process_videos.py` 中 `youtubeId.extra_args` 的 `"node"` 为 `"deno"`。
+
+### Python 依赖
+
+```bash
+pip install pandas openpyxl requests
+```
+
+### Whisper 服务（语音识别）
+
+需要本地或远程运行 whisper 服务，监听 `http://localhost:9588`：
+
+- 端点：`POST /inference` ← 上传 wav 文件，返回识别文本
+- 可选端点：`POST /load` ← 切换模型
+
+如 whisper 服务部署在其他地址，修改 `process_videos.py` 中的 `WHISPER_SERVICE` 变量。
+
+---
+
 ## 目录结构
 
 ```
-├── process_videos.py          # 主流程脚本
-├── export_2026-06-10_split.xlsx  # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
+├── process_videos.py              # 主流程脚本
+├── export_2026-06-10_split.xlsx   # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
 ├── cookies/
-│   ├── bilibili.txt           # B站 cookie（Netscape 格式）
-│   └── youtube.txt            # YouTube cookie
-├── downloads/                 # yt-dlp 下载输出（mp4）
+│   ├── bilibili.txt               # B站 cookie（Netscape 格式）
+│   └── youtube.txt                # YouTube cookie（Netscape 格式）
+├── downloads/                     # yt-dlp 下载输出（mp4）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
-├── transcoded/                # ffmpeg 转码输出（wav 16kHz mono）
+├── transcoded/                    # ffmpeg 转码输出（wav 16kHz mono）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
-└── reports/                   # 执行报告（JSON）
+└── reports/                       # 执行报告（JSON）
     └── report_YYYYMMDD_HHMMSS.json
 ```
 
-## 环境依赖
+---
 
-| 工具 | 路径 | 用途 |
-|---|---|---|
-| Python | `C:\Users\Admin\.workbuddy\binaries\python\envs\default\Scripts\python.exe` | 脚本运行 |
-| yt-dlp | `...\Memo\resources\yt-dlp\yt-dlp.exe` | 视频下载 |
-| ffmpeg | `...\Memo\resources\addon\ffmpeg\ffmpeg.exe` | 音频转码 |
-| whisper | `http://localhost:9588` | 语音识别 |
+## Cookie 导出（首次使用必须）
+
+### YouTube
+
+1. Chrome 安装扩展 [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+2. 访问 [youtube.com](https://www.youtube.com) 并登录
+3. 点击扩展图标 → Export → 保存为 `cookies/youtube.txt`（覆盖已有文件）
+
+> Cookie 有效期约 1-2 周，过期后需重新导出。下载时如果报 `Sign in to confirm you're not a bot`，说明 cookie 已失效。
+
+### B站（bilibili）
+
+1. 同样使用上述 Chrome 扩展
+2. 访问 [bilibili.com](https://www.bilibili.com) 并登录
+3. 点击扩展图标 → Export → 保存为 `cookies/bilibili.txt`
+
+---
 
 ## 使用方法
-
-```bash
-# 进入项目目录
-cd "D:\workspace\resource\普诺赛中文站\20260605-普诺赛中文站视频模块搜索关键词数据补充（爬取所有视频关键词补充到129中台视频模块）"
-```
 
 ### 单条测试
 
@@ -79,6 +125,26 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --dr
 python process_videos.py --retry-failed reports/report_20260610_143000.json --concurrency 2 --retry 3
 ```
 
+### 超时控制（防止任务卡死）
+
+每个步骤都有独立超时，超时后自动 kill 子进程、标记失败并继续执行后续任务：
+
+```bash
+# 自定义超时（单位秒）
+python process_videos.py \
+    --download-timeout 900 \    # 下载 15 分钟
+    --transcode-timeout 600 \   # 转码 10 分钟
+    --transcribe-timeout 1200   # 识别 20 分钟
+
+# 默认值：下载 600s / 转码 300s / 识别 600s
+```
+
+- 超时属于**可重试错误**，会触发指数退避重试（`--retry` 控制次数）
+- 无论超时多少次，**不会阻塞其他并发任务**，失败项会记录到报告
+- 超时失败的任务可用 `--retry-failed` 单独重跑
+
+---
+
 ## 参数说明
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -90,8 +156,13 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 | `--concurrency` | int | 1 | 并发数，建议 2~3 |
 | `--retry` | int | 0 | 每步失败最大重试次数 |
 | `--retry-delay` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
+| `--download-timeout` | int | 600 | 单个下载任务最长执行时间（秒） |
+| `--transcode-timeout` | int | 300 | 单个转码任务最长执行时间（秒） |
+| `--transcribe-timeout` | int | 600 | 单个识别任务最长执行时间（秒） |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
 | `--retry-failed` | path | — | 从报告 JSON 重跑失败项 |
+
+---
 
 ## 重试规则
 
@@ -100,6 +171,9 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 | 网络超时、连接拒绝 | HTTP 404 / 403 / 401 |
 | yt-dlp 下载中断 | 视频已删除 / 私有 |
 | whisper 服务超时 | 无效 URL、文件不存在 |
+| **步骤级超时（任务卡死）** | 参数错误（ValueError/TypeError） |
+
+---
 
 ## 进度显示
 
@@ -131,7 +205,9 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 | 转码 | 先 ffprobe 取时长，再实时解析 `time=` 算百分比（如 `25.3% (38s/150s)`） |
 | 识别 | 每 5s 打印已用时间，完成时显示总耗时和文本长度 |
 
-多线程并发时使用打印锁保证输出不交错；进度变化立即刷新，否则每 2s 保底刷新避免卡住。
+多线程并发时使用打印锁保证输出不交错。
+
+---
 
 ## 报告格式
 
@@ -166,6 +242,8 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 - **failed**：下载或转码失败
 - **no_video**：该行无可用视频 ID
 
+---
+
 ## 典型工作流
 
 ```bash
@@ -181,3 +259,36 @@ python process_videos.py --concurrency 3 --retry 3
 # 4. 查看报告，重跑失败项
 python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 --retry 3
 ```
+
+---
+
+## 平台适配说明
+
+脚本支持四个视频平台的下载，各有不同的反爬配置：
+
+| 平台 | 字段 | 反爬措施 |
+|---|---|---|
+| B站 (bilibili) | `extra.bilibiliBvid` | Chrome UA + Referer 头 + 有效 cookie + 并发分片 |
+| YouTube | `extra.youtubeId` | Chrome UA + 有效 cookie + Node.js/Deno JS 运行时解 n-sig 挑战 |
+| 腾讯视频 | `extra.tencentVid` | 无需特殊配置 |
+| 优酷 | `extra.youkuId` | 无需特殊配置（部分视频需会员） |
+
+### 常见下载错误
+
+| 错误 | 平台 | 原因 | 解决方案 |
+|---|---|---|---|
+| `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` |
+| `Sign in to confirm you're not a bot` | YouTube | cookie 过期 | 重新导出 `cookies/youtube.txt` |
+| `n challenge solving failed` | YouTube | 无 JS 运行时 | 安装 Node.js 或 Deno |
+| `Requested format is not available` | YouTube | n-sig 未解开，格式不可用 | 同上，安装 JS 运行时 |
+| `HTTP Error 403` | B站 | 地区限制或视频已删除 | 检查视频是否可访问 |
+
+---
+
+## 换电脑使用
+
+1. 安装上述所有必装工具，确保 `yt-dlp`、`ffmpeg`、`ffprobe`、`node` 均在 PATH
+2. `pip install pandas openpyxl requests`
+3. 重新导出 B站和 YouTube cookie（浏览器登录后导出）
+4. 复制整个项目目录到新电脑
+5. `python process_videos.py --dry-run` 验证
