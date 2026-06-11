@@ -346,33 +346,66 @@ async function main() {
     process.exit(1);
   }
 
+  // Identify GitHub remote name
+  const githubRemote = remoteNames.find(name => {
+    const url = remotes[name].push || remotes[name].fetch || '';
+    return url.includes('github.com');
+  });
+
   console.log(`\n  Detected ${c('bold', String(remoteNames.length))} remote(s):`);
   for (const name of remoteNames) {
-    const url = remotes[name].push || remotes[name].fetch;
+    const url = remotes[name].push || remotes[name].fetch || '';
     const isGitee = url.includes('gitee.com');
     const isGitHub = url.includes('github.com');
     const label = isGitee ? 'Gitee' : isGitHub ? 'GitHub' : 'Other';
     console.log(`    ${c('cyan', name)} → ${label} (${url})`);
   }
 
+  let githubPushed = false;
+
   for (const name of remoteNames) {
+    const url = remotes[name].push || remotes[name].fetch || '';
+    const isGitHub = url.includes('github.com');
+
     try {
-      run(`git push ${name} main --tags`, { silent: true });
+      // Show full output for GitHub push (helps debug auth/network issues)
+      run(`git push ${name} main --tags`, { silent: !isGitHub });
       console.log(c('green', `✅ Pushed to ${name}`));
-    } catch {
-      console.log(c('yellow', `⚠️  Failed to push to ${name}, continuing...`));
+      if (isGitHub) githubPushed = true;
+    } catch (e) {
+      if (isGitHub) {
+        // GitHub push is critical — workflow won't trigger without it
+        console.log(c('red', `\n❌ Failed to push to GitHub (${name})!`));
+        console.log(c('red', '   GitHub Actions workflow will NOT trigger.'));
+        console.log(c('red', `   Error: ${e.stderr || e.message}`));
+        console.log(c('yellow', '\n💡 Troubleshooting:'));
+        console.log(c('yellow', '  1. Check GitHub credentials:'));
+        console.log(c('yellow', '     git config --global credential.helper'));
+        console.log(c('yellow', '  2. Try manual push:'));
+        console.log(c('yellow', `     git push ${name} main --tags`));
+        console.log(c('yellow', '  3. Check network / VPN / proxy settings\n'));
+        process.exit(1);
+      } else {
+        console.log(c('yellow', `⚠️  Failed to push to ${name}, continuing...`));
+      }
+    }
+  }
+
+  // Verify tag on GitHub (ensure workflow will trigger)
+  if (githubPushed && githubRemote) {
+    console.log(c('dim', '\n  Verifying tag on GitHub...'));
+    const remoteTag = runSilent(`git ls-remote --tags ${githubRemote} refs/tags/v${newVersion}`);
+    if (remoteTag) {
+      console.log(c('green', `  ✅ Tag v${newVersion} confirmed on GitHub`));
+    } else {
+      console.log(c('yellow', `  ⚠️  Tag v${newVersion} may still be syncing to GitHub`));
     }
   }
 
   // ── 7. Summary ──
   console.log(c('bold', c('green', '\n🎉 Release v' + newVersion + ' completed!\n')));
 
-  const hasGithub = remoteNames.some(name => {
-    const url = remotes[name].push || remotes[name].fetch || '';
-    return url.includes('github.com');
-  });
-
-  if (hasGithub) {
+  if (githubPushed) {
     console.log(c('dim', 'GitHub Actions will automatically:'));
     console.log(c('dim', '  • Run tests'));
     console.log(c('dim', '  • Publish to npm'));
