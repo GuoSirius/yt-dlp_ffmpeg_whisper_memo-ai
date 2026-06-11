@@ -228,6 +228,21 @@ python process_videos.py \
 - 无论超时多少次，**不会阻塞其他并发任务**，失败项会记录到报告
 - 超时失败的任务可用 `--retry-failed` 单独重跑
 
+### 工具预检（执行前自动检测）
+
+每次执行任务前，脚本会自动检测本次涉及步骤所需的工具/服务是否可用：
+
+| 步骤 | 检测项 | 不可用时行为 |
+|------|--------|-------------|
+| download | yt-dlp 可调用 | 提示用户，输入 `yes` 继续 / 其他取消 |
+| transcode | ffmpeg + ffprobe 可调用 | 同上 |
+| transcribe | whisper 服务/本地 CLI 可连通 | 同上 |
+| analyze | AI_ENABLED=true 且 API 配置完整 | 同上 |
+
+- **dry-run** 模式下同样展示检测结果（但不中断执行）
+- 所有模式（正常执行、重跑失败、单步运行）均执行预检
+- 即使工具不可用，用户仍可选择强制继续（但相应步骤大概率失败）
+
 ---
 
 ## 参数说明
@@ -244,6 +259,7 @@ python process_videos.py \
 | `--download-timeout` | int | 600 | 单个下载任务最长执行时间（秒） |
 | `--transcode-timeout` | int | 600 | 单个转码任务最长执行时间（秒） |
 | `--transcribe-timeout` | int | 600 | 单个识别任务最长执行时间（秒） |
+| `--analyze-timeout` | int | 300 | 单个 AI 分析任务最长执行时间（秒） |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
 | `--retry-failed` | path | — | 从报告 JSON 重跑失败项 |
 

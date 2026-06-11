@@ -798,6 +798,51 @@ def _check_whisper_available() -> bool:
             return False
 
 
+def check_environment(steps: list[str]) -> dict:
+    """检测本次执行涉及的工具/服务是否可用。
+
+    返回 {"all_ok": bool, "issues": [str], "ytdlp": bool, ...}"""
+    result: dict = {
+        "ytdlp": True, "ffmpeg": True, "ffprobe": True,
+        "whisper": True, "ai": True, "all_ok": True, "issues": [],
+    }
+
+    if "download" in steps:
+        if shutil.which(YTDLP) is None:
+            result["ytdlp"] = False
+            result["all_ok"] = False
+            result["issues"].append(f"yt-dlp 不可用 ({YTDLP})")
+
+    if "transcode" in steps:
+        if shutil.which(FFMPEG) is None:
+            result["ffmpeg"] = False
+            result["all_ok"] = False
+            result["issues"].append(f"ffmpeg 不可用 ({FFMPEG})")
+
+    if "transcribe" in steps:
+        if not _check_whisper_available():
+            result["whisper"] = False
+            result["all_ok"] = False
+            backend = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
+            result["issues"].append(f"whisper 不可用 ({backend})")
+
+    if "analyze" in steps:
+        ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
+        ai_key = os.getenv("AI_API_KEY", "")
+        ai_url = os.getenv("AI_BASE_URL", "")
+        ai_model = os.getenv("AI_MODEL", "")
+        if not ai_enabled:
+            result["ai"] = False
+            result["all_ok"] = False
+            result["issues"].append("AI 分析已禁用 (AI_ENABLED=false)")
+        elif not ai_key or not ai_url:
+            result["ai"] = False
+            result["all_ok"] = False
+            result["issues"].append("AI 分析配置不完整（缺少 AI_API_KEY / AI_BASE_URL）")
+
+    return result
+
+
 def step_transcribe(
     audio_file: Path,
     max_retries: int, retry_delay: float,
@@ -1286,9 +1331,9 @@ def run(
     dry_run: bool,
     retry_failed: str | None,
     download_timeout: int = 600,
-    transcode_timeout: int = 300,
+    transcode_timeout: int = 600,
     transcribe_timeout: int = 600,
-    analyze_timeout: int = 120,
+    analyze_timeout: int = 300,
 ):
     """主执行流程"""
     # ── 重跑失败模式 ──
@@ -1325,6 +1370,24 @@ def run(
 
     log.info(f"任务数量: {len(tasks)}，并发数: {concurrency}，最大重试: {max_retries}")
 
+    # ── 工具/服务预检（非 dry-run 模式也做）──
+    env_check = check_environment(steps)
+    if not env_check["all_ok"]:
+        print("\n" + "=" * 60)
+        print("  ⚠️  工具/服务预检：以下依赖不可用")
+        print("=" * 60)
+        for issue in env_check["issues"]:
+            print(f"  • {issue}")
+        print("\n  涉及的步骤将失败。")
+        if not dry_run:
+            try:
+                choice = input("\n  是否继续执行？(输入 'yes' 继续，其他任意键取消): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                choice = "no"
+            if choice != "yes":
+                log.info("用户取消执行（工具不可用）")
+                return
+
     # ── 干跑模式 ──
     if dry_run:
         print("\n" + "=" * 60)
@@ -1332,58 +1395,49 @@ def run(
         print("=" * 60)
 
         # ── 环境检测 ──
+        env = check_environment(steps)
         print("\n  --- 环境检测 ---")
-
         # yt-dlp
-        ytdlp_ok = shutil.which(YTDLP) is not None
-        if ytdlp_ok:
-            print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
+        if "download" in steps:
+            if env["ytdlp"]:
+                print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
+            else:
+                print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
         else:
-            print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
-
+            print(f"  ⏭ yt-dlp: 未启用（步骤不含 download）")
         # ffmpeg
-        ffmpeg_ok = shutil.which(FFMPEG) is not None
-        if ffmpeg_ok:
-            print(f"  ✅ ffmpeg: 可用 ({FFMPEG})")
+        if "transcode" in steps:
+            if env["ffmpeg"]:
+                print(f"  ✅ ffmpeg: 可用 ({FFMPEG})")
+            else:
+                print(f"  ❌ ffmpeg: 不可用 ({FFMPEG})")
         else:
-            print(f"  ❌ ffmpeg: 不可用 ({FFMPEG})")
-
+            print(f"  ⏭ ffmpeg: 未启用（步骤不含 transcode）")
         # ffprobe
-        ffprobe_ok = shutil.which(FFPROBE) is not None
-        if ffprobe_ok:
-            print(f"  ✅ ffprobe: 可用 ({FFPROBE})")
+        if "transcode" in steps:
+            if env["ffprobe"]:
+                print(f"  ✅ ffprobe: 可用 ({FFPROBE})")
+            else:
+                print(f"  ❌ ffprobe: 不可用 ({FFPROBE})")
         else:
-            print(f"  ❌ ffprobe: 不可用 ({FFPROBE})")
-
+            print(f"  ⏭ ffprobe: 未启用（步骤不含 transcode）")
         # whisper
         if "transcribe" in steps:
-            whisper_ok = _check_whisper_available()
             backend_info = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
-            if whisper_ok:
+            if env["whisper"]:
                 print(f"  ✅ whisper ({backend_info}): 可用")
             else:
                 print(f"  ❌ whisper ({backend_info}): 不可用")
         else:
-            whisper_ok = False
             print(f"  ⏭ whisper: 未启用（步骤不含 transcribe）")
-
         # AI 分析
         if "analyze" in steps:
-            ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
-            ai_key = os.getenv("AI_API_KEY", "")
-            ai_url = os.getenv("AI_BASE_URL", "")
             ai_model = os.getenv("AI_MODEL", "")
-            if not ai_enabled:
-                ai_ok = False
-                print(f"  ❌ AI分析: 未启用 (AI_ENABLED=false)")
-            elif not ai_key or not ai_url:
-                ai_ok = False
-                print(f"  ❌ AI分析: 配置不完整（缺少 AI_API_KEY / AI_BASE_URL）")
-            else:
-                ai_ok = True
+            if env["ai"]:
                 print(f"  ✅ AI分析 ({ai_model}): 配置完整")
+            else:
+                print(f"  ❌ AI分析: {env['issues'][-1]}")
         else:
-            ai_ok = False
             print(f"  ⏭ AI分析: 未启用（步骤不含 analyze）")
 
         # ── 任务列表 ──
@@ -1435,7 +1489,7 @@ def run(
             if "transcribe" in steps:
                 if content_filled:
                     status = f"[跳过-content已有{len(str(content_val))}字符]"
-                elif not whisper_ok:
+                elif not env["whisper"]:
                     status = "[不可用-whisper]"
                 elif not tc_exists:
                     status = "[等待-需先转码]"
@@ -1446,7 +1500,7 @@ def run(
             if "analyze" in steps:
                 if keywords_filled:
                     status = f"[跳过-keywords已有{len(str(keywords_val))}字符]"
-                elif not ai_ok:
+                elif not env["ai"]:
                     status = "[不可用-AI未配置]"
                 elif not content_filled and not tc_exists:
                     status = "[等待-需先识别]"
@@ -1530,9 +1584,9 @@ def run_from_report(
     max_retries: int, retry_delay: float,
     concurrency: int, force: bool, dry_run: bool,
     download_timeout: int = 600,
-    transcode_timeout: int = 300,
+    transcode_timeout: int = 600,
     transcribe_timeout: int = 600,
-    analyze_timeout: int = 120,
+    analyze_timeout: int = 300,
 ):
     """从报告加载失败项，重新执行"""
     with open(report_path, "r", encoding="utf-8") as f:
@@ -1590,6 +1644,23 @@ def run_from_report(
             url = build_url(pkey, vid) if pkey else "N/A"
             print(f"  {i+1}. [{sheet_name}] {stem}  platform={pkey}  url={url}")
         return
+
+    # ── 工具/服务预检 ──
+    env_rfr = check_environment(steps)
+    if not env_rfr["all_ok"]:
+        print("\n" + "=" * 60)
+        print("  ⚠️  工具/服务预检：以下依赖不可用")
+        print("=" * 60)
+        for issue in env_rfr["issues"]:
+            print(f"  • {issue}")
+        print("\n  涉及的步骤将失败。")
+        try:
+            choice = input("\n  是否继续重跑？(输入 'yes' 继续，其他任意键取消): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "no"
+        if choice != "yes":
+            log.info("用户取消重跑（工具不可用）")
+            return
 
     whisper_available = _check_whisper_available() if "transcribe" in steps else False
 
@@ -1688,7 +1759,7 @@ if __name__ == "__main__":
         help="单个下载任务的最长执行时间（秒），默认 600s（10 分钟）",
     )
     parser.add_argument(
-        "--transcode-timeout", type=int, default=300,
+        "--transcode-timeout", type=int, default=600,
         help="单个转码任务的最长执行时间（秒），默认 300s（5 分钟）",
     )
     parser.add_argument(
@@ -1696,7 +1767,7 @@ if __name__ == "__main__":
         help="单个识别任务的最长执行时间（秒），默认 600s（10 分钟）",
     )
     parser.add_argument(
-        "--analyze-timeout", type=int, default=120,
+        "--analyze-timeout", type=int, default=300,
         help="单个 AI 分析任务的最长执行时间（秒），默认 120s（2 分钟）",
     )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
