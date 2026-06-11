@@ -1,0 +1,15 @@
+{
+  "name": "video-processor",
+  "version": "1.0.0",
+  "description": "视频下载、转码、文本识别、AI分析一体化流程脚本 (Node.js)",
+  "main": "process_videos.js",
+  "scripts": {
+    "start": "node process_videos.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "xlsx": "^0.18.5",
+    "p-limit": "^6.1.0"
+  }
+}

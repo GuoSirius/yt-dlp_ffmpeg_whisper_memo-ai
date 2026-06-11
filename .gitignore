@@ -4,6 +4,7 @@
 export_2026-06-10_split.xlsx
 
 __pycache__/
+node_modules/
 # cookies/
 downloads/
 reports/
