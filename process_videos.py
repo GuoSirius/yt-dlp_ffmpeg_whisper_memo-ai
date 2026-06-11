@@ -50,6 +50,9 @@ from dataclasses import dataclass, field, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread
 
+import colorama
+colorama.init()
+
 from dotenv import load_dotenv
 import requests
 import pandas as pd
@@ -215,6 +218,21 @@ _excel_lock = Lock()
 # 控制台打印锁（并发时防止输出交错）
 _print_lock = Lock()
 
+def c(color: str, text: str) -> str:
+    """返回带 ANSI 颜色码的文本（使用 colorama）"""
+    colors = {
+        "bold":    colorama.Style.BRIGHT,
+        "dim":     colorama.Style.DIM,
+        "yellow":  colorama.Fore.YELLOW,
+        "cyan":    colorama.Fore.CYAN,
+        "green":   colorama.Fore.GREEN,
+        "red":     colorama.Fore.RED,
+        "blue":    colorama.Fore.BLUE,
+        "magenta": colorama.Fore.MAGENTA,
+        "reset":   colorama.Style.RESET_ALL,
+    }
+    return colors.get(color, "") + text + colors["reset"]
+
 
 # ─────────────────────────────── 总体进度 ───────────────────────────────────
 
@@ -244,8 +262,12 @@ class OverallProgress:
     def summary_line(self) -> str:
         with self._lock:
             pct = self.completed / self.total * 100 if self.total else 0
-            return (f"[总进度 {self.completed}/{self.total} ({pct:.1f}%)] "
-                    f"成功:{self.success} 失败:{self.failed} 部分:{self.partial} 无视频:{self.no_video}")
+            parts = [c("dim", f"[总进度 {self.completed}/{self.total} ({pct:.1f}%)]")]
+            parts.append(c("green", f"✅{self.success}") if self.success > 0 else c("dim", "✅0"))
+            parts.append(c("red", f"❌{self.failed}") if self.failed > 0 else c("dim", "❌0"))
+            parts.append(c("yellow", f"⚠️{self.partial}") if self.partial > 0 else c("dim", "⚠️0"))
+            parts.append(c("cyan", f"⏹️{self.no_video}") if self.no_video > 0 else c("dim", "⏹️0"))
+            return "  ".join(parts)
 
     def position_label(self) -> str:
         """返回当前任务在总体中的序号标签"""
@@ -729,7 +751,7 @@ def step_analyze(
                 if not done[0]:
                     elapsed = time.monotonic() - analyze_start
                     with _print_lock:
-                        print(f"  [{label}] AI 分析中... {elapsed:.0f}s", flush=True)
+                        print(f"  [{label}] {c('green', 'AI 分析中')}... {elapsed:.0f}s", flush=True)
 
         reporter = Thread(target=_progress_reporter, daemon=True)
         reporter.start()
@@ -749,7 +771,7 @@ def step_analyze(
             if attempt <= max_retries + 1:
                 sleep_sec = retry_delay * (2 ** (attempt - 1))
                 with _print_lock:
-                    print(f"  [{label}] AI 第 {attempt} 次失败：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
+                    print(f"  [{label}] AI 第 {attempt} 次{c('red', '失败')}：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
                 time.sleep(min(sleep_sec, 30))
             else:
                 break
@@ -791,7 +813,7 @@ def step_download(
             # 清理该 stem 的残留 .part/.ytdl（如果有过中断下载）
             _cleanup_partial_files(dl_dir, stem)
             with _print_lock:
-                print(f"  [{stem}] 已存在 {existing.name}，跳过下载", flush=True)
+                print(c("dim", f"  [{stem}] 已存在 {existing.name}，跳过下载"), flush=True)
             return existing, 0, None
 
     url = build_url(pkey, vid)
@@ -799,7 +821,7 @@ def step_download(
     _cleanup_partial_files(dl_dir, stem)
 
     with _print_lock:
-        print(f"  [{stem}] 开始下载 (平台={pkey})", flush=True)
+        print(f"  [{stem}] {c('cyan', '开始下载')} (平台={pkey})", flush=True)
         print(f"  [{stem}] {url}", flush=True)
 
     cmd = [
@@ -865,7 +887,7 @@ def step_download(
     downloaded = find_downloaded_file(dl_dir, stem)
     if downloaded:
         with _print_lock:
-            print(f"  [{stem}] 下载完成 -> {downloaded.name}", flush=True)
+            print(f"  [{stem}] {c('green', '下载完成')} -> {downloaded.name}", flush=True)
     else:
         log.error(f"[{stem}] 下载后找不到文件")
         return None, retries_used, "下载后找不到文件"
@@ -889,14 +911,14 @@ def step_transcode(
         # 如果源文件比转码文件更新（重新下载过），强制重转码
         if src_file.stat().st_mtime > out_file.stat().st_mtime:
             with _print_lock:
-                print(f"  [{stem}] 源文件已更新（下载时间晚于转码时间），重新转码", flush=True)
+                print(c("yellow", f"  [{stem}] 源文件已更新（下载时间晚于转码时间），重新转码"), flush=True)
         else:
             with _print_lock:
-                print(f"  [{stem}] 已存在转码文件，跳过", flush=True)
+                print(c("dim", f"  [{stem}] 已存在转码文件，跳过"), flush=True)
             return out_file, 0, None
 
     with _print_lock:
-        print(f"  [{stem}] 开始转码 -> {out_file.name}", flush=True)
+        print(f"  [{stem}] {c('blue', '开始转码')} -> {out_file.name}", flush=True)
 
     # 获取源文件时长用于百分比计算
     total_dur = get_duration(src_file)
@@ -916,7 +938,7 @@ def step_transcode(
         if err:
             return None, retries_used, err
         with _print_lock:
-            print(f"  [{stem}] 转码完成", flush=True)
+            print(f"  [{stem}] {c('green', '转码完成')}", flush=True)
         return result, 0, None
     except Exception as e:
         stderr_text = ""
@@ -1011,7 +1033,7 @@ def step_transcribe(
         else:
             model_label = WHISPER_SERVICE_MODEL or WHISPER_MODEL or "(server default)"
             backend_label = f"服务({model_label})"
-        print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
+        print(f"  [{stem}] {c('magenta', '开始识别')} [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     if WHISPER_BACKEND == "local":
         return _transcribe_local(audio_file, stem, max_retries, retry_delay)
@@ -1057,7 +1079,7 @@ def _transcribe_local(
         if err:
             return None, retries_used, err
         with _print_lock:
-            print(f"  [{stem}] 识别完成 ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
+            print(f"  [{stem}] {c('green', '识别完成')} ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
         return text, 0, None
     except Exception as e:
         log.error(f"[{stem}] 本地 whisper 识别失败: {e}")
@@ -1125,7 +1147,7 @@ def _transcribe_service(
         if err:
             return None, retries_used, err
         with _print_lock:
-            print(f"  [{stem}] 识别完成 ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
+            print(f"  [{stem}] {c('green', '识别完成')} ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
         return text, 0, None
     except Exception as e:
         done[0] = True
@@ -1383,31 +1405,31 @@ def print_report_summary(results: list[TaskResult]):
     failed = s["failed"]
     no_vid = s["no_video"]
 
-    print(f"\n{'='*60}")
-    print(f"  执行摘要")
-    print(f"{'='*60}")
+    print(f"\n{c('dim', '=' * 60)}")
+    print(c("bold", f"  执行摘要"))
+    print(c("dim", "=" * 60))
     print(f"  总计: {len(results)}")
-    print(f"  ✅ 成功: {success}")
-    print(f"  ⚠️ 部分成功: {partial}")
-    print(f"  ❌ 失败: {failed}")
-    print(f"  ⏭️ 无视频ID: {no_vid}")
-    print(f"{'='*60}")
+    print(f"  {c('green', '✅ 成功')}: {success}")
+    print(f"  {c('yellow', '⚠️ 部分成功')}: {partial}")
+    print(f"  {c('red', '❌ 失败')}: {failed}")
+    print(f"  {c('dim', '⏭️ 无视频ID')}: {no_vid}")
+    print(c("dim", "=" * 60))
 
     # 列出所有非成功项
     failures = [r for r in results if r.overall_status != "success"]
     if failures:
-        print(f"\n失败/异常详情:")
+        print(c("red", f"\n失败/异常详情:"))
         for r in failures:
             icon = {"partial": "⚠️", "failed": "❌", "no_video": "⏭️"}.get(r.overall_status, "?")
             print(f"  {icon} [{r.sheet}] {r.id_val} ({r.title[:30] if r.title else 'N/A'})")
             if r.error:
-                print(f"       错误: {r.error[:120]}")
+                print(c("red", f"       错误: {r.error[:120]}"))
             if r.download.status == "failed":
-                print(f"       下载失败: {r.download.error[:120] if r.download.error else 'N/A'}")
+                print(c("red", f"       下载失败: {r.download.error[:120] if r.download.error else 'N/A'}"))
             if r.transcode.status == "failed":
-                print(f"       转码失败: {r.transcode.error[:120] if r.transcode.error else 'N/A'}")
+                print(c("red", f"       转码失败: {r.transcode.error[:120] if r.transcode.error else 'N/A'}"))
             if r.transcribe.status == "failed":
-                print(f"       识别失败: {r.transcribe.error[:120] if r.transcribe.error else 'N/A'}")
+                print(c("red", f"       识别失败: {r.transcribe.error[:120] if r.transcribe.error else 'N/A'}"))
 
 
 # ─────────────────────────────── 单任务处理 ─────────────────────────────────
@@ -1434,10 +1456,17 @@ def process_one_task(
         platform=pkey, video_url=url, stem=stem,
     )
 
-    # 打印总体进度位置 + 当前任务标识
-    tag = f"{position_label} " if position_label else ""
+    # 打印任务头部（带分隔线）
     with _print_lock:
-        print(f"{tag}[{stem}] 开始处理 (sheet={sheet_name}, platform={pkey or 'N/A'}, title={title[:40]})", flush=True)
+        print()
+        print(c("dim", "─" * 62))
+        print(
+            c("bold", f"  ▶ Task {position_label or '?'}")
+            + "  " + c("dim", f"[{stem}]  sheet={sheet_name}  platform={pkey or 'N/A'}")
+        )
+        if title:
+            print(c("dim", f"  title: {title[:50]}"))
+        print(c("dim", "─" * 62))
     log.info(f"[{stem}] 开始处理 (sheet={sheet_name}, platform={pkey or 'N/A'})")
 
     # ── 下载 ──
@@ -1545,9 +1574,9 @@ def process_one_task(
                     retries_used=retries,
                 )
                 if kw:
-                    print(f"  [{result.stem}] AI 分析完成（{len(kw)} 字符）", flush=True)
+                    print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{len(kw)} 字符）", flush=True)
                 else:
-                    print(f"  [{result.stem}] AI 分析失败：{err}", flush=True)
+                    print(f"  [{result.stem}] {c('red', 'AI 分析失败')}：{err}", flush=True)
             else:
                 result.analyze = StepResult("skipped", error="识别文本为空")
         else:
@@ -1597,7 +1626,7 @@ def _run_url_task(opts):
     # 预缓存 stem（url-tasks, 0），供 stem_name 查找
     _STEM_CACHE[("url-tasks", 0)] = stem
 
-    print("\n── 开始执行 ──\n")
+    print(c("dim", "\n── 开始执行 ──\n"))
 
     result = process_one_task(
         synthetic_row,
@@ -1615,49 +1644,49 @@ def _run_url_task(opts):
     )
 
     # ── 展示结果 ──
-    print("\n── 结果 ──\n")
+    print(c("dim", "\n── 结果 ──\n"))
     successes = []
 
     dl = result.download
     if dl and dl.file and Path(dl.file).exists():
         size_mb = Path(dl.file).stat().st_size / 1024 / 1024
-        print(f"  📥 下载: {dl.file} ({size_mb:.1f} MB)")
+        print(f"  📥 {c('green', '下载')}: {dl.file} ({size_mb:.1f} MB)")
         successes.append("download")
     elif dl and dl.status == "skipped":
-        print("  📥 下载: 已跳过 (文件已存在)")
+        print(c("dim", "  📥 下载: 已跳过 (文件已存在)"))
         successes.append("download")
     elif dl:
-        print(f"  📥 下载: 失败 — {dl.error or ''}")
+        print(f"  📥 {c('red', '下载失败')}: {dl.error or ''}")
 
     tc = result.transcode
     if tc and tc.file and Path(tc.file).exists():
         size_mb = Path(tc.file).stat().st_size / 1024 / 1024
-        print(f"  🎵 转码: {tc.file} ({size_mb:.1f} MB)")
+        print(f"  🎵 {c('green', '转码')}: {tc.file} ({size_mb:.1f} MB)")
         successes.append("transcode")
     elif tc and tc.status == "skipped":
-        print("  🎵 转码: 已跳过 (文件已存在)")
+        print(c("dim", "  🎵 转码: 已跳过 (文件已存在)"))
         successes.append("transcode")
     elif tc:
-        print(f"  🎵 转码: 失败 — {tc.error or ''}")
+        print(f"  🎵 {c('red', '转码失败')}: {tc.error or ''}")
 
     tr = result.transcribe
     if tr and tr.file and isinstance(tr.file, str):
-        print(f"  📝 识别: {len(tr.file)} 字符")
+        print(f"  📝 {c('green', '识别')}: {len(tr.file)} 字符")
         successes.append("transcribe")
     elif tr and tr.status == "skipped":
-        print("  📝 识别: 已跳过")
+        print(c("dim", "  📝 识别: 已跳过"))
         successes.append("transcribe")
     elif tr:
-        print(f"  📝 识别: 失败 — {tr.error or ''}")
+        print(f"  📝 {c('red', '识别失败')}: {tr.error or ''}")
 
     an = result.analyze
     if an and an.file and isinstance(an.file, str):
-        print(f"  🤖 AI分析: {len(an.file)} 字符")
+        print(f"  🤖 {c('green', 'AI分析')}: {len(an.file)} 字符")
         successes.append("analyze")
     elif an and an.status == "skipped":
-        print("  🤖 AI分析: 已跳过")
+        print(c("dim", "  🤖 AI分析: 已跳过"))
     elif an:
-        print(f"  🤖 AI分析: 失败 — {an.error or ''}")
+        print(f"  🤖 {c('red', 'AI分析失败')}: {an.error or ''}")
 
     # 保存文本结果
     transcribe_text = tr.file if (tr and isinstance(tr.file, str)) else ""
@@ -1678,9 +1707,9 @@ def _run_url_task(opts):
         if analyze_text:
             lines.extend(["【AI关键词分析】", "", analyze_text, ""])
         out_file.write_text("\n".join(lines), encoding="utf-8")
-        print(f"\n  📄 结果已保存至: {out_file}")
+        print(f"\n  📄 {c('cyan', '结果已保存至')}: {out_file}")
 
-    print(f"\n🎉 全部完成! ({len(successes)}/{len(steps)} 步成功)\n")
+    print(c("bold", c("green", f"\n🎉 全部完成! ({len(successes)}/{len(steps)} 步成功)\n")))
 
     # 生成标准报告 JSON（与 Excel 模式格式一致）
     _generate_report_for_result(result, {"steps": steps, "max_retries": max_retries,
@@ -1876,9 +1905,12 @@ def run(
                 results.append(tr)
                 overall.add_result("failed")
 
-            # 每次完成打印总体进度
+            # 每次完成打印分隔线 + 总体进度
             with _print_lock:
-                print(f"\n{overall.summary_line()}\n", flush=True)
+                print()
+                print(c("dim", "─" * 62))
+                print(overall.summary_line(), flush=True)
+                print()
 
     # ── 批量写回 Excel ──
     if "transcribe" in steps:
@@ -2131,7 +2163,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             test_path = tc_dir / (used_stem + TRANSCODE_EXT)
             counter += 1
     if used_stem != stem:
-        print(f"  ⚠️  stem '{stem}' 已存在 → 使用 '{used_stem}'")
+        print(c("yellow", f"  ⚠️  stem '{stem}' 已存在 → 使用 '{used_stem}'"))
 
     result = TaskResult(
         sheet=sheet_name, id_val='-', title=input_path.name, stem=used_stem,
@@ -2254,7 +2286,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
         if analyze_text:
             lines.extend(["【AI关键词分析】", "", analyze_text, ""])
         out_file.write_text("\n".join(lines), encoding="utf-8")
-        print(f"\n  📄 结果已保存至: {out_file}")
+        print(f"\n  📄 {c('cyan', '结果已保存至')}: {out_file}")
 
     return result
 
@@ -2398,13 +2430,13 @@ if __name__ == "__main__":
     if args.url:
         parsed = parse_url(args.url)
         if not parsed:
-            print(f"\n❌ 无法识别的 URL: {args.url}")
-            print("支持的平台: YouTube, B站, 腾讯视频, 优酷")
-            print("URL 格式示例:")
-            print("  https://www.bilibili.com/video/BV1xxxyyyzzz")
-            print("  https://www.youtube.com/watch?v=xxxxxxxxxxx")
-            print("  https://v.qq.com/x/page/x0000xxxxx.html")
-            print("  https://v.youku.com/v_show/id_XXXXXXX.html")
+            print(c("red", f"\n❌ 无法识别的 URL: {args.url}"))
+            print(c("dim", "支持的平台: YouTube, B站, 腾讯视频, 优酷"))
+            print(c("dim", "URL 格式示例:"))
+            print(c("dim", "  https://www.bilibili.com/video/BV1xxxyyyzzz"))
+            print(c("dim", "  https://www.youtube.com/watch?v=xxxxxxxxxxx"))
+            print(c("dim", "  https://v.qq.com/x/page/x0000xxxxx.html"))
+            print(c("dim", "  https://v.youku.com/v_show/id_XXXXXXX.html"))
             sys.exit(1)
 
         platform = parsed["platform"]
@@ -2412,16 +2444,16 @@ if __name__ == "__main__":
         watch_url = parsed["watch_url"]
         pkey = parsed["pkey"]
 
-        print("\n── URL 任务 ──")
-        print(f"  平台: {platform}")
-        print(f"  视频ID: {video_id}")
-        print(f"  链接: {watch_url}")
+        print(c("dim", "\n── URL 任务 ──"))
+        print(f"  平台: {c('cyan', platform)}")
+        print(f"  视频ID: {c('cyan', video_id)}")
+        print(f"  链接: {c('cyan', watch_url)}")
 
         # dry-run 模式
         if args.dry_run:
-            print("\n── 开始执行 (dry-run) ──\n")
-            print(f"  将执行步骤: {' → '.join(steps)}")
-            print(f"  输出名称: {args.name if args.name else video_id}")
+            print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
+            print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
+            print(f"  输出名称: {c('cyan', args.name if args.name else video_id)}")
             sys.exit(0)
 
         # 构建文件路径: output/downloads/<platform>/<name>.mp4
@@ -2477,36 +2509,38 @@ if __name__ == "__main__":
     if args.input:
         input_path = Path(args.input).resolve()
         
-        print("\n── 文件校验 ──")
-        print(f"  文件: {input_path}")
+        print(c("dim", "\n── 文件校验 ──"))
+        print(f"  文件: {c('cyan', str(input_path))}")
         
         file_info = validate_input_file(input_path)
         
         if not file_info['valid']:
-            print(f"\n❌ 无法处理该文件:")
+            print(c("red", f"\n❌ 无法处理该文件:"))
             for err in file_info['errors']:
-                print(f"   - {err}")
+                print(c("red", f"   - {err}"))
             sys.exit(1)
         
-        print(f"  格式: {file_info['format']}")
+        print(f"  格式: {c('cyan', file_info['format'] or 'unknown')}")
         if file_info['has_video']:
-            print(f"  视频: {file_info['video_codec']} {file_info['width']}x{file_info['height']}")
+            video_info = f"{file_info['video_codec']} {file_info['width']}x{file_info['height']}"
+            print(f"  视频: {c('cyan', video_info)}")
         if file_info['has_audio']:
-            print(f"  音频: {file_info['audio_codec']}")
-        print(f"  时长: {int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d} ({file_info['duration']:.1f}s)")
+            print(f"  音频: {c('cyan', file_info['audio_codec'])}")
+        dur_label = f"{int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d}"
+        print(f"  时长: {c('cyan', dur_label)} ({file_info['duration']:.1f}s)")
         
         if file_info['errors']:
-            print(f"\n⚠️  警告:")
+            print(c("yellow", f"\n⚠️  警告:"))
             for err in file_info['errors']:
-                print(f"   - {err}")
+                print(c("yellow", f"   - {err}"))
         
-        print(f"\n  可执行步骤: {' → '.join(file_info['feasible_steps'])}")
+        print(f"\n  {c('green', '可执行步骤')}: {c('cyan', ' → '.join(file_info['feasible_steps']))}")
         
         # 检查请求的步骤是否都可行
         for step in steps:
             if step not in file_info['feasible_steps']:
-                print(f"\n❌ 错误: 文件不支持 '{step}' 步骤")
-                print(f"   支持的步骤: {', '.join(file_info['feasible_steps'])}")
+                print(c("red", f"\n❌ 错误: 文件不支持 '{step}' 步骤"))
+                print(c("dim", f"   支持的步骤: {', '.join(file_info['feasible_steps'])}"))
                 sys.exit(1)
         
         # 确定 sheet 名称（用于输出目录）
@@ -2522,11 +2556,11 @@ if __name__ == "__main__":
         
         # dry-run 模式
         if args.dry_run:
-            print(f"\n── 开始执行 (dry-run) ──\n")
-            print(f"  [本地文件] 将执行步骤: {' → '.join(steps)}")
-            print(f"  输入文件: {input_path}")
+            print(c("dim", f"\n── 开始执行 (dry-run) ──\n"))
+            print(f"  [本地文件] 将执行步骤: {c('cyan', ' → '.join(steps))}")
+            print(f"  输入文件: {c('cyan', str(input_path))}")
             if args.name:
-                print(f"  输出名称: {args.name}")
+                print(f"  输出名称: {c('cyan', args.name)}")
             sys.exit(0)
         
         # 执行流水线
@@ -2554,19 +2588,19 @@ if __name__ == "__main__":
         }
         report_path = generate_report([result], config, sheet_name=sheet_name)
         print_report_summary([result])
-        print(f"  整体状态: {result.overall_status}")
+        print(f"  整体状态: {c('green' if result.overall_status == 'success' else 'red', result.overall_status)}")
         if result.download:
-            print(f"  下载: {result.download.status}")
+            print(f"  {c('dim', '下载')}: {result.download.status}")
         if result.transcode:
-            print(f"  转码: {result.transcode.status}")
+            print(f"  {c('dim', '转码')}: {result.transcode.status}")
             if result.transcode.file:
-                print(f"    输出: {result.transcode.file}")
+                print(f"    {c('dim', '输出')}: {result.transcode.file}")
         if result.transcribe:
-            print(f"  识别: {result.transcribe.status}")
+            print(f"  {c('dim', '识别')}: {result.transcribe.status}")
             if result.transcribe.file:
-                print(f"    输出: {result.transcribe.file}")
+                print(f"    {c('dim', '输出')}: {result.transcribe.file}")
         if result.analyze:
-            print(f"  分析: {result.analyze.status}")
+            print(f"  {c('dim', '分析')}: {result.analyze.status}")
         
         if result.error:
             print(f"\n  错误: {result.error}")
