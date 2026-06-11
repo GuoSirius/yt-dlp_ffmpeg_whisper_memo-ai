@@ -20,7 +20,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { select, confirm } from '@inquirer/prompts';
+import { select, confirm, input } from '@inquirer/prompts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -252,6 +252,34 @@ async function main() {
     console.log(c('yellow', '\n⚠️  Uncommitted changes detected:\n'));
     console.log(runSilent('git status --short'));
     console.log('');
+
+    if (isDryRun) {
+      console.log(c('dim', '  (dry-run: skipping commit prompt)\n'));
+    } else {
+      const shouldCommit = await confirm({
+        message: 'Commit these changes before releasing?',
+        default: true,
+      });
+
+      if (shouldCommit) {
+        const msg = await input({
+          message: 'Commit message',
+          default: 'chore: update before release',
+        });
+        console.log('');
+        run('git add -A');
+        run(`git commit -m "${msg}"`);
+        console.log(c('green', '✅ Changes committed\n'));
+        // Re-check working dir: clean now
+        const recheck = runSilent('git status --porcelain');
+        if (recheck) {
+          console.log(c('yellow', '⚠️  Still have uncommitted files after commit. Please resolve manually.\n'));
+          process.exit(1);
+        }
+      } else {
+        console.log(c('yellow', '⚠️  Proceeding with uncommitted changes...\n'));
+      }
+    }
   } else {
     console.log(c('green', '✅ Working directory clean\n'));
   }

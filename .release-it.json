@@ -17,9 +17,7 @@
     "skipChecks": false
   },
   "github": {
-    "release": true,
-    "releaseName": "v${version}",
-    "autoGenerate": false,
+    "release": false,
     "web": true,
     "comments": {
       "submit": false,
