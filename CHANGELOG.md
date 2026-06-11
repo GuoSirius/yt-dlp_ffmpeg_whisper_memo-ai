@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.2.6] - 2026-06-11
+
+### Features
+
+- 报告按 sheet/站点分目录存储 (`6610c57`)
+- 统一三种来源报告格式 + 修复多处 bug (`2a6f606`)
+
+### Bug Fixes
+
+- groupBySheetMap 返回 Map 而非普通对象，修复 for...of 不可迭代错误 (`dfae532`)
+
+### Documentation
+
+- update (`6ddc48b`)
+- 修正 --input 模式的 {sheet} 表述为固定 local (`be61e29`)
+- 输出结构速查表 — 三来源×四环节对照 (`248168c`)
+
+
 ## [1.2.5] - 2026-06-11
 
 ### Features
