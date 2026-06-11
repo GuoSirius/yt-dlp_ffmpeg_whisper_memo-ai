@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.8] - 2026-06-11
+
+### Features
+
+- add colored console output and task separators (PY) (`d983920`)
+- add colored console output and task separators (JS) (`3119a74`)
+
+### Bug Fixes
+
+- add long-form platform key mappings + upgrade to bright ANSI colors (`f56cb1f`)
+- remove AI_TIMEOUT env, unify platform keys (`142bc37`)
+
+### Documentation
+
+- update (`82637ea`)
+- add missing WHISPER_SERVICE_MODEL to .env.example (`de1d4d8`)
+- restructure README with progressive layout and updated platform keys (`298f049`)
+
+
 ## [1.2.7] - 2026-06-11
 
 ### Features
