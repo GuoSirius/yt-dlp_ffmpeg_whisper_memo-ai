@@ -244,6 +244,10 @@ node process_videos.js --sheet "YouTube视频" --concurrency 2 --retry 3
 
 # 先干跑预览
 node process_videos.js --dry-run
+
+# Excel 数据量大时，偏移+限量调试
+node process_videos.js --offset 10 --limit 5 --dry-run  # 跳过前10条，预览5条
+node process_videos.js --limit 3 --concurrency 1        # 只处理前3条
 ```
 
 ### 重跑失败
@@ -344,6 +348,8 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 |---|---|---|---|
 | `--sheet <name>` | str | 全部 | 指定 sheet 名称 |
 | `--id <id>` | str | — | 指定 extra.id 或 title（单条测试） |
+| `--offset <n>` | int | 0 | 跳过前 N 条任务（从 0 开始），适合调试大量数据 |
+| `--limit <n>` | int | 0 | 最多处理 N 条任务，0 表示无限制 |
 | `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `analyze` |
 | `--force` | flag | off | 强制重做下载+转码，忽略已有文件 |
 | `--concurrency <n>` | int | 1 | 并发数，建议 2~3 |

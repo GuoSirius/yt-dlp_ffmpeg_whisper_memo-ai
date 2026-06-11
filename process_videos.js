@@ -8,6 +8,7 @@
  *   node process_videos.js --sheet "普诺赛中文站" --id 427
  *   node process_videos.js --step download
  *   node process_videos.js --dry-run
+ *   node process_videos.js --offset 10 --limit 5   # 跳过前10条，只处理5条
  */
 
 // ============================== 依赖 ==============================
@@ -1763,6 +1764,7 @@ async function run({
   targetSheet, targetId, steps, maxRetries, retryDelay,
   concurrency, force, dryRun, retryFailed,
   downloadTimeout, transcodeTimeout, transcribeTimeout, analyzeTimeout,
+  offset = 0, rowLimit = 0,
 }) {
   // ── 重跑失败模式 ──
   if (retryFailed) {
@@ -1772,7 +1774,7 @@ async function run({
 
   // ── 构建任务列表 ──
   const sheets = targetSheet ? [targetSheet] : VIDEO_SHEETS;
-  const tasks = [];
+  let tasks = [];
   for (const sheetName of sheets) {
     let rows = readExcelSheet(sheetName);
     if (targetId) {
@@ -1794,6 +1796,15 @@ async function run({
     for (const row of rows) {
       tasks.push({ row, sheetName });
     }
+  }
+
+  // ── 偏移/限量（全局，跨 sheet） ──
+  if (offset > 0 || rowLimit > 0) {
+    const start = offset;
+    const end = rowLimit > 0 ? start + rowLimit : undefined;
+    const originalLen = tasks.length;
+    tasks = tasks.slice(start, end);
+    logInfo(`applied offset=${start}, limit=${rowLimit || 'all'} → tasks: ${originalLen} → ${tasks.length}`);
   }
 
   logInfo(`tasks: ${tasks.length}, concurrency: ${concurrency}, max retries: ${maxRetries}`);
@@ -2069,6 +2080,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .option('--sheet <name>', '指定 sheet 名称')
     .option('--id <id>', '指定 extra.id 或 title（单条测试）')
+    .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', parseInt, 0)
+    .option('--limit <n>', '最多处理 N 条任务，默认无限制', parseInt, 0)
     .option('--step <step>', '指定执行步骤（可多次指定），如 --step transcode --step transcribe', (val, prev) => {
       const allowed = ['download', 'transcode', 'transcribe', 'analyze'];
       if (!allowed.includes(val)) {
@@ -2359,6 +2372,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     targetSheet: opts.sheet || null,
     targetId: opts.id || null,
     steps,
+    offset: opts.offset || 0,
+    rowLimit: opts.limit || 0,
     maxRetries: opts.retry,
     retryDelay: opts.retryDelay,
     concurrency: opts.concurrency,

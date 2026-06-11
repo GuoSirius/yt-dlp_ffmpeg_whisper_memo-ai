@@ -27,6 +27,9 @@
 
   # 干跑（只列任务，不执行）
   python process_videos.py --dry-run
+
+  # 偏移/限量（跳过前10个，只处理5个）
+  python process_videos.py --offset 10 --limit 5
 """
 
 from __future__ import annotations
@@ -1663,6 +1666,8 @@ def run(
     transcode_timeout: int = 600,
     transcribe_timeout: int = 600,
     analyze_timeout: int = 300,
+    offset: int = 0,
+    limit: int = 0,
 ):
     """主执行流程"""
     # ── 重跑失败模式 ──
@@ -1696,6 +1701,14 @@ def run(
         precompute_stems(df, sheet_name)
         for _, row in df.iterrows():
             tasks.append((row, sheet_name))
+
+    # ── 偏移/限量（全局，跨 sheet） ──
+    if offset > 0 or limit > 0:
+        start = offset
+        end = start + limit if limit > 0 else None
+        original_len = len(tasks)
+        tasks = tasks[start:end]
+        log.info(f"应用 offset={start}, limit={limit or '全部'} → 任务: {original_len} → {len(tasks)}")
 
     log.info(f"任务数量: {len(tasks)}，并发数: {concurrency}，最大重试: {max_retries}")
 
@@ -2180,6 +2193,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--sheet", help="指定 sheet 名称（默认全部视频 sheet）")
     parser.add_argument("--id", dest="vid_id", help="指定 extra.id 或 title（单条测试）")
+    parser.add_argument("--offset", type=int, default=0, help="跳过前 N 条任务（从 0 开始），默认 0")
+    parser.add_argument("--limit", type=int, default=0, help="最多处理 N 条任务，默认 0 表示无限制")
     parser.add_argument(
         "--step", choices=["download", "transcode", "transcribe", "analyze"],
         action="append",
@@ -2472,6 +2487,8 @@ if __name__ == "__main__":
         target_sheet=args.sheet,
         target_id=args.vid_id,
         steps=steps,
+        offset=args.offset,
+        limit=args.limit,
         max_retries=args.retry,
         retry_delay=args.retry_delay,
         concurrency=args.concurrency,
