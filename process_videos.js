@@ -79,9 +79,13 @@ const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youku';
 // ============================== 平台配置 ==============================
 const PLATFORM_COL_MAP = {
   tencent: COL_TENCENTVID,
+  tencentVid: COL_TENCENTVID,
   bilibili: COL_BILIBILIBVID,
+  bilibiliBvid: COL_BILIBILIBVID,
   youtube: COL_YOUTUBEID,
+  youtubeId: COL_YOUTUBEID,
   youku: COL_YOUKUID,
+  youkuId: COL_YOUKUID,
 };
 
 // ============================== 工具函数 ==============================
@@ -89,12 +93,12 @@ function c(color, text) {
   const colors = {
     bold:    '\x1b[1m',
     dim:     '\x1b[2m',
-    yellow:  '\x1b[33m',
-    cyan:    '\x1b[36m',
-    green:   '\x1b[32m',
-    red:     '\x1b[31m',
-    blue:    '\x1b[34m',
-    magenta: '\x1b[35m',
+    yellow:  '\x1b[93m',
+    cyan:    '\x1b[96m',
+    green:   '\x1b[92m',
+    red:     '\x1b[91m',
+    blue:    '\x1b[94m',
+    magenta: '\x1b[95m',
     reset:   '\x1b[0m',
   };
   return (colors[color] || '') + text + colors.reset;
@@ -110,9 +114,13 @@ const VIDEO_SHEETS = _VIDEO_SHEETS_RAW
 
 const _PKEY_ENV_PREFIX = {
   tencent: 'TENCENT',
+  tencentVid: 'TENCENT',
   bilibili: 'BILIBILI',
+  bilibiliBvid: 'BILIBILI',
   youtube: 'YOUTUBE',
+  youtubeId: 'YOUTUBE',
   youku: 'YOUKU',
+  youkuId: 'YOUKU',
 };
 
 function buildPlatformConfig() {

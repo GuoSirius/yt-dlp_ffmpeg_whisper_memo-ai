@@ -117,10 +117,14 @@ COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youku")
 
 # 平台 ID 列映射
 _PLATFORM_COL_MAP = {
-    "tencent": COL_TENCENTVID,
-    "bilibili": COL_BILIBILIBVID,
-    "youtube": COL_YOUTUBEID,
-    "youku": COL_YOUKUID,
+    "tencent":    COL_TENCENTVID,
+    "tencentVid": COL_TENCENTVID,
+    "bilibili":   COL_BILIBILIBVID,
+    "bilibiliBvid": COL_BILIBILIBVID,
+    "youtube":    COL_YOUTUBEID,
+    "youtubeId":  COL_YOUTUBEID,
+    "youku":      COL_YOUKUID,
+    "youkuId":    COL_YOUKUID,
 }
 
 # 平台优先级
@@ -135,9 +139,13 @@ VIDEO_SHEETS = [s.strip() for s in _VIDEO_SHEETS_RAW.split(",") if s.strip()] if
 # 平台 key → 环境变量前缀（使 .env 中的变量名简短可读）
 _PKEY_ENV_PREFIX = {
     "tencent":    "TENCENT",
-    "bilibili":  "BILIBILI",
-    "youtube":     "YOUTUBE",
-    "youku":       "YOUKU",
+    "tencentVid": "TENCENT",
+    "bilibili":   "BILIBILI",
+    "bilibiliBvid": "BILIBILI",
+    "youtube":    "YOUTUBE",
+    "youtubeId":  "YOUTUBE",
+    "youku":      "YOUKU",
+    "youkuId":    "YOUKU",
 }
 
 
@@ -223,12 +231,12 @@ def c(color: str, text: str) -> str:
     colors = {
         "bold":    colorama.Style.BRIGHT,
         "dim":     colorama.Style.DIM,
-        "yellow":  colorama.Fore.YELLOW,
-        "cyan":    colorama.Fore.CYAN,
-        "green":   colorama.Fore.GREEN,
-        "red":     colorama.Fore.RED,
-        "blue":    colorama.Fore.BLUE,
-        "magenta": colorama.Fore.MAGENTA,
+        "yellow":  colorama.Fore.LIGHTYELLOW_EX,
+        "cyan":    colorama.Fore.LIGHTCYAN_EX,
+        "green":   colorama.Fore.LIGHTGREEN_EX,
+        "red":     colorama.Fore.LIGHTRED_EX,
+        "blue":    colorama.Fore.LIGHTBLUE_EX,
+        "magenta": colorama.Fore.LIGHTMAGENTA_EX,
         "reset":   colorama.Style.RESET_ALL,
     }
     return colors.get(color, "") + text + colors["reset"]
