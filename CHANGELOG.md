@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0] - 2026-06-11
+
+### Bug Fixes
+
+- 安全漏洞修复 + dry-run 模式完善 + 全面测试套件 (`3677b6a`)
+
+### Refactoring
+
+- 输出目录统一归入 output/ 并清理测试产物 (`f5cad03`)
+- whisper/AI 硬编码参数改为 env 可配置 (`611b079`)
+
+
 ## [1.1.0] - 2026-06-11
 
 ### Features
