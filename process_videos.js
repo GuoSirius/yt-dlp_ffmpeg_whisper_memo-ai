@@ -1048,11 +1048,9 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       }
 
       // Run inference
-      const fileStream = fs.createReadStream(audioFile);
-      const fileStat = fs.statSync(audioFile);
+      const fileBlob = await fs.openAsBlob(audioFile);
       const form = new FormData();
-      // Use ReadStream directly - Node.js fetch supports it natively for FormData
-      form.append('file', fileStream, path.basename(audioFile));
+      form.append('file', fileBlob, path.basename(audioFile));
       form.append('temperature', '0.0');
       form.append('temperature_inc', '0.2');
       form.append('response_format', 'json');
@@ -1530,8 +1528,18 @@ async function runInputTask(opts) {
     if (!tcFile) {
       console.log(c('yellow', '\n⚠️  转码未产出文件，后续步骤将跳过\n'));
     }
+  } else if (steps.includes('transcribe')) {
+    // 无 transcode 步骤但有 transcribe：优先使用已有转码文件
+    const tcDir = path.join(TRANSCODED_DIR, sheetName);
+    const expectedTc = path.join(tcDir, stem + TRANSCODE_EXT);
+    if (fs.existsSync(expectedTc)) {
+      tcFile = expectedTc;
+      console.log(`  [${stem}] 🎵 转码: ${c('yellow', '使用已有文件 ' + path.basename(expectedTc))}`);
+    } else {
+      console.log(`  [${stem}] 🎵 转码: ${c('red', '未找到转码文件，将尝试用原始文件识别（可能失败）')}`);
+      tcFile = inputPath;
+    }
   } else {
-    // 无 transcode 步骤：直接用输入文件作为音频源
     tcFile = inputPath;
   }
 
@@ -2080,13 +2088,13 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .option('--sheet <name>', '指定 sheet 名称')
     .option('--id <id>', '指定 extra.id 或 title（单条测试）')
-    .option('--step <step>', '只执行某一步：download / transcode / transcribe / analyze', (val) => {
+    .option('--step <step>', '指定执行步骤（可多次指定），如 --step transcode --step transcribe', (val, prev) => {
       const allowed = ['download', 'transcode', 'transcribe', 'analyze'];
       if (!allowed.includes(val)) {
         console.error(`Invalid step: ${val}. Must be one of: ${allowed.join(', ')}`);
         process.exit(1);
       }
-      return val;
+      return [...(prev || []), val];
     })
     .option('--force', '强制重做下载+转码（忽略已有文件）')
     .option('--concurrency <n>', '并发数，默认 1', parseInt, 1)
@@ -2164,7 +2172,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     EXCEL_FILE = path.resolve(opts.file);
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
   }
-  const steps = opts.step ? [opts.step] : ['download', 'transcode', 'transcribe', 'analyze'];
+  const steps = opts.step?.length ? opts.step : ['download', 'transcode', 'transcribe', 'analyze'];
   // ── --url 模式：直接处理单个视频链接 ──
   if (opts.url) {
     const parsed = parseUrl(opts.url);
@@ -2280,10 +2288,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     const defaultSteps = fileInfo.feasibleSteps;
     // 用户可通过 --step 指定步骤，但只保留可行的
     let steps;
-    if (opts.step) {
-      steps = [opts.step].filter(s => defaultSteps.includes(s));
+    if (opts.step?.length) {
+      steps = opts.step.filter(s => defaultSteps.includes(s));
       if (steps.length === 0) {
-        console.log(c('yellow', `\n⚠️  --step ${opts.step} 不可行（文件不支持）\n`));
+        console.log(c('yellow', `\n⚠️  --step ${opts.step.join(', ')} 不可行（文件不支持）\n`));
         process.exit(1);
       }
     } else {

@@ -2064,9 +2064,19 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             result.error = f'转码失败: {err}'
             return result
     else:
-        # 不转码，直接使用输入文件
-        tc_file = input_path
-        result.transcode = StepResult('success', file=str(tc_file))
+        # 不转码：如果有 transcribe 步骤，优先使用已有转码文件
+        if 'transcribe' in steps:
+            expected_tc = (Path(TRANSCODED_DIR) / sheet_name / (stem + TRANSCODE_EXT)).resolve()
+            if expected_tc.exists():
+                tc_file = expected_tc
+                result.transcode = StepResult('success', file=str(tc_file))
+            else:
+                tc_file = input_path
+                result.transcode = StepResult('warning', file=str(tc_file),
+                                              error='未找到转码文件，将使用原始文件（识别可能失败）')
+        else:
+            tc_file = input_path
+            result.transcode = StepResult('success', file=str(tc_file))
 
     # ── 识别 ──
     if 'transcribe' in steps and tc_file:
@@ -2078,7 +2088,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
 
         try:
             text_file, retries, err = step_transcribe(
-                tc_file, sheet_name, max_retries, retry_delay, transcribe_timeout
+                tc_file, max_retries, retry_delay, transcribe_timeout
             )
         except Exception as e:
             text_file, retries, err = None, max_retries, str(e)[:500]
@@ -2145,7 +2155,8 @@ if __name__ == "__main__":
     parser.add_argument("--id", dest="vid_id", help="指定 extra.id 或 title（单条测试）")
     parser.add_argument(
         "--step", choices=["download", "transcode", "transcribe", "analyze"],
-        help="只执行指定步骤（默认全跑）",
+        action="append",
+        help="指定执行步骤（可多次指定，如 --step transcode --step transcribe）",
     )
     parser.add_argument("--force", action="store_true", help="强制重新执行，忽略已有文件")
     parser.add_argument(
@@ -2253,7 +2264,7 @@ if __name__ == "__main__":
         EXCEL_FILE = Path(args.file).resolve()
         log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
 
-    steps = [args.step] if args.step else ["download", "transcode", "transcribe", "analyze"]
+    steps = args.step if args.step else ["download", "transcode", "transcribe", "analyze"]
     
     # ── --input 模式：移除 download 步骤 ──
     if args.input and not args.step:
