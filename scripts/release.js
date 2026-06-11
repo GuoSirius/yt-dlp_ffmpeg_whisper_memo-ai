@@ -182,14 +182,17 @@ function generateChangelogEntry(version, date) {
 
 function updateChangelog(version, date) {
   const entry = generateChangelogEntry(version, date);
-  const existing = fs.existsSync(CHANGELOG_PATH)
+  let existing = fs.existsSync(CHANGELOG_PATH)
     ? fs.readFileSync(CHANGELOG_PATH, 'utf-8')
     : '# Changelog\n\n';
 
-  // Insert new entry after the header
+  // 移除可能存在的同名版本旧条目（防止重复）
+  const re = new RegExp(`\\n## ${version.replace(/\./g, '\\.')} — .*?(?=\\n## |$)`, 's');
+  existing = existing.replace(re, '');
+
+  // 插入新条目到 header 之后
   const headerEnd = existing.indexOf('\n## ');
   if (headerEnd === -1) {
-    // No existing entries
     fs.writeFileSync(CHANGELOG_PATH, `# Changelog\n\n${entry}\n`);
   } else {
     const before = existing.slice(0, headerEnd);
