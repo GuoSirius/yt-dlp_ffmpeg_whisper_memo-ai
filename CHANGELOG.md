@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.4] - 2026-06-11
+
+### Features
+
+- release body 自动提取当前版本 CHANGELOG 段 (`4f03302`)
+
+### Bug Fixes
+
+- sed 模式改用 #+ 匹配任意层级标题，兼容 major/minor/patch 不同 # 数量 (`86f2e5b`)
+
+### Documentation
+
+- update (`9e4fd55`)
+
+
 ## [1.2.3] - 2026-06-11
 
 ### Bug Fixes
