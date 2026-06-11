@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.0] - 2026-06-11
+
+### Features
+
+- add --input option for local file processing (Node.js + Python) (`4805e3b`)
+
+### Bug Fixes
+
+- whisper transcribe FormData + multi --step + auto-find wav (`f8c9fa2`)
+
+
 ## [1.0.4] - 2026-06-11
 
 ### Features
