@@ -34,7 +34,7 @@ dotenv.config({ path: _dotenvPath });
 // ============================== 路径配置 ==============================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const BASE_DIR = path.resolve(__dirname);
+const BASE_DIR = process.cwd();
 
 function envPath(key, defaultValue) {
   const val = process.env[key] || defaultValue;

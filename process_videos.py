@@ -62,7 +62,8 @@ load_dotenv(dotenv_path=_env_file)
 
 # ─────────────────────────────── 路径配置 ───────────────────────────────────
 
-BASE_DIR = Path(__file__).parent.resolve()
+SCRIPT_DIR = Path(__file__).parent.resolve()  # 脚本自带资源（.env.example 等）
+BASE_DIR = Path.cwd()                          # 用户数据路径（Excel、下载、输出等）
 
 def _env_path(key: str, default: str) -> Path:
     """读取环境变量，如果是相对路径则相对于 BASE_DIR，绝对路径则直接使用"""
@@ -2243,7 +2244,7 @@ if __name__ == "__main__":
 
     # ── init 模式 ──
     if args.init:
-        src = BASE_DIR / ".env.example"
+        src = SCRIPT_DIR / ".env.example"
         if not src.exists():
             print(f"错误: 找不到 {src}", file=sys.stderr)
             sys.exit(1)
