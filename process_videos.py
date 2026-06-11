@@ -108,10 +108,10 @@ COL_ID = os.getenv("COL_ID", "extra.id")
 COL_TITLE = os.getenv("COL_TITLE", "title")
 COL_CONTENT = os.getenv("COL_CONTENT", "content")
 COL_KEYWORDS = os.getenv("COL_KEYWORDS", "keywords")
-COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencent")
-COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibili")
-COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtube")
-COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youku")
+COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencentVid")
+COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibiliBvid")
+COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtubeId")
+COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youkuId")
 
 # ──────────────────────────────── 平台配置 ──────────────────────────────────
 
@@ -743,7 +743,7 @@ def step_analyze(
     model = os.getenv("AI_MODEL", "")
     prompt_tpl = os.getenv(
         "AI_PROMPT_TPL",
-        "帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。重要规则：如果内容是英文，关键词必须全部是英文，绝对不能输出中文关键词；如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}"
+        "帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。如果内容是全英文的，则关键词全部是英文，如果内容中含有中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}"
     )
     ai_timeout = timeout
 
@@ -2180,7 +2180,7 @@ def validate_input_file(file_path):
             result['feasible_steps'].append('transcode')
         if result['has_audio']:
             result['feasible_steps'].extend(['transcribe', 'analyze'])
-        
+
         # 无视频无音频 → 所有步骤不可行
         if not result['has_video'] and not result['has_audio']:
             result['feasible_steps'] = []
@@ -2195,7 +2195,7 @@ def validate_input_file(file_path):
     return result
 
 
-def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, force, 
+def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, force,
                    transcode_timeout, transcribe_timeout, analyze_timeout, custom_name=None,
                    whisper_available=True):
     """--input 模式的独立流水线"""
@@ -2294,9 +2294,12 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             result.analyze = StepResult('skipped', error='识别步骤未成功，跳过 AI 分析')
         else:
             try:
+                ai_start = time.monotonic()
                 analyze_ok, retries, err = step_analyze(
                     result.transcribe.file, max_retries, retry_delay, analyze_timeout, result.stem
                 )
+                if analyze_ok:
+                    print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(analyze_ok)} 字符）", flush=True)
             except Exception as e:
                 analyze_ok, retries, err = False, max_retries, str(e)[:500]
 
@@ -2337,6 +2340,121 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             lines.extend(["【AI关键词分析】", "", analyze_text, ""])
         out_file.write_text("\n".join(lines), encoding="utf-8")
         print(f"\n  📄 {c('cyan', '结果已保存至')}: {out_file}")
+
+    return result
+
+
+# ─────────────────────────────── 纯文本 AI 分析（--content 模式） ─────────────────
+
+def run_content_task(content, name, steps, max_retries, retry_delay, analyze_timeout,
+                     force=False, dry_run=False):
+    """--content 模式：纯文本 → AI 关键词提取"""
+    content_path = Path(content).resolve()
+    content_text = ""
+    from_file = False
+
+    if content_path.exists() and content_path.is_file():
+        content_text = content_path.read_text(encoding="utf-8").strip()
+        from_file = True
+        print(f"  {c('dim', '从文件读取:')} {content_path} ({len(content_text)} 字符)")
+    else:
+        content_text = content
+
+    if not content_text or not content_text.strip():
+        print(c("red", "错误: --content 文本内容为空"), file=sys.stderr)
+        sys.exit(1)
+
+    # 确定输出名称
+    if name:
+        stem = safe_filename(name)
+    elif from_file:
+        stem = safe_filename(content_path.stem)
+    else:
+        stem = safe_filename(content_text.replace("\n", " ").replace("\r", "")[:32].strip())
+
+    if not steps:
+        steps = ["analyze"]
+
+    print(c("dim", "\n── 开始执行 (内容分析) ──\n"))
+    print(f"  输出名称:  {c('cyan', stem)}")
+    print(f"  内容长度:  {c('cyan', str(len(content_text)) + ' 字符')}")
+    print(f"  执行步骤:  {c('cyan', ' → '.join(steps))}")
+
+    if dry_run:
+        print("")
+        sys.exit(0)
+
+    sheet_name = "content"
+
+    result = TaskResult(
+        sheet=sheet_name,
+        id_val="-",
+        title=content[:50] if not from_file else content_path.name,
+        stem=stem,
+        platform="local",
+        video_url=None,
+        overall_status="pending",
+        download=StepResult("skipped"),
+        transcode=StepResult("skipped"),
+        transcribe=StepResult("success", file=content_text),
+    )
+
+    # ── AI 分析 ──
+    if "analyze" in steps:
+        ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
+        if not ai_enabled:
+            result.analyze = StepResult("skipped")
+            print(f"  [{stem}] {c('yellow', 'AI 分析已禁用 (AI_ENABLED=false)')}", flush=True)
+        else:
+            print(f"  [{stem}] {c('cyan', '开始 AI 分析...')}", flush=True)
+            try:
+                ai_start = time.monotonic()
+                kw, retries, err = step_analyze(
+                    content_text, max_retries, retry_delay, analyze_timeout, stem
+                )
+                if kw:
+                    print(f"  [{stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(kw)} 字符）", flush=True)
+                    result.analyze = StepResult("success", file=kw, retries_used=retries)
+                else:
+                    print(f"  [{stem}] {c('red', 'AI 分析失败')}: {err}", flush=True)
+                    result.analyze = StepResult("failed", error=err, retries_used=retries)
+            except Exception as e:
+                result.analyze = StepResult("failed", error=str(e)[:500], retries_used=max_retries)
+                print(f"  [{stem}] {c('red', 'AI 分析异常')}: {str(e)[:200]}", flush=True)
+    else:
+        result.analyze = StepResult("skipped")
+
+    result.overall_status = "success" if (result.analyze and result.analyze.status == "success") else "partial"
+
+    # ── 保存文本结果 ──
+    an = result.analyze
+    analyze_text = an.file if (an and an.status == "success" and isinstance(an.file, str)) else ""
+    if content_text or analyze_text:
+        out_dir = REPORTS_DIR / sheet_name / "tasks"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{stem}.txt"
+        lines = [
+            f"来源: --content",
+            f"输出名称: {stem}",
+            f"内容长度: {len(content_text)} 字符",
+            "", "=" * 60, "",
+            "【原始内容】", "", content_text, "",
+        ]
+        if analyze_text:
+            lines.extend(["【AI 分析关键词】", "", analyze_text, ""])
+        out_file.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\n  {c('cyan', '报告已保存:')} {out_file}")
+
+    # ── 总结 ──
+    print("")
+    success_parts = [label for label, cond in [
+        ("analyze", analyze_text),
+    ] if cond]
+    failed_parts = [s for s in steps if s != "download" and s not in ["analyze"] and not success_parts]
+    if not failed_parts and analyze_text:
+        print(c("green", "✅ 全部步骤执行成功"))
+    else:
+        print(c("yellow", f"⚠️  部分步骤未成功"))
 
     return result
 
@@ -2419,6 +2537,10 @@ if __name__ == "__main__":
         "--input",
         help="指定本地视频文件路径（跳过下载，直接转码→识别→分析）",
     )
+    parser.add_argument(
+        "--content",
+        help="直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，直接做 AI 分析",
+    )
     args = parser.parse_args()
 
     # ── init 模式 ──
@@ -2471,11 +2593,11 @@ if __name__ == "__main__":
         log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
 
     steps = args.step if args.step else ["download", "transcode", "transcribe", "analyze"]
-    
+
     # ── --input 模式：移除 download 步骤 ──
     if args.input and not args.step:
         steps = ["transcode", "transcribe", "analyze"]
-    
+
     # ── --url 模式：直接处理单个视频链接 ──
     if args.url:
         parsed = parse_url(args.url)
@@ -2558,18 +2680,18 @@ if __name__ == "__main__":
     # ── --input 模式：直接处理本地视频文件 ──
     if args.input:
         input_path = Path(args.input).resolve()
-        
+
         print(c("dim", "\n── 文件校验 ──"))
         print(f"  文件: {c('cyan', str(input_path))}")
-        
+
         file_info = validate_input_file(input_path)
-        
+
         if not file_info['valid']:
             print(c("red", f"\n❌ 无法处理该文件:"))
             for err in file_info['errors']:
                 print(c("red", f"   - {err}"))
             sys.exit(1)
-        
+
         print(f"  格式: {c('cyan', file_info['format'] or 'unknown')}")
         if file_info['has_video']:
             video_info = f"{file_info['video_codec']} {file_info['width']}x{file_info['height']}"
@@ -2578,24 +2700,24 @@ if __name__ == "__main__":
             print(f"  音频: {c('cyan', file_info['audio_codec'])}")
         dur_label = f"{int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d}"
         print(f"  时长: {c('cyan', dur_label)} ({file_info['duration']:.1f}s)")
-        
+
         if file_info['errors']:
             print(c("yellow", f"\n⚠️  警告:"))
             for err in file_info['errors']:
                 print(c("yellow", f"   - {err}"))
-        
+
         print(f"\n  {c('green', '可执行步骤')}: {c('cyan', ' → '.join(file_info['feasible_steps']))}")
-        
+
         # 检查请求的步骤是否都可行
         for step in steps:
             if step not in file_info['feasible_steps']:
                 print(c("red", f"\n❌ 错误: 文件不支持 '{step}' 步骤"))
                 print(c("dim", f"   支持的步骤: {', '.join(file_info['feasible_steps'])}"))
                 sys.exit(1)
-        
+
         # 确定 sheet 名称（用于输出目录）
         sheet_name = args.sheet if args.sheet else "local"
-        
+
         # 检查 whisper 可用性
         whisper_available = True
         if "transcribe" in steps:
@@ -2603,7 +2725,7 @@ if __name__ == "__main__":
             if not whisper_available:
                 backend = "local CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
                 log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
-        
+
         # dry-run 模式
         if args.dry_run:
             print(c("dim", f"\n── 开始执行 (dry-run) ──\n"))
@@ -2612,7 +2734,7 @@ if __name__ == "__main__":
             if args.name:
                 print(f"  输出名称: {c('cyan', args.name)}")
             sys.exit(0)
-        
+
         # 执行流水线
         result = run_input_task(
             input_path=input_path,
@@ -2651,10 +2773,24 @@ if __name__ == "__main__":
                 print(f"    {c('dim', '输出')}: {result.transcribe.file}")
         if result.analyze:
             print(f"  {c('dim', '分析')}: {result.analyze.status}")
-        
+
         if result.error:
             print(f"\n  错误: {result.error}")
-        
+
+        sys.exit(0)
+
+    # ── --content 模式：纯文本 AI 分析 ──
+    if args.content:
+        result = run_content_task(
+            content=args.content,
+            name=args.name,
+            steps=steps,
+            max_retries=args.retry,
+            retry_delay=args.retry_delay,
+            analyze_timeout=args.analyze_timeout,
+            force=args.force,
+            dry_run=args.dry_run,
+        )
         sys.exit(0)
 
     run(
