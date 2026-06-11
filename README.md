@@ -439,7 +439,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | `--file <path>` | path | — | 指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量） |
 | `--input <path>` | path | — | 指定本地视频文件路径（跳过下载，直接转码→识别→分析） |
 | `--url <url>` | str | — | 直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接 |
-| `--content <text|path>` | str | — | 直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，仅做 AI 分析 |
+| `--content <text 或 path>` | str | — | 直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，仅做 AI 分析 |
 | `--content-column <col>` | str | — | Excel 模式：指定包含已有文本的列名，批量做 AI 分析（自动设 --step analyze） |
 | `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用） |
 | `--env-file <path>` | path | .env | 指定要加载的 .env 文件路径 |
