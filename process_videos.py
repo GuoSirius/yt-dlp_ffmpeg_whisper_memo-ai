@@ -604,6 +604,8 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600,
     返回 (完整输出, returncode)。
     """
     env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     if extra_env:
         env.update(extra_env)
     proc = subprocess.Popen(
@@ -645,21 +647,22 @@ def parse_ytdlp_progress(line: str) -> str | None:
       "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
       "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
     """
-    m = re.search(r'\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)', line)
+    m = re.search(r'\[download\]\s+([\d.]+%)\s+of\s+~?\s*([\d.]+[KMG]iB)', line)
     if not m:
         if "[download] Destination:" in line:
             return "写入文件..."
+        if "[ExtractAudio]" in line or "[Merger]" in line or "[ffmpeg]" in line:
+            return "合并音视频..."
+        if "downloading webpage" in line.lower() or "[youtube]" in line:
+            return "解析页面..."
         return None
     pct  = m.group(1)       # e.g. "12.3%"
     size = m.group(2)       # e.g. "50.00MiB"
-    spd  = (re.search(r'at\s+([\d.]+ ?[KMG]?i?B/s)', line) or [None])[0] or "?"
-    eta  = (re.search(r'ETA\s+([\d:]+)',      line) or [None])[0] or "?"
+    spd_m = re.search(r'at\s+([\d.]+ ?[KMG]?i?B/s)', line)
+    spd = spd_m.group(1) if spd_m else "?"
+    eta_m = re.search(r'ETA\s+([\d:]+)', line)
+    eta = eta_m.group(1) if eta_m else "?"
     return f"DL {pct} of {size} @ {spd} ETA {eta}"
-    if "[ExtractAudio]" in line or "[Merger]" in line or "[ffmpeg]" in line:
-        return "合并音视频..."
-    if "Downloading webpage" in line.lower() or "[youtube]" in line:
-        return "解析页面..."
-    return None
 
 
 def get_duration(filepath: Path) -> float | None:
@@ -830,8 +833,9 @@ def step_download(
         print(f"  [{stem}] {c('cyan', '开始下载')} (平台={pkey})", flush=True)
         print(f"  [{stem}] {url}", flush=True)
 
-    cmd = [
-        YTDLP, url,
+    base_cmd = [sys.executable, "-m", "yt_dlp"] if YTDLP == "yt-dlp" else [YTDLP]
+    cmd = base_cmd + [
+        url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
         "--newline",               # 进度行以 \n 结尾，确保逐行可读

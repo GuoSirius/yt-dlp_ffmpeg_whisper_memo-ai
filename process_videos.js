@@ -786,7 +786,7 @@ function parseYtdlpProgress(line) {
   // Parse yt-dlp progress lines like:
   //   "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
   //   "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
-  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)/);
+  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?\s*([\d.]+[KMG]iB)/);
   if (!m) return null;
   const pct  = m[1];                // e.g. "12.3%"
   const size = m[2];                // e.g. "50.00MiB"
