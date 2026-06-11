@@ -1340,11 +1340,10 @@ function printReportSummary(results) {
 // ============================== 环境预检 + 用户确认 ==============================
 async function checkAndConfirmEnv(envCheck, dryRun, confirmMsg) {
   if (envCheck.allOk) return true;
-  console.log(`\n${'='.repeat(60)}`);
-  console.log('  \u26a0\ufe0f  工具/服务预检：以下依赖不可用');
-  console.log('='.repeat(60));
-  for (const issue of envCheck.issues) console.log(`  \u2022 ${issue}`);
-  console.log('\n  涉及的步骤将失败。');
+  console.log(styleSection('工具/服务预检'));
+  lockedPrint(c('yellow', '以下依赖不可用:'));
+  for (const issue of envCheck.issues) lockedPrint(c('dim', `  • ${issue}`));
+  lockedPrint(c('yellow', '\n涉及的步骤将失败。'));
   if (dryRun) return true;
   try {
     const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
@@ -1805,7 +1804,7 @@ async function runInputTask(opts) {
       lines.push('【AI 分析关键词】', '', analyzeText);
     }
     fs.writeFileSync(outFile, lines.join('\n'), 'utf-8');
-    console.log(`\n  📄 报告已保存: ${outFile}`);
+    console.log(`\n  ${c('cyan', '报告已保存:')} ${outFile}`);
   }
 
   // ── 总结 ──
@@ -1847,7 +1846,7 @@ async function runContentTask(opts) {
   if (fs.existsSync(contentPath) && fs.statSync(contentPath).isFile()) {
     contentText = fs.readFileSync(contentPath, 'utf-8').trim();
     fromFile = true;
-    console.log(`  📖 从文件读取: ${contentPath} (${contentText.length} 字符)`);
+    console.log(`  ${c('dim', '从文件读取:')} ${contentPath} (${contentText.length} 字符)`);
   } else {
     contentText = content;
   }
@@ -1892,21 +1891,22 @@ async function runContentTask(opts) {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (!aiEnabled) {
       result.analyze = new StepResult('skipped');
-      console.log(`  [${stem}] AI 分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+      lockedPrint(styleWarn(`[${stem}] AI 分析已禁用 (AI_ENABLED=false)`));
     } else {
-      console.log(`  [${stem}] 开始 AI 分析...`);
+      logStep(`[${stem}] 开始 AI 分析...`);
       try {
         const { text: kw, retries, error } = await stepAnalyze(
           contentText, maxRetries, retryDelay, analyzeTimeout, stem
         );
         result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
         if (kw) {
-          console.log(`  [${stem}] AI 分析完成 (${kw.length} 字符)`);
+          lockedPrint(styleDone(`[${stem}] AI 分析完成 (${kw.length} 字符)`));
         } else {
-          console.log(`  [${stem}] AI 分析失败: ${error}`);
+          lockedPrint(styleFail(`[${stem}] AI 分析失败: ${error}`));
         }
       } catch (e) {
         result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
+        lockedPrint(styleFail(`[${stem}] AI 分析异常: ${(e.message || '').slice(0, 200)}`));
       }
     }
   }
@@ -1930,7 +1930,7 @@ async function runContentTask(opts) {
       lines.push('【AI 分析关键词】', '', analyzeText);
     }
     fs.writeFileSync(outFile, lines.join('\n'), 'utf-8');
-    console.log(`\n  报告已保存: ${outFile}`);
+    lockedPrint(c('cyan', `\n  报告已保存: ${outFile}`));
   }
 
   // ── 6. 生成标准报告 JSON ──
