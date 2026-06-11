@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.7] - 2026-06-11
+
+### Features
+
+- 补充所有模式 README 示例 + 修复下载和AI分析进度显示 (`9aa2160`)
+- --content / --content-column + B站 Firefox cookie (`e25a4a8`)
+
+### Bug Fixes
+
+- 修复JS报告时间戳小数点导致文件名出现两个点的问题 (`c0abe90`)
+
+### Documentation
+
+- update (`df4d7b6`)
+
+
 ## [1.2.6] - 2026-06-11
 
 ### Features
