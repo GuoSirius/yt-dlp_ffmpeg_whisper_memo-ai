@@ -1,5 +1,5 @@
 {
-  "name": "video-processor",
+  "name": "video-pipeline",
   "version": "1.0.3",
   "description": "视频下载、转码、文本识别、AI 关键词分析一体化流程 CLI 工具",
   "keywords": [
@@ -30,7 +30,7 @@
   "type": "module",
   "main": "process_videos.js",
   "bin": {
-    "video-processor": "process_videos.js"
+    "video-pipeline": "process_videos.js"
   },
   "files": [
     "process_videos.js",
