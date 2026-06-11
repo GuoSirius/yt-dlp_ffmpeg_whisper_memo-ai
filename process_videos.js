@@ -317,6 +317,69 @@ function buildUrl(pkey, vid) {
   const tpl = PLATFORM_CONFIG[pkey]?.url_tpl || '';
   return tpl.replace(`{${pkey}}`, vid);
 }
+// ═══════════════════════════════════════════════════════════════════
+// URL 解析（--url 模式）
+// ═══════════════════════════════════════════════════════════════════
+
+const URL_PLATFORM_MAP = [
+  {
+    platform: 'bilibili',
+    pkey: 'bilibiliBvid',
+    patterns: [
+      /bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})/,
+      /b23\.tv\/([a-zA-Z0-9]+)/,
+      /player\.bilibili\.com\/player\.html\?[^"'\s]*\baid=(\d+)/,
+    ],
+  },
+  {
+    platform: 'youtube',
+    pkey: 'youtubeId',
+    patterns: [
+      /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+    ],
+  },
+  {
+    platform: 'tencent',
+    pkey: 'tencentVid',
+    patterns: [
+      /v\.qq\.com\/x\/page\/([a-zA-Z0-9]+)\.html/,
+      /v\.qq\.com\/x\/cover\/[^/]+\/([a-zA-Z0-9]+)\.html/,
+      /[?&]vid=([a-zA-Z0-9]+)/,
+    ],
+  },
+  {
+    platform: 'youku',
+    pkey: 'youkuId',
+    patterns: [
+      /v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html/,
+    ],
+  },
+];
+
+function parseUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  url = url.trim();
+
+  // 提取 iframe src
+  const iframeMatch = url.match(/src=["']([^"']+)["']/);
+  if (iframeMatch) url = iframeMatch[1];
+
+  for (const entry of URL_PLATFORM_MAP) {
+    for (const re of entry.patterns) {
+      const m = url.match(re);
+      if (m && m[1]) {
+        return {
+          platform: entry.platform,
+          pkey: entry.pkey,
+          videoId: m[1],
+          watchUrl: url,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 
 // ============================== stem 去重 ==============================
 function safeId(val) {
@@ -368,6 +431,40 @@ function precomputeStems(rows, sheetName) {
     row._stemCache[sheetName] = finalStems[i];
   });
 }
+async function resolveUrlConflict(proposedPath) {
+  if (!fs.existsSync(proposedPath)) return { action: 'proceed', path: proposedPath };
+
+  const stem = path.basename(proposedPath, path.extname(proposedPath));
+  const dir = path.dirname(proposedPath);
+  const ext = path.extname(proposedPath);
+
+  console.log(`\n⚠️  文件已存在: ${c('yellow', proposedPath)}`);
+
+  const action = await select({
+    message: '如何处理?',
+    choices: [
+      { name: '覆盖 (重新下载替换)', value: 'overwrite' },
+      { name: '跳过 (保留已有文件)', value: 'skip' },
+      { name: '自定义文件名', value: 'custom' },
+    ],
+  });
+
+  if (action === 'skip') return { action: 'skip', path: null };
+  if (action === 'overwrite') return { action: 'proceed', path: proposedPath };
+
+  // custom name
+  const customName = await input({
+    message: '输入自定义文件名 (不含扩展名):',
+    default: stem,
+  });
+  if (!customName.trim()) {
+    console.log(c('yellow', '文件名不能为空，使用默认名称'));
+    return { action: 'proceed', path: proposedPath };
+  }
+  const newPath = path.join(dir, `${customName}${ext}`);
+  return resolveUrlConflict(newPath);
+}
+
 
 function stemName(row, sheetName = '') {
   if (sheetName && row._stemCache && row._stemCache[sheetName]) {
@@ -1262,6 +1359,120 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
 }
 
 // ============================== 主控流程 ==============================
+// ═══════════════════════════════════════════════════════════════════
+// URL 直链流水线（--url 模式）
+// ═══════════════════════════════════════════════════════════════════
+
+async function runUrlTask(opts) {
+  const {
+    watchUrl, platform, pkey, videoId, stem, dlDir, steps,
+    maxRetries, retryDelay, force,
+    downloadTimeout, transcodeTimeout, transcribeTimeout, analyzeTimeout,
+    whisperAvailable,
+  } = opts;
+
+  const sheetName = platform;
+  const platformField = PLATFORM_CONFIG[pkey]?.field || '';
+
+  // 构建合成 row（模拟 Excel 行结构）
+  const syntheticRow = { _stemCache: {} };
+  syntheticRow._stemCache[sheetName] = stem;
+  if (platformField) syntheticRow[platformField] = videoId;
+  if (COL_ID) syntheticRow[COL_ID] = videoId;
+  if (COL_TITLE) syntheticRow[COL_TITLE] = videoId;
+
+  console.log(c('dim', '\n── 开始执行 ──\n'));
+
+  const result = await processOneTask(
+    syntheticRow, sheetName, steps, maxRetries, retryDelay, force,
+    whisperAvailable, '', downloadTimeout, transcodeTimeout,
+    transcribeTimeout, analyzeTimeout,
+  );
+
+  // ── 展示结果 ──
+  console.log(c('dim', '\n── 结果 ──\n'));
+  const successes = [];
+
+  if (result.download) {
+    if (result.download.file && fs.existsSync(result.download.file)) {
+      const size = (fs.statSync(result.download.file).size / 1024 / 1024).toFixed(1) + ' MB';
+      console.log(`  \uD83D\uDCE5 下载: ${c('green', result.download.file)} (${size})`);
+      successes.push('download');
+    } else if (result.download.status === 'skipped') {
+      console.log(`  \uD83D\uDCE5 下载: ${c('yellow', '已跳过 (文件已存在)')}`);
+      successes.push('download');
+    } else {
+      console.log(`  \uD83D\uDCE5 下载: ${c('red', '失败')} — ${result.download.error || ''}`);
+    }
+  }
+
+  if (result.transcode) {
+    if (result.transcode.file && fs.existsSync(result.transcode.file)) {
+      const size = (fs.statSync(result.transcode.file).size / 1024 / 1024).toFixed(1) + ' MB';
+      console.log(`  \uD83C\uDFB5 转码: ${c('green', result.transcode.file)} (${size})`);
+      successes.push('transcode');
+    } else if (result.transcode.status === 'skipped') {
+      console.log(`  \uD83C\uDFB5 转码: ${c('yellow', '已跳过 (文件已存在)')}`);
+      successes.push('transcode');
+    } else {
+      console.log(`  \uD83C\uDFB5 转码: ${c('red', '失败')} — ${result.transcode.error || ''}`);
+    }
+  }
+
+  if (result.transcribe) {
+    // transcribe 的 file 字段存放的是文本内容
+    const text = result.transcribe.file;
+    if (text && typeof text === 'string') {
+      console.log(`  \uD83D\uDCDD 识别: ${c('green', text.length + ' \u5B57\u7B26')}`);
+      successes.push('transcribe');
+    } else if (result.transcribe.status === 'skipped') {
+      console.log(`  \uD83D\uDCDD 识别: ${c('yellow', '已跳过')}`);
+      successes.push('transcribe');
+    } else {
+      console.log(`  \uD83D\uDCDD 识别: ${c('red', '失败')} — ${result.transcribe.error || ''}`);
+    }
+  }
+
+  if (result.analyze) {
+    // analyze 的 file 字段存放的是关键词文本
+    const text = result.analyze.file;
+    if (text && typeof text === 'string') {
+      console.log(`  \uD83E\uDD16 AI\u5206\u6790: ${c('green', text.length + ' \u5B57\u7B26')}`);
+      successes.push('analyze');
+    } else if (result.analyze.status === 'skipped') {
+      console.log(`  \uD83E\uDD16 AI\u5206\u6790: ${c('yellow', '已跳过')}`);
+    } else {
+      console.log(`  \uD83E\uDD16 AI\u5206\u6790: ${c('red', '失败')} — ${result.analyze.error || ''}`);
+    }
+  }
+
+  // 保存文本结果
+  const transcribeText = (result.transcribe && typeof result.transcribe.file === 'string') ? result.transcribe.file : '';
+  const analyzeText = (result.analyze && typeof result.analyze.file === 'string') ? result.analyze.file : '';
+
+  if (transcribeText || analyzeText) {
+    const outDir = path.join(REPORTS_DIR, 'url-tasks');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outFile = path.join(outDir, `${stem}.txt`);
+    const lines = [
+      `URL: ${watchUrl}`,
+      `\u5E73\u53F0: ${platform}`,
+      `\u89C6\u9891ID: ${videoId}`,
+      '', '='.repeat(60), '',
+    ];
+    if (transcribeText) {
+      lines.push('\u3010\u8BED\u97F3\u8BC6\u522B\u5185\u5BB9\u3011', '', transcribeText, '');
+    }
+    if (analyzeText) {
+      lines.push('\u3010AI\u5173\u952E\u8BCD\u5206\u6790\u3011', '', analyzeText, '');
+    }
+    fs.writeFileSync(outFile, lines.join('\n'), 'utf-8');
+    console.log(`\n  \uD83D\uDCC4 \u7ED3\u679C\u5DF2\u4FDD\u5B58\u81F3: ${c('cyan', outFile)}`);
+  }
+
+  console.log(c('bold', c('green', `\n\uD83C\uDF89 \u5168\u90E8\u5B8C\u6210! (${successes.length}/${steps.length} \u6B65\u6210\u529F)\n`)));
+}
+
 async function run({
   targetSheet, targetId, steps, maxRetries, retryDelay,
   concurrency, force, dryRun, retryFailed,
@@ -1632,6 +1843,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
     .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
+    .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
+    .option('--name <name>', '指定下载文件名，不含扩展名（与 --url 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）');
 
   program.parse();
@@ -1694,6 +1907,81 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
   }
   const steps = opts.step ? [opts.step] : ['download', 'transcode', 'transcribe', 'analyze'];
+  // ── --url 模式：直接处理单个视频链接 ──
+  if (opts.url) {
+    const parsed = parseUrl(opts.url);
+    if (!parsed) {
+      console.error(c('red', `❌ 无法识别的 URL: ${opts.url}`));
+      console.error(c('yellow', '支持的平台: YouTube, B站, 腾讯视频, 优酷'));
+      console.error(c('dim', 'URL 格式示例:'));
+      console.error(c('dim', '  https://www.bilibili.com/video/BV1xxxyyyzzz'));
+      console.error(c('dim', '  https://www.youtube.com/watch?v=xxxxxxxxxxx'));
+      console.error(c('dim', '  https://v.qq.com/x/page/x0000xxxxx.html'));
+      console.error(c('dim', '  https://v.youku.com/v_show/id_XXXXXXX.html'));
+      process.exit(1);
+    }
+
+    console.log(c('dim', '\n── URL 任务 ──'));
+    console.log(`  平台: ${c('cyan', parsed.platform)}`);
+    console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
+    console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
+
+    // 构建文件路径: downloads/<platform>/<name>.mp4
+    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
+    fs.mkdirSync(dlDir, { recursive: true });
+    const fileName = opts.name || parsed.videoId;
+    const proposedPath = path.join(dlDir, `${fileName}.mp4`);
+
+    // 冲突处理（--force 时直接覆盖）
+    let finalPath, finalStem;
+    if (opts.force) {
+      finalPath = proposedPath;
+      finalStem = fileName;
+    } else {
+      const conflict = await resolveUrlConflict(proposedPath);
+      if (conflict.action === 'skip') {
+        console.log(c('yellow', '\n⏭️  已跳过\n'));
+        process.exit(0);
+      }
+      finalPath = conflict.path;
+      finalStem = path.basename(finalPath, '.mp4');
+    }
+
+    console.log(`  文件: ${c('green', finalPath)}`);
+
+    // 检查 whisper 可用性
+    let whisperAvailable = false;
+    if (steps.includes('transcribe')) {
+      whisperAvailable = await checkWhisperAvailable();
+      if (!whisperAvailable) {
+        const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+        logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
+      }
+    }
+
+    // 执行流水线
+    await runUrlTask({
+      watchUrl: parsed.watchUrl,
+      platform: parsed.platform,
+      pkey: parsed.pkey,
+      videoId: parsed.videoId,
+      stem: finalStem,
+      dlDir,
+      steps,
+      maxRetries: opts.retry,
+      retryDelay: opts.retryDelay,
+      force: opts.force || false,
+      downloadTimeout: opts.downloadTimeout,
+      transcodeTimeout: opts.transcodeTimeout,
+      transcribeTimeout: opts.transcribeTimeout,
+      analyzeTimeout: opts.analyzeTimeout,
+      whisperAvailable,
+    });
+
+    process.exit(0);
+  }
+
 
   run({
     targetSheet: opts.sheet || null,
