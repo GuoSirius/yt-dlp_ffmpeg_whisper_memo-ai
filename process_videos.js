@@ -1284,7 +1284,16 @@ function generateReport(results, config, sheetName) {
   // ── 单 sheet 报告 ──
   const dir = path.join(REPORTS_DIR, sheetName);
   fs.mkdirSync(dir, { recursive: true });
-  const ts = new Date().toISOString().split('.')[0].replace(/[-:T]/g, '').replace(/(\d{8})(\d{6})/, '$1_$2');
+  const now = new Date();
+  const ts = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    '_',
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
   const reportFile = path.join(dir, `report_${ts}.json`);
 
   const summary = computeSummary(results);
