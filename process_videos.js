@@ -185,6 +185,7 @@ function timestamp() {
   return new Date().toTimeString().slice(0, 8);
 }
 
+// Node.js 单线程模型下 console.log 是原子的，不会出现行内交错
 function lockedPrint(s) {
   console.log(s);
 }
@@ -655,6 +656,8 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
         try { onProgress(line); } catch {}
       });
       child.stderr.on('end', () => rl.close());
+      // 同时消费 stdout，防止缓冲区填满阻塞子进程
+      child.stdout.on('data', d => { stdout += d.toString(); });
     } else {
       child.stdout.on('data', d => { stdout += d.toString(); });
       child.stderr.on('data', d => { stderr += d.toString(); });
@@ -676,7 +679,7 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
 }
 
 // ============================== AI 分析 ==============================
-async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
+async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 'analyze') {
   if (!text || !text.trim()) {
     return { text: null, retries: 0, error: 'content empty, skip AI analysis' };
   }
@@ -703,6 +706,15 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
   let lastErr = null;
   const maxAttempts = maxRetries + 1;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let done = false;
+    const analyzeStart = Date.now();
+    const progressInterval = setInterval(() => {
+      if (!done) {
+        const elapsed = ((Date.now() - analyzeStart) / 1000).toFixed(0);
+        lockedPrint(`  [${label}] AI analyzing... ${elapsed}s`);
+      }
+    }, 5000);
+
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), aiTimeout * 1000);
@@ -716,6 +728,8 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
         signal: controller.signal,
       });
       clearTimeout(timer);
+      done = true;
+      clearInterval(progressInterval);
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
       }
@@ -723,10 +737,12 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
       const content = body.choices?.[0]?.message?.content || '';
       return { text: content.trim(), retries: attempt, error: null };
     } catch (e) {
+      done = true;
+      clearInterval(progressInterval);
       lastErr = String(e.message).slice(0, 500);
       if (attempt < maxAttempts - 1) {
         const delay = Math.min(retryDelay * Math.pow(2, attempt), 30);
-        lockedPrint(`  [analyze] attempt ${attempt + 1} failed: ${lastErr.slice(0, 100)}, retrying in ${delay}s...`);
+        lockedPrint(`  [${label}] AI attempt ${attempt + 1} failed: ${lastErr.slice(0, 100)}, retrying in ${delay}s...`);
         await sleep(delay * 1000);
       }
     }
@@ -1395,7 +1411,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       const txt = result.transcribe.file;
       if (txt) {
         try {
-          const { text: kw, retries, error } = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout);
+          const { text: kw, retries, error } = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout, result.stem);
           result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
           if (kw) {
             lockedPrint(`  [${result.stem}] AI analysis done (${kw.length} chars)`);
@@ -1666,7 +1682,7 @@ async function runInputTask(opts) {
     if (aiEnabled) {
       console.log(`  [${usedStem}] 🤖 开始 AI 分析...`);
       try {
-        const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout);
+        const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout, usedStem);
         if (kw && typeof kw === 'string') {
           analyzeText = kw;
           console.log(`  [${usedStem}] 🤖 AI分析完成: ${kw.length} 字符`);
@@ -1809,7 +1825,7 @@ async function runContentTask(opts) {
       console.log(`  [${stem}] 开始 AI 分析...`);
       try {
         const { text: kw, retries, error } = await stepAnalyze(
-          contentText, maxRetries, retryDelay, analyzeTimeout
+          contentText, maxRetries, retryDelay, analyzeTimeout, stem
         );
         result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
         if (kw) {

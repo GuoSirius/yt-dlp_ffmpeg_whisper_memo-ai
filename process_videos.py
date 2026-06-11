@@ -674,6 +674,7 @@ def step_analyze(
     text: str,
     max_retries: int, retry_delay: float,
     timeout: int = 300,
+    label: str = "analyze",
 ) -> tuple[str | None, int, str | None]:
     """调用 OpenAI 兼容 API 对识别文本做关键词归纳。
     返回 (keywords_text, retries_used, error_msg)。
@@ -718,18 +719,37 @@ def step_analyze(
 
     last_err = None
     for attempt in range(1, max_retries + 2):  # 首次 + max_retries 次重试
+        done = [False]
+        analyze_start = time.monotonic()
+
+        def _progress_reporter():
+            """每隔 5 秒打印已用时间"""
+            while not done[0]:
+                time.sleep(5)
+                if not done[0]:
+                    elapsed = time.monotonic() - analyze_start
+                    with _print_lock:
+                        print(f"  [{label}] AI 分析中... {elapsed:.0f}s", flush=True)
+
+        reporter = Thread(target=_progress_reporter, daemon=True)
+        reporter.start()
+
         try:
             with urllib.request.urlopen(req, timeout=ai_timeout) as resp:
                 body = _json.loads(resp.read().decode("utf-8"))
+            done[0] = True
+            reporter.join(timeout=1)
             content = body["choices"][0]["message"]["content"]
             return content.strip(), (attempt - 1), None
         except Exception as e:
+            done[0] = True
+            reporter.join(timeout=1)
             err_str = str(e)[:500]
             last_err = err_str
             if attempt <= max_retries + 1:
                 sleep_sec = retry_delay * (2 ** (attempt - 1))
                 with _print_lock:
-                    print(f"  [analyze] 第 {attempt} 次失败：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
+                    print(f"  [{label}] AI 第 {attempt} 次失败：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
                 time.sleep(min(sleep_sec, 30))
             else:
                 break
@@ -1515,7 +1535,7 @@ def process_one_task(
             txt = result.transcribe.file  # 借用 file 字段存文本
             if txt:
                 try:
-                    kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout)
+                    kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout, result.stem)
                 except Exception as e:
                     kw, retries, err = None, max_retries, str(e)[:500]
                 result.analyze = StepResult(
@@ -2193,7 +2213,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
         else:
             try:
                 analyze_ok, retries, err = step_analyze(
-                    result.transcribe.file, max_retries, retry_delay, analyze_timeout
+                    result.transcribe.file, max_retries, retry_delay, analyze_timeout, result.stem
                 )
             except Exception as e:
                 analyze_ok, retries, err = False, max_retries, str(e)[:500]

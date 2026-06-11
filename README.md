@@ -2,10 +2,12 @@
 
 基于 `process_videos.js` (Node.js) 或 `process_videos.py` (Python)，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
 
-**两种使用方式：**
-- **Excel 批量处理**：从 Excel 文件读取视频 ID，自动完成全流程
+**五种使用方式，覆盖不同场景：**
+- **Excel 批量处理**：从 Excel 文件读取视频 ID，自动完成全流程（最常用）
 - **直链下载**：通过 `--url` 直接指定视频链接，自动识别平台并下载
 - **本地文件**：通过 `--input` 指定本地视频文件，跳过下载直接转码分析
+- **纯文本分析**：通过 `--content` 直接提供文本内容，跳过所有视频步骤，直接做 AI 关键词分析
+- **Excel列文本批量分析**：通过 `--content-column` 读取 Excel 某列的已有文本，批量做 AI 分析
 
 ---
 
@@ -339,6 +341,64 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 - 检查是否可以正常读取
 - 校验失败会提示错误并退出
 
+### 处理纯文本内容（跳过视频步骤）
+
+如果你已经有了一段文本内容（比如爬虫爬取的、之前识别好的、或者从其他途径获取的），可以直接做 AI 分析，跳过下载、转码、识别三个步骤：
+
+```bash
+# ═══════════ --content 模式：纯文本 AI 分析 ═══════════
+
+# 从文件读取内容，自动用文件名作为输出名
+node process_videos.js --content "data/article.txt"
+python process_videos.py --content "data/article.txt"
+
+# 直接提供内联文本，自动取前 32 字符作为输出名
+node process_videos.js --content "这是一段需要分析的内容..."
+python process_videos.py --content "这是一段需要分析的内容..."
+
+# 指定输出文件名（--name）
+node process_videos.js --content "data/article.txt" --name "文章分析"
+python process_videos.py --content "data/article.txt" --name "文章分析"
+
+# 配合 --dry-run 预览
+node process_videos.js --content "data/article.txt" --dry-run
+```
+
+**输出文件命名规则：**
+- 指定了 `--name` → 使用 `--name` 的值
+- 内容是文件路径 → 使用文件名（不含扩展名）
+- 内容是内联文本 → 使用前 32 个字符
+
+**输出位置：** `output/reports/content/tasks/{name}.txt` + `output/reports/content/report_xxx.json`
+
+### Excel 列文本批量 AI 分析
+
+当 Excel 某列已经存好了文本内容（比如之前爬虫爬取的），可以批量对这些文本做 AI 关键词分析：
+
+```bash
+# ═══════════ --content-column 模式：批量 AI 分析 ═══════════
+
+# 对 Excel 中 "content" 列的文本逐行做 AI 关键词分析，结果写回 "keywords" 列
+node process_videos.js --content-column "content"
+
+# 指定其他列名
+node process_videos.js --content-column "爬取文本"
+
+# 指定特定 sheet
+node process_videos.js --sheet "普诺赛中文站" --content-column "content"
+
+# 配合 --dry-run 预览
+node process_videos.js --content-column "content" --dry-run
+
+# 配合 --offset / --limit 调试
+node process_videos.js --content-column "content" --offset 0 --limit 3
+node process_videos.js --content-column "content" --concurrency 2 --retry 2
+```
+
+> **注意**：`--content-column` 模式自动设置 `--step analyze`（仅 AI 分析），不会触发下载/转码/识别。
+> 文本为空的行会自动跳过。
+> 分析结果写入 Excel 的 `keywords` 列（由 `COL_KEYWORDS` 环境变量指定）。
+
 ### 工具预检（执行前自动检测）
 
 每次执行任务前，脚本会自动检测本次涉及步骤所需的工具/服务是否可用：
@@ -379,7 +439,9 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 | `--file <path>` | path | — | 指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量） |
 | `--input <path>` | path | — | 指定本地视频文件路径（跳过下载，直接转码→识别→分析） |
 | `--url <url>` | str | — | 直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接 |
-| `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input 配合使用） |
+| `--content <text|path>` | str | — | 直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，仅做 AI 分析 |
+| `--content-column <col>` | str | — | Excel 模式：指定包含已有文本的列名，批量做 AI 分析（自动设 --step analyze） |
+| `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用） |
 | `--env-file <path>` | path | .env | 指定要加载的 .env 文件路径 |
 
 ---
@@ -509,6 +571,9 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
   [2143] 开始识别 (文件 45.2MB)...
   [2143] 识别中... 5s                        ← 识别每 5s 报时
   [2143] 识别完成 (22s, 1234 字符)
+  [2143] AI 分析中... 5s                     ← AI 每 5s 报时
+  [2143] AI 分析中... 10s
+  [2143] AI 分析完成 (567 字符)
 
 [总进度 1/91 (1.1%)] ✅1 ❌0 ⚠️0 ⏭️0         ← 每完成一个刷新
 ```
@@ -519,6 +584,7 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 | 下载 | yt-dlp 实时百分比 + 速度 + ETA |
 | 转码 | 先 ffprobe 取时长，再实时解析 `time=` 算百分比（如 `25.3% (38s/150s)`） |
 | 识别 | 每 5s 打印已用时间，完成时显示总耗时和文本长度 |
+| AI 分析 | 每 5s 打印已用时间，完成时显示结果长度或失败原因 |
 
 多线程并发时使用打印锁保证输出不交错。
 
@@ -526,7 +592,7 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 
 ## 输出结构速查表
 
-三种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根（可通过 `DOWNLOADS_DIR` / `TRANSCODED_DIR` / `REPORTS_DIR` 环境变量覆盖）。
+五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根（可通过 `DOWNLOADS_DIR` / `TRANSCODED_DIR` / `REPORTS_DIR` 环境变量覆盖）。
 
 > `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）  
 > `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencentVid`、`youku`）  
@@ -565,19 +631,50 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 
 > `local` 是 `--input` 模式的固定目录名（与 Excel 模式的 sheet 名无关），所有本地文件处理结果统一归入此目录。
 
+### ④ --content 纯文本模式
+
+| 环节 | 输出路径 | 产物格式 | 说明 |
+|------|---------|---------|------|
+| 下载 | —（跳过） | — | 无需下载 |
+| 转码 | —（跳过） | — | 无需转码 |
+| 识别 | —（跳过） | — | 无需语音识别 |
+| JSON 报告 | `output/reports/content/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
+| 文本报告 | `output/reports/content/tasks/{stem}.txt` | 文本 | 含源内容 + AI 关键词分析 |
+
+> `content` 是固定目录名。{stem} = `--name` 值 > 文件名 stem > 内联文本前 32 字符。
+
+### ⑤ --content-column Excel列文本批量模式
+
+| 环节 | 输出路径 | 产物格式 | 说明 |
+|------|---------|---------|------|
+| 下载 | —（跳过） | — | 无需下载 |
+| 转码 | —（跳过） | — | 无需转码 |
+| 识别 | —（跳过） | — | 无需语音识别 |
+| JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 按 Excel sheet 分目录，格式与 Excel 模式一致 |
+| 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 含列文本 + AI 关键词分析 |
+| Excel 写回 | `{EXCEL_FILE}` 的 `keywords` 列 | Excel | AI 关键词写入 Excel |
+
+> 此模式自动设置 `--step analyze`，下载/转码/识别全跳过。AI 结果同时写入 Excel 和报告文件。
+
 ---
 
-### 三种来源对比一览
+### 五种来源对比一览
 
-| 维度 | Excel 批量 | --url 直链 | --input 本地文件 |
-|------|-----------|-----------|-----------------|
-| 输入 | Excel 行（多视频批量） | 单个视频 URL | 本地视频/音频文件 |
-| 下载目录 | `downloads/{sheet}/` | `downloads/{platform}/` | 无 |
-| 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/local/` |
-| 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/local/` |
-| 分组依据 | Excel sheet 名 | URL 解析的平台名 | 固定 `local` |
-| 并发支持 | ✅ 多线程 | ❌ 单任务 | ❌ 单任务 |
-| 支持 --retry-failed | ✅ | ❌ | ❌ |
+| 维度 | Excel 批量 | --url 直链 | --input 本地文件 | --content 纯文本 | --content-column 列文本 |
+|------|-----------|-----------|-----------------|-----------------|------------------------|
+| 输入 | Excel 行（多视频批量） | 单个视频 URL | 本地视频/音频文件 | 文件路径或内联文本 | Excel 列的已有文本 |
+| 下载 | ✅ yt-dlp | ✅ yt-dlp | ❌ 跳过 | ❌ 跳过 | ❌ 跳过 |
+| 转码 | ✅ ffmpeg | ✅ ffmpeg | ✅ ffmpeg | ❌ 跳过 | ❌ 跳过 |
+| 识别 | ✅ whisper | ✅ whisper | ✅ whisper | ❌ 跳过 | ❌ 跳过 |
+| AI 分析 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 下载目录 | `downloads/{sheet}/` | `downloads/{platform}/` | 无 | 无 | 无 |
+| 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/local/` | 无 | 无 |
+| 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/local/` | `reports/content/` | `reports/{sheet}/` |
+| 分组依据 | Excel sheet 名 | URL 解析的平台名 | 固定 `local` | 固定 `content` | Excel sheet 名 |
+| 并发支持 | ✅ 多线程 | ❌ 单任务 | ❌ 单任务 | ❌ 单任务 | ✅ 多线程 |
+| 写入 Excel | ✅ | ❌ | ❌ | ❌ | ✅ |
+| 支持 --retry-failed | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 适用场景 | 批量处理全流程 | 临时下载单个视频 | 处理已有视频文件 | 已有文本直接分析 | 批量分析Excel中的文本 |
 
 ---
 
@@ -618,6 +715,8 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 
 ## 典型工作流
 
+### 场景一：Excel 批量处理视频
+
 ```bash
 # 1. 干跑预览
 node process_videos.js --dry-run
@@ -632,6 +731,44 @@ node process_videos.js --concurrency 3 --retry 3
 
 # 4. 查看报告，重跑失败项
 node process_videos.js --retry-failed reports/YouTube视频/report_xxx.json --concurrency 2 --retry 3
+```
+
+### 场景二：临时下载单个视频
+
+```bash
+# 从 URL 下载 → 转码 → 识别 → AI 分析，一条龙
+node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c"
+
+# 指定输出文件名
+node process_videos.js --url "https://www.bilibili.com/video/BV1xx411c7mD" --name "产品介绍视频"
+```
+
+### 场景三：处理本地视频文件
+
+```bash
+# 已有视频文件，直接转码分析
+node process_videos.js --input "downloads/产品介绍.mp4"
+
+# 只做 AI 分析（已有转码+识别结果）
+node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
+```
+
+### 场景四：纯文本 AI 分析
+
+```bash
+# 已有文本内容，跳过所有视频步骤，直接做关键词提取
+node process_videos.js --content "data/article.txt"
+
+# 内联文本直接分析
+node process_videos.js --content "今天我们要讨论的是普诺赛产品..." --name "产品讨论"
+```
+
+### 场景五：批量分析 Excel 中的已有文本
+
+```bash
+# Excel 某列已有文本（如爬虫爬取的），批量做 AI 关键词分析
+node process_videos.js --content-column "content" --dry-run      # 先预览
+node process_videos.js --content-column "content" --concurrency 2  # 执行
 ```
 
 ---
