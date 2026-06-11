@@ -1,0 +1,63 @@
+{
+  "$schema": "https://unpkg.com/release-it/schema/release-it.json",
+  "git": {
+    "commitMessage": "chore(release): v${version}",
+    "tagName": "v${version}",
+    "tagAnnotation": "Release v${version}",
+    "push": true,
+    "pushRepo": "",
+    "requireBranch": "main",
+    "requireCleanWorkingDir": true,
+    "requireCommits": true,
+    "requireUpstream": false,
+    "changelog": "npx auto-changelog --stdout --commit-limit false --unreleased --template ./scripts/changelog-template.hbs"
+  },
+  "npm": {
+    "publish": true,
+    "publishPath": ".",
+    "skipChecks": false
+  },
+  "github": {
+    "release": true,
+    "releaseName": "v${version}",
+    "releaseNotes": "npx auto-changelog --stdout --commit-limit false --unreleased --template ./scripts/changelog-template.hbs",
+    "autoGenerate": false,
+    "web": true,
+    "comments": {
+      "submit": false,
+      "issue": "🎉 此问题已在 v${version} 中修复",
+      "pr": "🎉 此 PR 已包含在 v${version} 中"
+    }
+  },
+  "hooks": {
+    "before:init": [
+      "npm test"
+    ],
+    "after:bump": "npx auto-changelog -p --commit-limit false --template ./scripts/changelog-template.hbs",
+    "after:release": "echo '✅ Release v${version} completed. Changelog: ${repo.repository}/releases/tag/v${version}'"
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "preset": {
+        "name": "conventionalcommits",
+        "types": [
+          { "type": "feat", "section": "✨ Features" },
+          { "type": "fix", "section": "🐛 Bug Fixes" },
+          { "type": "perf", "section": "⚡ Performance" },
+          { "type": "refactor", "section": "♻️ Refactoring" },
+          { "type": "docs", "section": "📝 Documentation" },
+          { "type": "style", "section": "💄 Styles" },
+          { "type": "test", "section": "✅ Tests" },
+          { "type": "chore", "section": "🔧 Chores", "hidden": true },
+          { "type": "ci", "section": "🔄 CI/CD" },
+          { "type": "build", "section": "📦 Build" },
+          { "type": "revert", "section": "⏪ Reverts" }
+        ]
+      },
+      "infile": "CHANGELOG.md",
+      "header": "# Changelog\n\n",
+      "ignoreRecommendedBump": true,
+      "strictSemver": true
+    }
+  }
+}

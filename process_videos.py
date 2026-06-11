@@ -1469,7 +1469,7 @@ def run(
             if "download" in steps:
                 if dl_exists:
                     status = "[跳过-已有文件]"
-                elif not ytdlp_ok:
+                elif not env["ytdlp"]:
                     status = "[不可用-yt-dlp]"
                 else:
                     status = "[待执行]"
@@ -1478,7 +1478,7 @@ def run(
             if "transcode" in steps:
                 if tc_exists:
                     status = "[跳过-已有文件]"
-                elif not ffmpeg_ok:
+                elif not env["ffmpeg"]:
                     status = "[不可用-ffmpeg]"
                 elif not dl_exists:
                     status = "[等待-需先下载]"

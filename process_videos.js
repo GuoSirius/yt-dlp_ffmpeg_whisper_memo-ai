@@ -19,6 +19,7 @@ const path = require('path');
 const os = require('os');
 const url = require('url');
 const { spawn, execSync, execFile } = require('child_process');
+const readline = require('readline');
 const XLSX = require('xlsx');
 const pLimit = require('p-limit');
 
@@ -524,9 +525,10 @@ async function checkEnvironmentAsync(steps) {
 
 // ============================== 进度显示辅助 ==============================
 function spawnWithTimeout(cmd, args, timeout, options = {}) {
+  const { onProgress, ...spawnOpts } = options;
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
-      ...options,
+      ...spawnOpts,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -536,13 +538,25 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
       reject(Object.assign(new Error(`Timeout after ${timeout}s`), { name: 'TimeoutError', code: 'ETIMEDOUT' }));
     }, timeout * 1000);
 
-    child.stdout.on('data', d => { stdout += d.toString(); });
-    child.stderr.on('data', d => { stderr += d.toString(); });
+    if (onProgress && child.stderr) {
+      const rl = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
+      rl.on('line', line => {
+        stderr += line + '\n';
+        try { onProgress(line); } catch {}
+      });
+      child.stderr.on('end', () => rl.close());
+    } else {
+      child.stdout.on('data', d => { stdout += d.toString(); });
+      child.stderr.on('data', d => { stderr += d.toString(); });
+    }
 
     child.on('close', code => {
       clearTimeout(timer);
+      if (!onProgress) {
+        // Without onProgress, stderr was captured by the 'data' handler
+      }
       if (code === 0) resolve({ stdout, stderr });
-      else reject(Object.assign(new Error(`Exit code ${code}`), { code: code, stderr }));
+      else reject(Object.assign(new Error(`Exit code ${code}`), { code, stderr }));
     });
     child.on('error', err => {
       clearTimeout(timer);
@@ -609,7 +623,38 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
   return { text: null, retries: maxAttempts, error: `AI analysis failed after ${maxAttempts} retries: ${lastErr}` };
 }
 
+// ============================== 清理残留文件 ==============================
+function cleanupPartials(dlDir, stem) {
+  const patterns = [
+    new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\..*\\.part$`),
+    new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\..*\\.ytdl$`),
+  ];
+  try {
+    const files = fs.readdirSync(dlDir);
+    for (const f of files) {
+      const fullPath = path.join(dlDir, f);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile()) continue;
+      } catch { continue; }
+      if (f === `${stem}.part` || f === `${stem}.ytdl` || patterns.some(p => p.test(f))) {
+        try { fs.unlinkSync(fullPath); lockedPrint(`  [${stem}] cleaned partial: ${f}`); } catch {}
+      }
+    }
+  } catch {}
+}
+
 // ============================== 下载 ==============================
+function parseYtdlpProgress(line) {
+  // Parse yt-dlp progress line like "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
+  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)\s+at\s+([\d.]+[KMG]iB\/s)\s+ETA\s+([\d:]+)/);
+  if (m) return `DL ${m[1]} of ${m[2]} @ ${m[3]} ETA ${m[4]}`;
+  // Also try: "[download] 100% of 50.00MiB"
+  const m2 = line.match(/\[download\]\s+([\d.]+%)\s+of\s+([\d.]+[KMG]iB)/);
+  if (m2) return `DL ${m2[1]} of ${m2[2]}`;
+  return null;
+}
+
 async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 600) {
   const { pkey, vid } = getVideoId(row);
   const stem = stemName(row, sheetName);
@@ -667,11 +712,19 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
 
   const env = { ...process.env, ...extraEnv };
 
+  let lastProgress = '';
   async function doDownload() {
-    const { stdout, stderr } = await spawnWithTimeout(YTDLP, args, timeout, { env });
-    if (stderr && stderr.toLowerCase().includes('error')) {
-      throw Object.assign(new Error('yt-dlp failed'), { stderr });
-    }
+    const { stdout, stderr } = await spawnWithTimeout(YTDLP, args, timeout, {
+      env,
+      onProgress: line => {
+        const prog = parseYtdlpProgress(line);
+        if (prog && prog !== lastProgress) {
+          lastProgress = prog;
+          lockedPrint(`  [${stem}] ${prog}`);
+        }
+      },
+    });
+    // spawnWithTimeout already rejects on non-zero exit code, no need for stderr check
   }
 
   try {
@@ -812,7 +865,7 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 600) 
   }
 }
 
-async function transcribeLocal(audioFile, stem, maxRetries, retryDelay) {
+async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout = 600) {
   const startTime = Date.now();
   const outDir = path.dirname(audioFile);
 
@@ -825,7 +878,7 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay) {
     if (WHISPER_LANGUAGE) args.push('--language', WHISPER_LANGUAGE);
     args.push('--output_format', 'txt', '--output_dir', outDir);
 
-    const { stderr } = await spawnWithTimeout('whisper', args, 3600);
+    const { stderr } = await spawnWithTimeout('whisper', args, timeout);
     // whisper writes output to {stem}.txt
     const outTxt = path.join(outDir, `${stem}.txt`);
     if (!fs.existsSync(outTxt)) {
@@ -873,9 +926,11 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       }
 
       // Run inference
-      const fileBuffer = fs.readFileSync(audioFile);
+      const fileStream = fs.createReadStream(audioFile);
+      const fileStat = fs.statSync(audioFile);
       const form = new FormData();
-      form.append('file', new Blob([fileBuffer], { type: 'audio/wav' }), path.basename(audioFile));
+      // Use ReadStream directly - Node.js fetch supports it natively for FormData
+      form.append('file', fileStream, path.basename(audioFile));
       form.append('temperature', '0.0');
       form.append('temperature_inc', '0.2');
       form.append('response_format', 'json');
@@ -931,25 +986,25 @@ function writeAllContentsToExcel(results, keywordsDict = null) {
   if (!updates.size && !keywordsDict?.size) return;
 
   logInfo(`write ${updates.size} content + ${keywordsDict?.size || 0} keywords to Excel...`);
-  const wb = XLSX.readFile(EXCEL_FILE);
+  const wb = XLSX.readFile(EXCEL_FILE, { cellFormula: true, cellDates: true });
 
-  // Write content
-  for (const [sheetName, rows] of Object.entries(groupBySheet(updates, results))) {
-    // ...
-  }
-
-  // Simpler approach: write directly using aoa
-  for (const [sheetName, rowsObj] of groupBySheetMap(updates)) {
-    if (!wb.SheetNames.includes(sheetName)) continue;
+  /**
+   * Write text values to a specific column, matching rows by id or title.
+   * Uses direct cell writes to preserve existing formatting.
+   */
+  function writeColumn(sheetName, colName, entries) {
+    if (!wb.SheetNames.includes(sheetName)) return;
     const ws = wb.Sheets[sheetName];
+
+    // Read header row only (via AOA for detection - we don't rebuild the sheet)
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
     const headers = aoa[0];
-    const contentCol = headers.indexOf(COL_CONTENT);
+    const targetCol = headers.indexOf(colName);
     const idCol = headers.indexOf(COL_ID);
     const titleCol = headers.indexOf(COL_TITLE);
-    if (contentCol === -1) continue;
+    if (targetCol === -1) return;
 
-    for (const [key, text] of Object.entries(rowsObj)) {
+    for (const [key, text] of entries) {
       for (let r = 1; r < aoa.length; r++) {
         const row = aoa[r];
         let matched = false;
@@ -960,48 +1015,36 @@ function writeAllContentsToExcel(results, keywordsDict = null) {
         }
         if (!matched && titleCol !== -1 && String(row[titleCol]) === String(key)) matched = true;
         if (matched) {
-          row[contentCol] = text;
-          logInfo(`[${sheetName}/${key}] content written (${text.length} chars)`);
+          // Write directly to cell to preserve formatting of other cells
+          const cellRef = XLSX.utils.encode_cell({ r, c: targetCol });
+          ws[cellRef] = { t: 's', v: text };
+          logInfo(`[${sheetName}/${key}] ${colName} written (${text.length} chars)`);
           break;
         }
       }
     }
-    wb.Sheets[sheetName] = XLSX.utils.aoa_to_sheet(aoa);
   }
 
-  // Write keywords
+  // Write content column
+  writeColumn(null, COL_CONTENT, updates); // null sheetName means iterate all sheets
+  for (const [sheetName, rowsObj] of groupBySheetMap(updates)) {
+    writeColumn(sheetName, COL_CONTENT, Object.entries(rowsObj));
+  }
+
+  // Write keywords column
   if (keywordsDict && keywordsDict.size) {
+    const kwBySheet = new Map(); // sheetName -> [[key, text], ...]
     for (const [key, kwText] of keywordsDict) {
       const [sheetName, kwKey] = key.split('|');
-      if (!wb.SheetNames.includes(sheetName)) continue;
-      const ws = wb.Sheets[sheetName];
-      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
-      const headers = aoa[0];
-      const kwCol = headers.indexOf(COL_KEYWORDS);
-      const idCol = headers.indexOf(COL_ID);
-      const titleCol = headers.indexOf(COL_TITLE);
-      if (kwCol === -1) continue;
-
-      for (let r = 1; r < aoa.length; r++) {
-        const row = aoa[r];
-        let matched = false;
-        if (idCol !== -1 && row[idCol] != null) {
-          try {
-            if (String(Math.floor(Number(row[idCol]))) === String(kwKey)) matched = true;
-          } catch { }
-        }
-        if (!matched && titleCol !== -1 && String(row[titleCol]) === String(kwKey)) matched = true;
-        if (matched) {
-          row[kwCol] = kwText;
-          logInfo(`[${sheetName}/${kwKey}] keywords written (${kwText.length} chars)`);
-          break;
-        }
-      }
-      wb.Sheets[sheetName] = XLSX.utils.aoa_to_sheet(aoa);
+      if (!kwBySheet.has(sheetName)) kwBySheet.set(sheetName, []);
+      kwBySheet.get(sheetName).push([kwKey, kwText]);
+    }
+    for (const [sheetName, entries] of kwBySheet) {
+      writeColumn(sheetName, COL_KEYWORDS, entries);
     }
   }
 
-  XLSX.writeFile(wb, EXCEL_FILE);
+  XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
   logInfo('Excel write done');
 }
 
@@ -1561,7 +1604,14 @@ if (require.main === module) {
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .option('--sheet <name>', '指定 sheet 名称')
     .option('--id <id>', '指定 extra.id 或 title（单条测试）')
-    .option('--step <step>', '只执行某一步：download / transcode / transcribe / analyze')
+    .option('--step <step>', '只执行某一步：download / transcode / transcribe / analyze', (val) => {
+      const allowed = ['download', 'transcode', 'transcribe', 'analyze'];
+      if (!allowed.includes(val)) {
+        console.error(`Invalid step: ${val}. Must be one of: ${allowed.join(', ')}`);
+        process.exit(1);
+      }
+      return val;
+    })
     .option('--force', '强制重做下载+转码（忽略已有文件）')
     .option('--concurrency <n>', '并发数，默认 1', parseInt, 1)
     .option('--retry <n>', '每步失败最大重试次数，默认 0', parseInt, 0)
@@ -1594,6 +1644,12 @@ if (require.main === module) {
     analyzeTimeout: opts.analyzeTimeout,
   }).catch(err => {
     console.error('Fatal error:', err);
+    process.exit(1);
+  });
+
+  // Handle unhandled promise rejections
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:', reason);
     process.exit(1);
   });
 }

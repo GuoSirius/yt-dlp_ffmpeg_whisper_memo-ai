@@ -1,0 +1,42 @@
+# Python
+*.py
+*.pyc
+__pycache__/
+
+# Dev tools
+.github/
+.husky/
+scripts/
+node_modules/
+commitlint.config.js
+.release-it.json
+
+# Project-specific data
+export_*.xlsx
+downloads/
+transcoded/
+reports/
+cookies/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.log
+*.patch
+
+# WorkBuddy
+.workbuddy/

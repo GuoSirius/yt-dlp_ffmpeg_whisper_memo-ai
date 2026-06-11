@@ -1,15 +1,65 @@
 {
   "name": "video-processor",
   "version": "1.0.0",
-  "description": "视频下载、转码、文本识别、AI分析一体化流程脚本 (Node.js)",
+  "description": "视频下载、转码、文本识别、AI 关键词分析一体化流程 CLI 工具",
+  "keywords": [
+    "video",
+    "download",
+    "transcode",
+    "whisper",
+    "transcribe",
+    "ai",
+    "keywords",
+    "yt-dlp",
+    "ffmpeg",
+    "bilibili",
+    "youtube",
+    "tencent",
+    "youku"
+  ],
+  "homepage": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai",
+  "repository": {
+    "type": "git",
+    "url": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai.git"
+  },
+  "bugs": {
+    "url": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai/issues"
+  },
+  "license": "MIT",
+  "author": "",
   "main": "process_videos.js",
+  "bin": {
+    "video-processor": "process_videos.js"
+  },
+  "files": [
+    "process_videos.js",
+    ".env.example",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "start": "node process_videos.js"
+    "start": "node process_videos.js",
+    "test": "node -c process_videos.js && node -e \"require('./process_videos')\" 2>&1 || node -c process_videos.js",
+    "lint:commit": "commitlint --edit",
+    "release": "node scripts/release.js",
+    "release:dry": "node scripts/release.js --dry-run",
+    "prepare": "husky"
   },
   "dependencies": {
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
-    "xlsx": "^0.18.5",
-    "p-limit": "^6.1.0"
+    "p-limit": "^6.1.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.0.2",
+    "@commitlint/config-conventional": "^21.0.2",
+    "@release-it/conventional-changelog": "^11.0.1",
+    "husky": "^9.1.7",
+    "release-it": "^20.2.0"
   }
 }
