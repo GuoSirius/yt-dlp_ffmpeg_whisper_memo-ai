@@ -87,6 +87,9 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 空=多语言自动检�
 # 仅 backend=service 且 whisper.cpp server 时: 模型文件路径（如 models/ggml-base.bin）
 # 留空则跳过 /load（使用服务器当前已加载的模型）
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
+WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")
+WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")
+WHISPER_RESPONSE_FORMAT = os.getenv("WHISPER_RESPONSE_FORMAT", "json")
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
@@ -698,7 +701,7 @@ def step_analyze(
         "messages": [
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.3,
+        "temperature": float(os.getenv("AI_TEMPERATURE", "0.3")),
     }
 
     import urllib.request
@@ -1076,7 +1079,7 @@ def _transcribe_service(
                 resp = requests.post(
                     f"{WHISPER_SERVICE}/inference",
                     files={"file": (audio_file.name, f, "audio/wav")},
-                    data={"temperature": "0.0", "temperature_inc": "0.2", "response_format": "json"},
+                    data={"temperature": WHISPER_TEMPERATURE, "temperature_inc": WHISPER_TEMPERATURE_INC, "response_format": WHISPER_RESPONSE_FORMAT},
                     timeout=timeout,
                 )
             resp.raise_for_status()

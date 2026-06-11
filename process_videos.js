@@ -57,6 +57,9 @@ const WHISPER_MODEL = process.env.WHISPER_MODEL || 'base';
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || '';
 const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';
+const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || '0.0';
+const WHISPER_TEMPERATURE_INC = process.env.WHISPER_TEMPERATURE_INC || '0.2';
+const WHISPER_RESPONSE_FORMAT = process.env.WHISPER_RESPONSE_FORMAT || 'json';
 let _SERVICE_MODEL_LOADED = null;
 
 const TRANSCODE_EXT = process.env.TRANSCODE_EXT || '.wav';
@@ -681,6 +684,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
   const model = process.env.AI_MODEL || '';
   const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}';
+  const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = parseInt(process.env.AI_TIMEOUT || String(timeout), 10);
 
   if (!apiKey || !baseUrl || !model) {
@@ -692,7 +696,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300) {
   const payload = JSON.stringify({
     model,
     messages: [{ role: 'user', content: prompt }],
-    temperature: 0.3,
+    temperature: aiTemperature,
   });
 
   let lastErr = null;
@@ -1035,9 +1039,9 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       const fileBlob = await fs.openAsBlob(audioFile);
       const form = new FormData();
       form.append('file', fileBlob, path.basename(audioFile));
-      form.append('temperature', '0.0');
-      form.append('temperature_inc', '0.2');
-      form.append('response_format', 'json');
+      form.append('temperature', WHISPER_TEMPERATURE);
+      form.append('temperature_inc', WHISPER_TEMPERATURE_INC);
+      form.append('response_format', WHISPER_RESPONSE_FORMAT);
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout * 1000);
