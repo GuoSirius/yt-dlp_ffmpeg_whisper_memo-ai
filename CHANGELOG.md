@@ -6,12 +6,21 @@
 
 - rename npm package to video-pipeline (`644cc8a`)
 - add --url option to Python version (parity with Node.js) (`e1df301`)
+
+### Bug Fixes
+
+- normalize CHANGELOG format to Keep a Changelog standard (`2b887f4`)
+- correct changelog per-version ranges + fix getLastTag for Windows (`755222a`)
+
+## [1.0.3] - 2026-06-11
+
+### Features
+
 - add --url option for direct video URL download pipeline (`468bc1e`)
 - use arrow-key navigation for --init conflict prompt (`571f24a`)
 
 ### Bug Fixes
 
-- correct changelog per-version ranges + fix getLastTag for Windows (`755222a`)
 - hard-fail on GitHub push failure + verify tag on remote (`5ca14ab`)
 - regenerate CHANGELOG with correct per-version commit ranges (`e265f57`)
 
@@ -50,7 +59,7 @@
 - update husky commit-msg hook to v9 format (`25f557e`)
 - 下载失败后清理残留的 .part/.ytdl 临时文件 (`0251a4b`)
 - yt-dlp 子进程( node/ejs )不走代理导致 n-sig 求解失败 (`e00ec5f`)
-- whisper.cpp server API 适配 - /inference 不传 model/language (`3a83ab5`)
+- whisper.cpp server API 适配 — /inference 不传 model/language (`3a83ab5`)
 - 移除 run_with_progress 逐行 DEBUG 打印，解决 Windows 控制台中文路径乱码 (`fb20e4d`)
 
 ### Documentation
@@ -60,7 +69,7 @@
 - .env.example 增加变更权限标注(自由/调序/关联/固定) (`b542865`)
 - 文档全面更新 + security: cookie 文件移出版本控制 (`a90b5af`)
 - 更新 .env.example (代理端口7897, 注释完善, WHISPER_MODEL标注仅local) (`63dca08`)
-- service 模式语言说明修正 - API 不支持指定语言 (`adcb265`)
+- service 模式语言说明修正 — API 不支持指定语言 (`adcb265`)
 
 ### Chores
 
