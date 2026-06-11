@@ -17,13 +17,13 @@
     "tencent",
     "youku"
   ],
-  "homepage": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai",
+  "homepage": "https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai",
   "repository": {
     "type": "git",
-    "url": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai.git"
+    "url": "https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai.git"
   },
   "bugs": {
-    "url": "https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai/issues"
+    "url": "https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/issues"
   },
   "license": "MIT",
   "author": "",

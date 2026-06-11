@@ -25,7 +25,7 @@ video-pipeline --help
 
 ```bash
 # 克隆或下载脚本
-git clone https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai.git
+git clone https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai.git
 cd yt-dlp_ffmpeg_whisper_memo-ai
 
 # 安装 Python 依赖
