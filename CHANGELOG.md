@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.1] - 2026-06-11
+
+### Bug Fixes
+
+- 改进发布流程 — 未提交文件提示提交 + 移除 GITHUB_TOKEN 依赖 (`2269869`)
+- release.js 推送失败时显示 git 原始错误信息 (stderr) (`fba88f3`)
+
+### Documentation
+
+- update (`055da24`)
+
+
 ## [1.2.0] - 2026-06-11
 
 ### Bug Fixes
