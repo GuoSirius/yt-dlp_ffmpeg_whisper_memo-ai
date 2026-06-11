@@ -3,7 +3,12 @@ name: Publish to npm
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  issues: write
+  contents: write
+  releases: write
 
 jobs:
   publish:
@@ -20,9 +25,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
