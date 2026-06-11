@@ -559,11 +559,11 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
 | 下载 | —（跳过） | — | 本地文件无需下载 |
-| 转码 | `output/transcoded/{sheet}/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
-| JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
-| 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
+| 转码 | `output/transcoded/local/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
+| JSON 报告 | `output/reports/local/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
+| 文本报告 | `output/reports/local/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
 
-> `{sheet}` 默认为 `local`，可通过 `--sheet` 参数自定义（如 `--sheet 测试视频`）。
+> `local` 是 `--input` 模式的固定目录名（与 Excel 模式的 sheet 名无关），所有本地文件处理结果统一归入此目录。
 
 ---
 
@@ -573,9 +573,9 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 |------|-----------|-----------|-----------------|
 | 输入 | Excel 行（多视频批量） | 单个视频 URL | 本地视频/音频文件 |
 | 下载目录 | `downloads/{sheet}/` | `downloads/{platform}/` | 无 |
-| 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/{sheet}/` |
-| 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/{sheet}/` |
-| 分组依据 | Excel sheet 名 | URL 解析的平台名 | 默认 `local`，可 --sheet 自定义 |
+| 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/local/` |
+| 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/local/` |
+| 分组依据 | Excel sheet 名 | URL 解析的平台名 | 固定 `local` |
 | 并发支持 | ✅ 多线程 | ❌ 单任务 | ❌ 单任务 |
 | 支持 --retry-failed | ✅ | ❌ | ❌ |
 
