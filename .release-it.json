@@ -9,8 +9,7 @@
     "requireBranch": "main",
     "requireCleanWorkingDir": true,
     "requireCommits": true,
-    "requireUpstream": false,
-    "changelog": "npx auto-changelog --stdout --commit-limit false --unreleased --template ./scripts/changelog-template.hbs"
+    "requireUpstream": false
   },
   "npm": {
     "publish": true,
@@ -20,7 +19,6 @@
   "github": {
     "release": true,
     "releaseName": "v${version}",
-    "releaseNotes": "npx auto-changelog --stdout --commit-limit false --unreleased --template ./scripts/changelog-template.hbs",
     "autoGenerate": false,
     "web": true,
     "comments": {
@@ -33,8 +31,7 @@
     "before:init": [
       "npm test"
     ],
-    "after:bump": "npx auto-changelog -p --commit-limit false --template ./scripts/changelog-template.hbs",
-    "after:release": "echo '✅ Release v${version} completed. Changelog: ${repo.repository}/releases/tag/v${version}'"
+    "after:release": "echo '✅ Release v${version} completed.'"
   },
   "plugins": {
     "@release-it/conventional-changelog": {

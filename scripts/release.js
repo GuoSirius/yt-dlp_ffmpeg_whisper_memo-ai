@@ -2,6 +2,12 @@
 /**
  * Release script - 一键发布流程
  *
+ * 特性:
+ * - 上下键选择版本类型
+ * - 确认默认 Y
+ * - Conventional Commits 分节 changelog
+ * - 自动推送到所有 remote
+ *
  * 用法:
  *   npm run release              # 交互式发布
  *   npm run release -- --dry-run # 预览（不实际执行）
@@ -13,13 +19,14 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import readline from 'readline';
 import { fileURLToPath } from 'url';
+import { select, confirm } from '@inquirer/prompts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
 const PKG_PATH = path.join(ROOT, 'package.json');
+const CHANGELOG_PATH = path.join(ROOT, 'CHANGELOG.md');
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -47,6 +54,11 @@ function runSilent(cmd) {
   try {
     return execSync(cmd, { encoding: 'utf-8', cwd: ROOT, stdio: 'pipe' }).trim();
   } catch { return ''; }
+}
+
+// 获取最新的 git tag（比 git describe 更可靠）
+function getLastTag() {
+  return runSilent('git tag --sort=-v:refname --merged HEAD | head -1');
 }
 
 function getVersion() {
@@ -77,27 +89,140 @@ function getRemotes() {
   return remotes;
 }
 
-function getChanges(version) {
-  // Get commits since last tag
-  const lastTag = runSilent('git describe --tags --abbrev=0 2>/dev/null');
+// ==================== Changelog 生成（Conventional Commits 分节） ====================
+
+const SECTION_MAP = {
+  feat:     { label: '✨ Features',        emoji: '✨' },
+  fix:      { label: '🐛 Bug Fixes',       emoji: '🐛' },
+  perf:     { label: '⚡ Performance',      emoji: '⚡' },
+  refactor: { label: '♻️ Refactoring',      emoji: '♻️' },
+  docs:     { label: '📝 Documentation',    emoji: '📝' },
+  style:    { label: '💄 Styles',           emoji: '💄' },
+  test:     { label: '✅ Tests',            emoji: '✅' },
+  ci:       { label: '🔄 CI/CD',            emoji: '🔄' },
+  build:    { label: '📦 Build',            emoji: '📦' },
+  chore:    { label: '🔧 Chores',           emoji: '🔧' },
+  revert:   { label: '⏪ Reverts',          emoji: '⏪' },
+};
+
+function parseConventionalCommit(line) {
+  // Match: <hash> <type>(<scope>): <subject>
+  // or just: <hash> <subject>
+  const m = line.match(/^([a-f0-9]+)\s+(?:(\w+)(?:\([^)]*\))?[!]?:\s+)?(.+)/);
+  if (!m) return { hash: line.slice(0, 7), type: 'other', subject: line };
+  let type = m[2] || 'other';
+  // Normalize breaking changes
+  if (line.includes('BREAKING CHANGE') || line.includes('BREAKING:')) {
+    type = 'BREAKING';
+  }
+  return { hash: m[1].slice(0, 7), type, subject: m[3].trim() };
+}
+
+function generateChangelogEntry(version, date) {
+  // Get commits since last tag, or all commits if no tag
+  const lastTag = getLastTag();
   let range;
   if (lastTag) {
     range = `${lastTag}..HEAD`;
   } else {
     range = 'HEAD';
   }
+
   const log = runSilent(`git log --oneline --no-merges ${range}`);
-  return log;
+  if (!log) return `## ${version} — ${date}\n\n_No changes._\n`;
+
+  const commits = log.split('\n').filter(Boolean).map(parseConventionalCommit)
+    // 过滤 chore(release): vX.Y.Z 提交
+    .filter(c => !(c.type === 'chore' && /^v\d+\.\d+\.\d+/.test(c.subject)));
+  
+  if (!commits.length) return `## ${version} — ${date}\n\n_No changes._\n`;
+
+  // Group by type
+  const groups = {};
+  const BREAKING = [];
+  for (const c of commits) {
+    if (c.type === 'BREAKING') {
+      BREAKING.push(c);
+      continue;
+    }
+    if (!groups[c.type]) groups[c.type] = [];
+    groups[c.type].push(c);
+  }
+
+  // Build sections
+  const lines = [];
+  lines.push(`## ${version} — ${date}`);
+  lines.push('');
+
+  // BREAKING first
+  if (BREAKING.length) {
+    lines.push('### ⚠️ BREAKING CHANGES');
+    lines.push('');
+    for (const c of BREAKING) {
+      lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+    }
+    lines.push('');
+  }
+
+  // Then each conventional commit type
+  const orderedTypes = ['feat', 'fix', 'perf', 'refactor', 'docs', 'style', 'test', 'ci', 'build', 'chore', 'revert', 'other'];
+  for (const type of orderedTypes) {
+    if (!groups[type] || !groups[type].length) continue;
+    const section = SECTION_MAP[type] || { label: 'Other' };
+    lines.push(`### ${section.label}`);
+    lines.push('');
+    for (const c of groups[type]) {
+      lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
 }
 
-async function ask(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => {
-    rl.question(question, answer => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
+function updateChangelog(version, date) {
+  const entry = generateChangelogEntry(version, date);
+  const existing = fs.existsSync(CHANGELOG_PATH)
+    ? fs.readFileSync(CHANGELOG_PATH, 'utf-8')
+    : '# Changelog\n\n';
+
+  // Insert new entry after the header
+  const headerEnd = existing.indexOf('\n## ');
+  if (headerEnd === -1) {
+    // No existing entries
+    fs.writeFileSync(CHANGELOG_PATH, `# Changelog\n\n${entry}\n`);
+  } else {
+    const before = existing.slice(0, headerEnd);
+    const after = existing.slice(headerEnd);
+    fs.writeFileSync(CHANGELOG_PATH, `${before}\n${entry}\n${after}`);
+  }
+}
+
+// ==================== Preview ====================
+
+function showChanges() {
+  const lastTag = getLastTag();
+  let range;
+  if (lastTag) range = `${lastTag}..HEAD`;
+  else range = 'HEAD';
+
+  const log = runSilent(`git log --oneline --no-merges ${range}`);
+  if (log) {
+    const lines = log.split('\n').filter(Boolean);
+    const types = {};
+    for (const line of lines) {
+      const p = parseConventionalCommit(line);
+      types[p.type] = (types[p.type] || 0) + 1;
+    }
+    console.log(`\n  ${c('bold', String(lines.length))} commits since last tag:\n`);
+    for (const [type, count] of Object.entries(types)) {
+      const icon = (SECTION_MAP[type] || {}).emoji || '📌';
+      console.log(`    ${icon} ${type}: ${count}`);
+    }
+  } else {
+    console.log(c('dim', '  (no commits since last tag)'));
+  }
+  console.log('');
 }
 
 // ==================== Main ====================
@@ -107,24 +232,14 @@ async function main() {
 
   console.log(c('bold', '\n🚀 Video Processor Release Tool\n'));
 
-  // ── 1. Check prerequisites ──
+  // ── 1. Pre-flight checks ──
   console.log(c('dim', '── Step 1: Pre-flight checks ──'));
 
-  // Check git status
   const status = runSilent('git status --porcelain');
   if (status) {
     console.log(c('yellow', '\n⚠️  Uncommitted changes detected:\n'));
     console.log(runSilent('git status --short'));
     console.log('');
-
-    const commitNow = await ask(c('cyan', 'Commit these changes now? (enter message, or press Enter to skip): '));
-    if (commitNow) {
-      run(`git add -A`);
-      run(`git commit -m "${commitNow}"`);
-      console.log(c('green', '✅ Changes committed.\n'));
-    } else {
-      console.log(c('yellow', '⚠️  Proceeding with uncommitted changes...\n'));
-    }
   } else {
     console.log(c('green', '✅ Working directory clean\n'));
   }
@@ -139,11 +254,10 @@ async function main() {
     process.exit(1);
   }
 
-  // ── 2. Version selection ──
+  // ── 2. Version selection (arrow keys) ──
   console.log(c('dim', '── Step 2: Version bump ──'));
   const current = getVersion();
 
-  // Try to determine version from args
   let bumpType = null;
   for (const arg of args) {
     if (['--patch', '--minor', '--major'].includes(arg)) {
@@ -153,43 +267,49 @@ async function main() {
   }
 
   if (!bumpType) {
-    // Show preview of each option
     const patchVer = bumpVersion(current, 'patch');
     const minorVer = bumpVersion(current, 'minor');
     const majorVer = bumpVersion(current, 'major');
 
     console.log(`\n  Current version: ${c('bold', current)}\n`);
-    console.log(`  ${c('cyan', '[1]')} patch: ${current} → ${c('green', patchVer)}`);
-    console.log(`  ${c('cyan', '[2]')} minor: ${current} → ${c('green', minorVer)}`);
-    console.log(`  ${c('cyan', '[3]')} major: ${current} → ${c('green', majorVer)}`);
 
-    const choice = await ask(`\n${c('cyan', 'Select version type [1/2/3] (default: 1): ')}`);
-
-    if (choice === '3') bumpType = 'major';
-    else if (choice === '2') bumpType = 'minor';
-    else bumpType = 'patch';
+    bumpType = await select({
+      message: '选择版本类型 (↑↓ 移动, Enter 确认)',
+      choices: [
+        { name: `patch: ${current} → ${patchVer} (bug fixes)`, value: 'patch' },
+        { name: `minor: ${current} → ${minorVer} (new features)`, value: 'minor' },
+        { name: `major: ${current} → ${majorVer} (breaking changes)`, value: 'major' },
+      ],
+      default: 'patch',
+    });
   }
 
   const newVersion = bumpVersion(current, bumpType);
+  const today = new Date().toISOString().slice(0, 10);
   console.log(`\n  → New version: ${c('bold', c('green', newVersion))}\n`);
 
-  // ── 3. Show changes ──
+  // ── 3. Show changes preview ──
   console.log(c('dim', '── Step 3: Changes in this release ──'));
-  const changes = getChanges();
-  if (changes) {
-    console.log('\n' + changes + '\n');
-  } else {
-    console.log(c('dim', '  (no changes detected)\n'));
-  }
+  showChanges();
+
+  // Show changelog preview
+  console.log(c('dim', '── Changelog preview ──'));
+  const changelogPreview = generateChangelogEntry(newVersion, today);
+  console.log(changelogPreview);
+  console.log('');
 
   if (isDryRun) {
     console.log(c('yellow', '🏁 Dry-run complete. No changes made.\n'));
     return;
   }
 
-  // ── 4. Confirm ──
-  const confirm = await ask(c('cyan', `Ready to release v${newVersion}? [y/N]: `));
-  if (confirm.toLowerCase() !== 'y' && confirm.toLowerCase() !== 'yes') {
+  // ── 4. Confirm (default Y) ──
+  const confirmed = await confirm({
+    message: `Ready to release v${newVersion}?`,
+    default: true,
+  });
+
+  if (!confirmed) {
     console.log(c('yellow', '\n❌ Release cancelled.\n'));
     return;
   }
@@ -203,24 +323,9 @@ async function main() {
   fs.writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + '\n');
   console.log(c('green', `✅ Version bumped to ${newVersion}`));
 
-  // Generate changelog (using auto-changelog if installed)
-  try {
-    run('npx auto-changelog -p --commit-limit false --template ./scripts/changelog-template.hbs', { silent: true });
-    console.log(c('green', '✅ Changelog updated'));
-  } catch {
-    // auto-changelog might not be installed yet
-    const lastTag = runSilent('git describe --tags --abbrev=0 2>/dev/null');
-    let range;
-    if (lastTag) range = `${lastTag}..HEAD`;
-    else range = 'HEAD';
-
-    const log = runSilent(`git log --oneline --no-merges ${range}`);
-    const changelogPath = path.join(ROOT, 'CHANGELOG.md');
-    const newEntry = `## ${newVersion}\n\n${log ? log.split('\n').map(l => `- ${l}`).join('\n') : '- Initial release'}\n\n`;
-    const existing = fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, 'utf-8') : '# Changelog\n\n';
-    fs.writeFileSync(changelogPath, existing.replace('# Changelog\n\n', `# Changelog\n\n${newEntry}`));
-    console.log(c('green', '✅ Changelog updated (manual mode)'));
-  }
+  // Generate changelog
+  updateChangelog(newVersion, today);
+  console.log(c('green', '✅ Changelog updated'));
 
   // Commit and tag
   run(`git add package.json CHANGELOG.md`);
@@ -259,7 +364,6 @@ async function main() {
   // ── 7. Summary ──
   console.log(c('bold', c('green', '\n🎉 Release v' + newVersion + ' completed!\n')));
 
-  // Check if GitHub remote exists
   const hasGithub = remoteNames.some(name => {
     const url = remotes[name].push || remotes[name].fetch || '';
     return url.includes('github.com');
