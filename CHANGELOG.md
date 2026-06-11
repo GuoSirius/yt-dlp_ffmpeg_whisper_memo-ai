@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2] - 2026-06-11
+
+### Bug Fixes
+
+- 修复 workflows/publish.yml 无效的 releases 权限值 (`2a2f778`)
+
+
 ## [1.2.1] - 2026-06-11
 
 ### Bug Fixes
