@@ -524,13 +524,64 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 
 ---
 
-## 报告格式
+## 输出结构速查表
 
-执行后在 `reports/{sheet名称}/` 生成两种报告：
+三种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根（可通过 `DOWNLOADS_DIR` / `TRANSCODED_DIR` / `REPORTS_DIR` 环境变量覆盖）。
 
-### JSON 报告（机器可读）
+> `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）  
+> `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencentVid`、`youku`）  
+> `{stem}` = 去重后的安全文件名（不含扩展名）  
 
-路径：`reports/{sheet名称}/report_YYYYMMDD_HHMMSS.json`
+### ① Excel 批量模式（默认）
+
+| 环节 | 输出路径 | 产物格式 | 说明 |
+|------|---------|---------|------|
+| 下载 | `output/downloads/{sheet}/{stem}.mp4` | 视频 | yt-dlp 下载原始视频 |
+| 转码 | `output/transcoded/{sheet}/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
+| JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 机器可读，含 summary + failed_items，可供 --retry-failed 重跑 |
+| 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 人类可读，含语音识别原文 + AI 关键词分析 |
+
+> 多 sheet 同时执行时，每个 sheet 独立一个子目录，互不干扰。
+
+### ② --url 直链模式
+
+| 环节 | 输出路径 | 产物格式 | 说明 |
+|------|---------|---------|------|
+| 下载 | `output/downloads/{platform}/{name}.mp4` | 视频 | yt-dlp 下载单个视频 |
+| 转码 | `output/transcoded/{platform}/{name}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
+| JSON 报告 | `output/reports/{platform}/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
+| 文本报告 | `output/reports/{platform}/tasks/{name}.txt` | 文本 | 含识别原文 + AI 分析 |
+
+> `{platform}` 由脚本自动从 URL 解析，如 `https://www.youtube.com/watch?v=xxx` → `youtube`。
+
+### ③ --input 本地文件模式
+
+| 环节 | 输出路径 | 产物格式 | 说明 |
+|------|---------|---------|------|
+| 下载 | —（跳过） | — | 本地文件无需下载 |
+| 转码 | `output/transcoded/{sheet}/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
+| JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
+| 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
+
+> `{sheet}` 默认为 `local`，可通过 `--sheet` 参数自定义（如 `--sheet 测试视频`）。
+
+---
+
+### 三种来源对比一览
+
+| 维度 | Excel 批量 | --url 直链 | --input 本地文件 |
+|------|-----------|-----------|-----------------|
+| 输入 | Excel 行（多视频批量） | 单个视频 URL | 本地视频/音频文件 |
+| 下载目录 | `downloads/{sheet}/` | `downloads/{platform}/` | 无 |
+| 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/{sheet}/` |
+| 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/{sheet}/` |
+| 分组依据 | Excel sheet 名 | URL 解析的平台名 | 默认 `local`，可 --sheet 自定义 |
+| 并发支持 | ✅ 多线程 | ❌ 单任务 | ❌ 单任务 |
+| 支持 --retry-failed | ✅ | ❌ | ❌ |
+
+---
+
+### JSON 报告结构
 
 ```json
 {
@@ -555,24 +606,6 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
   ]
 }
 ```
-
-### 文本报告（人类可读）
-
-路径：`reports/{sheet名称}/tasks/{stem}.txt`
-
-包含视频信息、语音识别内容和 AI 分析关键词，方便人工查阅。
-
-### 报告分组规则
-
-| 运行模式 | 报告目录 | 说明 |
-|---------|----------|------|
-| Excel 批量（--sheet） | `reports/{sheet名}/` | 每个 Excel sheet 独立一个目录 |
-| Excel 批量（全部 sheet） | `reports/{sheetA}/` + `reports/{sheetB}/` + ... | 多 sheet 时每 sheet 各生成一份报告 |
-| --url 直链 | `reports/{平台名}/` | 平台名如 youtube、bilibili、tencentVid 等 |
-| --input 本地文件 | `reports/local/` | 可通过 --sheet 自定义目录名 |
-| --retry-failed | 读取指定 JSON 文件 | 新报告写入同目录 |
-
-> **设计原则**：每个 sheet/站点独立一个子目录，JSON 和 TXT 报告共存，避免所有结果混杂在同一个扁平目录下。
 
 ### 状态含义
 
