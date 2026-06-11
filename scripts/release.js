@@ -45,7 +45,12 @@ function run(cmd, { silent = false, cwd = ROOT } = {}) {
   try {
     return execSync(cmd, { encoding: 'utf-8', cwd, stdio: silent ? 'pipe' : 'inherit' });
   } catch (e) {
-    if (!silent) console.error(c('red', `\n❌ Command failed: ${cmd}`));
+    if (!silent) {
+      console.error(c('red', `\n❌ Command failed: ${cmd}`));
+    }
+    // Preserve stderr for callers that need it (silent mode swallows output)
+    e._stderr = e.stderr || '';
+    e._stdout = e.stdout || '';
     throw e;
   }
 }
@@ -381,7 +386,7 @@ async function main() {
         // GitHub push is critical — workflow won't trigger without it
         console.log(c('red', `\n❌ Failed to push to GitHub (${name})!`));
         console.log(c('red', '   GitHub Actions workflow will NOT trigger.'));
-        console.log(c('red', `   Error: ${e.stderr || e.message}`));
+        console.log(c('red', `   Error: ${e._stderr || e.stderr || e.message}`));
         console.log(c('yellow', '\n💡 Troubleshooting:'));
         console.log(c('yellow', '  1. Check GitHub credentials:'));
         console.log(c('yellow', '     git config --global credential.helper'));
@@ -391,6 +396,13 @@ async function main() {
         process.exit(1);
       } else {
         console.log(c('yellow', `⚠️  Failed to push to ${name}, continuing...`));
+        if (e._stderr) {
+          // Print each line of the git error for readability
+          const errLines = e._stderr.trim().split('\n').filter(Boolean);
+          for (const line of errLines) {
+            console.log(c('dim', `     ${line}`));
+          }
+        }
       }
     }
   }
