@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.3] - 2026-06-11
+
+### Bug Fixes
+
+- 修复 Release 版本名双 v 前缀 + 只显示当前版本变更 (`9108168`)
+
+### Chores
+
+- 仓库地址统一指向 GitHub (gitee → github) (`d2f3462`)
+
+
 ## [1.2.2] - 2026-06-11
 
 ### Bug Fixes
