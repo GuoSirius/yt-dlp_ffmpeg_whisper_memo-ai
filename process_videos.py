@@ -52,7 +52,13 @@ import requests
 import pandas as pd
 from openpyxl import load_workbook
 
-load_dotenv()
+# --env-file 需在 load_dotenv 之前解析
+_env_file = ".env"
+if "--env-file" in sys.argv:
+    _idx = sys.argv.index("--env-file")
+    if _idx + 1 < len(sys.argv):
+        _env_file = sys.argv[_idx + 1]
+load_dotenv(dotenv_path=_env_file)
 
 # ─────────────────────────────── 路径配置 ───────────────────────────────────
 
@@ -1775,7 +1781,36 @@ if __name__ == "__main__":
         "--retry-failed",
         help="从指定报告 JSON 重跑失败项（reports/report_xxx.json）",
     )
+    parser.add_argument("--init", action="store_true", help="复制 .env.example 到当前目录并重命名为 .env")
+    parser.add_argument(
+        "--file",
+        help="指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）",
+    )
+    parser.add_argument(
+        "--env-file",
+        help="指定要加载的 .env 文件路径（默认: 当前目录 .env）",
+    )
     args = parser.parse_args()
+
+    # ── init 模式 ──
+    if args.init:
+        src = BASE_DIR / ".env.example"
+        dest = Path.cwd() / ".env"
+        if not src.exists():
+            print(f"错误: 找不到 {src}", file=sys.stderr)
+            sys.exit(1)
+        if dest.exists():
+            print(f".env 已存在于当前目录，跳过: {dest}")
+        else:
+            import shutil as _shutil
+            _shutil.copy2(str(src), str(dest))
+            print(f"✅ .env 已从 .env.example 创建: {dest}")
+        sys.exit(0)
+
+    # ── file 覆盖 ──
+    if args.file:
+        EXCEL_FILE = Path(args.file).resolve()
+        log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
 
     steps = [args.step] if args.step else ["download", "transcode", "transcribe", "analyze"]
     run(

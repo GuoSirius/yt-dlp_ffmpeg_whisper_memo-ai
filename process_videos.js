@@ -13,7 +13,13 @@
 'use strict';
 
 // ============================== 依赖 ==============================
-require('dotenv').config();
+// --env-file 需在 dotenv 加载前解析
+let _dotenvPath = '.env';
+const _envFileIdx = process.argv.indexOf('--env-file');
+if (_envFileIdx !== -1 && _envFileIdx + 1 < process.argv.length) {
+  _dotenvPath = process.argv[_envFileIdx + 1];
+}
+require('dotenv').config({ path: _dotenvPath });
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -32,7 +38,7 @@ function envPath(key, defaultValue) {
   return path.isAbsolute(val) ? p : path.resolve(BASE_DIR, val);
 }
 
-const EXCEL_FILE = envPath('EXCEL_FILE', 'export_2026-06-10_split.xlsx');
+let EXCEL_FILE = envPath('EXCEL_FILE', 'export_2026-06-10_split.xlsx');
 const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'downloads');
 const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'transcoded');
 const COOKIES_DIR = envPath('COOKIES_DIR', 'cookies');
@@ -1621,11 +1627,37 @@ if (require.main === module) {
     .option('--transcribe-timeout <n>', '识别超时（秒），默认 600', parseInt, 600)
     .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', parseInt, 300)
     .option('--dry-run', '干跑模式，只列任务不执行')
-    .option('--retry-failed <path>', '从报告 JSON 重跑失败项');
+    .option('--retry-failed <path>', '从报告 JSON 重跑失败项')
+    .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
+    .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
+    .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）');
 
   program.parse();
 
   const opts = program.opts();
+
+  // ── init 模式 ──
+  if (opts.init) {
+    const src = path.resolve(__dirname, '.env.example');
+    const dest = path.resolve(process.cwd(), '.env');
+    if (!fs.existsSync(src)) {
+      console.error(`错误: 找不到 ${src}`);
+      process.exit(1);
+    }
+    if (fs.existsSync(dest)) {
+      console.log(`.env 已存在于当前目录，跳过: ${dest}`);
+    } else {
+      fs.copyFileSync(src, dest);
+      console.log(`✅ .env 已从 .env.example 创建: ${dest}`);
+    }
+    process.exit(0);
+  }
+
+  // ── file 覆盖 ──
+  if (opts.file) {
+    EXCEL_FILE = path.resolve(opts.file);
+    logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
+  }
   const steps = opts.step ? [opts.step] : ['download', 'transcode', 'transcribe', 'analyze'];
 
   run({
