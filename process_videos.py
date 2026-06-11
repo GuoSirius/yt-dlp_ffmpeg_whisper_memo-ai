@@ -1799,19 +1799,27 @@ if __name__ == "__main__":
             print(f"错误: 找不到 {src}", file=sys.stderr)
             sys.exit(1)
         import shutil as _shutil
+        import questionary as _qy
         dest = Path.cwd() / ".env"
         if dest.exists():
             print(f"\n⚠️  目标文件已存在: {dest}")
-            print("")
-            print("  [1] 覆盖 (overwrite)")
-            print("  [2] 保留现有 (keep existing)")
-            print("  [3] 自定义文件名 (custom name)")
-            choice = input("\n  请选择 [1/2/3] (默认: 2): ").strip() or "2"
-            if choice == "1":
+            choice = _qy.select(
+                "如何处理冲突?",
+                choices=[
+                    _qy.Choice("覆盖 (overwrite)", "overwrite"),
+                    _qy.Choice("保留现有 (keep existing)", "keep"),
+                    _qy.Choice("自定义文件名 (custom name)", "custom"),
+                ],
+            ).unsafe_ask()
+            if choice == "overwrite":
                 _shutil.copy2(str(src), str(dest))
                 print(f"✅ .env 已覆盖: {dest}")
-            elif choice == "3":
-                custom_name = input("  请输入新文件名 (如 .env.prod): ").strip()
+            elif choice == "custom":
+                custom_name = _qy.text(
+                    "请输入新文件名",
+                    default=".env.prod",
+                    validate=lambda v: bool(v.strip()),
+                ).unsafe_ask()
                 if not custom_name:
                     print("未输入文件名，已取消。")
                     sys.exit(0)

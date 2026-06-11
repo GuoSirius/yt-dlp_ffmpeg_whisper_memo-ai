@@ -21,6 +21,7 @@ import XLSX from 'xlsx';
 import pLimit from 'p-limit';
 import { fileURLToPath } from 'url';
 import { program } from 'commander';
+import { select, input } from '@inquirer/prompts';
 
 // --env-file 需在 dotenv 加载前解析
 let _dotenvPath = '.env';
@@ -1647,27 +1648,24 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     let dest = path.resolve(process.cwd(), '.env');
     if (fs.existsSync(dest)) {
       console.log(`\n⚠️  目标文件已存在: ${dest}`);
-      console.log('');
-      console.log('  [1] 覆盖 (overwrite)');
-      console.log('  [2] 保留现有 (keep existing)');
-      console.log('  [3] 自定义文件名 (custom name)');
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const choice = await new Promise(resolve => {
-        rl.question('\n  请选择 [1/2/3] (默认: 2): ', ans => {
-          rl.close();
-          resolve(ans.trim() || '2');
-        });
+      const choice = await select({
+        message: '如何处理冲突?',
+        choices: [
+          { name: '覆盖 (overwrite)', value: 'overwrite', description: '用 .env.example 覆盖现有 .env 文件' },
+          { name: '保留现有 (keep existing)', value: 'keep', description: '不做任何修改，保留当前 .env' },
+          { name: '自定义文件名 (custom name)', value: 'custom', description: '使用自定义文件名创建 .env' },
+        ],
       });
-      if (choice === '1') {
+      if (choice === 'overwrite') {
         fs.copyFileSync(src, dest);
         console.log(`✅ .env 已覆盖: ${dest}`);
-      } else if (choice === '3') {
-        const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const customName = await new Promise(resolve => {
-          rl2.question('  请输入新文件名 (如 .env.prod): ', ans => {
-            rl2.close();
-            resolve(ans.trim());
-          });
+      } else if (choice === 'custom') {
+        const customName = await input({
+          message: '请输入新文件名',
+          default: '.env.prod',
+          validate(val) {
+            return val ? true : '文件名不能为空';
+          },
         });
         if (!customName) {
           console.log('未输入文件名，已取消。');
