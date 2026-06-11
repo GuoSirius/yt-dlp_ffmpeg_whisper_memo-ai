@@ -105,24 +105,24 @@ COL_ID = os.getenv("COL_ID", "extra.id")
 COL_TITLE = os.getenv("COL_TITLE", "title")
 COL_CONTENT = os.getenv("COL_CONTENT", "content")
 COL_KEYWORDS = os.getenv("COL_KEYWORDS", "keywords")
-COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencentVid")
-COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibiliBvid")
-COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtubeId")
-COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youkuId")
+COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencent")
+COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibili")
+COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtube")
+COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youku")
 
 # ──────────────────────────────── 平台配置 ──────────────────────────────────
 
 # 平台 ID 列映射
 _PLATFORM_COL_MAP = {
-    "tencentVid": COL_TENCENTVID,
-    "bilibiliBvid": COL_BILIBILIBVID,
-    "youtubeId": COL_YOUTUBEID,
-    "youkuId": COL_YOUKUID,
+    "tencent": COL_TENCENTVID,
+    "bilibili": COL_BILIBILIBVID,
+    "youtube": COL_YOUTUBEID,
+    "youku": COL_YOUKUID,
 }
 
 # 平台优先级
 PLATFORM_PRIORITY = [p.strip() for p in os.getenv(
-    "PLATFORM_PRIORITY", "bilibiliBvid,youtubeId,tencentVid,youkuId").split(",") if p.strip()]
+    "PLATFORM_PRIORITY", "bilibili,youtube,tencent,youku").split(",") if p.strip()]
 
 # 视频 Sheet 列表
 _VIDEO_SHEETS_RAW = os.getenv("VIDEO_SHEETS", "")
@@ -131,10 +131,10 @@ VIDEO_SHEETS = [s.strip() for s in _VIDEO_SHEETS_RAW.split(",") if s.strip()] if
 
 # 平台 key → 环境变量前缀（使 .env 中的变量名简短可读）
 _PKEY_ENV_PREFIX = {
-    "tencentVid":    "TENCENT",
-    "bilibiliBvid":  "BILIBILI",
-    "youtubeId":     "YOUTUBE",
-    "youkuId":       "YOUKU",
+    "tencent":    "TENCENT",
+    "bilibili":  "BILIBILI",
+    "youtube":     "YOUTUBE",
+    "youku":       "YOUKU",
 }
 
 
@@ -164,11 +164,11 @@ def _build_platform_config() -> dict:
         extra_headers = []
         if ua:
             extra_headers += ["--user-agent", ua]
-        if pkey == "bilibiliBvid":
+        if pkey == "bilibili":
             referer = os.getenv(f"{prefix}_REFERER", "")
             if referer:
                 extra_headers += ["--add-header", f"Referer:{referer}"]
-        if ua or (pkey == "bilibiliBvid" and os.getenv(f"{prefix}_REFERER", "")):
+        if ua or (pkey == "bilibili" and os.getenv(f"{prefix}_REFERER", "")):
             extra_headers += ["--add-header", "Accept-Language:zh,en;q=0.9"]
         if extra_headers:
             cfg["extra_headers"] = extra_headers
@@ -179,7 +179,7 @@ def _build_platform_config() -> dict:
             cfg["concurrent_fragments"] = int(cf)
 
         # Extra args (YouTube-specific: JS runtime, remote components)
-        if pkey == "youtubeId":
+        if pkey == "youtube":
             js_rt = os.getenv(f"{prefix}_JS_RUNTIMES", "")
             rc = os.getenv(f"{prefix}_REMOTE_COMPONENTS", "")
             extra_args = []
@@ -314,7 +314,7 @@ def build_url(pkey: str, vid: str) -> str:
 _URL_PLATFORM_MAP = [
     {
         "platform": "bilibili",
-        "pkey": "bilibiliBvid",
+        "pkey": "bilibili",
         "patterns": [
             re.compile(r"bilibili\.com/video/(BV[a-zA-Z0-9]{10})"),
             re.compile(r"b23\.tv/([a-zA-Z0-9]+)"),
@@ -323,7 +323,7 @@ _URL_PLATFORM_MAP = [
     },
     {
         "platform": "youtube",
-        "pkey": "youtubeId",
+        "pkey": "youtube",
         "patterns": [
             re.compile(
                 r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]{11})"
@@ -332,7 +332,7 @@ _URL_PLATFORM_MAP = [
     },
     {
         "platform": "tencent",
-        "pkey": "tencentVid",
+        "pkey": "tencent",
         "patterns": [
             re.compile(r"v\.qq\.com/x/page/([a-zA-Z0-9]+)\.html"),
             re.compile(r"v\.qq\.com/x/cover/[^/]+/([a-zA-Z0-9]+)\.html"),
@@ -341,7 +341,7 @@ _URL_PLATFORM_MAP = [
     },
     {
         "platform": "youku",
-        "pkey": "youkuId",
+        "pkey": "youku",
         "patterns": [
             re.compile(r"v\.youku\.com/v_show/id_([a-zA-Z0-9=]+)\.html"),
         ],
@@ -689,7 +689,7 @@ def step_analyze(
         "AI_PROMPT_TPL",
         "帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}"
     )
-    ai_timeout = int(os.getenv("AI_TIMEOUT", str(timeout)))
+    ai_timeout = timeout
 
     if not api_key or not base_url or not model:
         return None, 0, "AI 配置不完整（缺少 AI_API_KEY / AI_BASE_URL / AI_MODEL）"

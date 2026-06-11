@@ -71,17 +71,17 @@ const COL_ID = process.env.COL_ID || 'extra.id';
 const COL_TITLE = process.env.COL_TITLE || 'title';
 const COL_CONTENT = process.env.COL_CONTENT || 'content';
 const COL_KEYWORDS = process.env.COL_KEYWORDS || 'keywords';
-const COL_TENCENTVID = process.env.COL_TENCENTVID || 'extra.tencentVid';
-const COL_BILIBILIBVID = process.env.COL_BILIBILIBVID || 'extra.bilibiliBvid';
-const COL_YOUTUBEID = process.env.COL_YOUTUBEID || 'extra.youtubeId';
-const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youkuId';
+const COL_TENCENTVID = process.env.COL_TENCENTVID || 'extra.tencent';
+const COL_BILIBILIBVID = process.env.COL_BILIBILIBVID || 'extra.bilibili';
+const COL_YOUTUBEID = process.env.COL_YOUTUBEID || 'extra.youtube';
+const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youku';
 
 // ============================== 平台配置 ==============================
 const PLATFORM_COL_MAP = {
-  tencentVid: COL_TENCENTVID,
-  bilibiliBvid: COL_BILIBILIBVID,
-  youtubeId: COL_YOUTUBEID,
-  youkuId: COL_YOUKUID,
+  tencent: COL_TENCENTVID,
+  bilibili: COL_BILIBILIBVID,
+  youtube: COL_YOUTUBEID,
+  youku: COL_YOUKUID,
 };
 
 // ============================== 工具函数 ==============================
@@ -99,7 +99,7 @@ function c(color, text) {
   return (colors[color] || '') + text + colors.reset;
 }
 
-const PLATFORM_PRIORITY = (process.env.PLATFORM_PRIORITY || 'bilibiliBvid,youtubeId,tencentVid,youkuId')
+const PLATFORM_PRIORITY = (process.env.PLATFORM_PRIORITY || 'bilibili,youtube,tencent,youku')
   .split(',').map(s => s.trim()).filter(Boolean);
 
 const _VIDEO_SHEETS_RAW = process.env.VIDEO_SHEETS || '';
@@ -108,10 +108,10 @@ const VIDEO_SHEETS = _VIDEO_SHEETS_RAW
   : [];
 
 const _PKEY_ENV_PREFIX = {
-  tencentVid: 'TENCENT',
-  bilibiliBvid: 'BILIBILI',
-  youtubeId: 'YOUTUBE',
-  youkuId: 'YOUKU',
+  tencent: 'TENCENT',
+  bilibili: 'BILIBILI',
+  youtube: 'YOUTUBE',
+  youku: 'YOUKU',
 };
 
 function buildPlatformConfig() {
@@ -137,11 +137,11 @@ function buildPlatformConfig() {
     const ua = process.env[`${prefix}_USER_AGENT`] || '';
     const extraHeaders = [];
     if (ua) extraHeaders.push('--user-agent', ua);
-    if (pkey === 'bilibiliBvid') {
+    if (pkey === 'bilibili') {
       const referer = process.env[`${prefix}_REFERER`] || '';
       if (referer) extraHeaders.push('--add-header', `Referer:${referer}`);
     }
-    if (ua || (pkey === 'bilibiliBvid' && process.env[`${prefix}_REFERER`])) {
+    if (ua || (pkey === 'bilibili' && process.env[`${prefix}_REFERER`])) {
       extraHeaders.push('--add-header', 'Accept-Language:zh,en;q=0.9');
     }
     if (extraHeaders.length) cfg.extra_headers = extraHeaders;
@@ -151,7 +151,7 @@ function buildPlatformConfig() {
     if (cf) cfg.concurrent_fragments = parseInt(cf, 10);
 
     // Extra args (YouTube)
-    if (pkey === 'youtubeId') {
+    if (pkey === 'youtube') {
       const jsRt = process.env[`${prefix}_JS_RUNTIMES`] || '';
       const rc = process.env[`${prefix}_REMOTE_COMPONENTS`] || '';
       const extraArgs = [];
@@ -328,7 +328,7 @@ function buildUrl(pkey, vid) {
 const URL_PLATFORM_MAP = [
   {
     platform: 'bilibili',
-    pkey: 'bilibiliBvid',
+    pkey: 'bilibili',
     patterns: [
       /bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})/,
       /b23\.tv\/([a-zA-Z0-9]+)/,
@@ -337,14 +337,14 @@ const URL_PLATFORM_MAP = [
   },
   {
     platform: 'youtube',
-    pkey: 'youtubeId',
+    pkey: 'youtube',
     patterns: [
       /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/,
     ],
   },
   {
     platform: 'tencent',
-    pkey: 'tencentVid',
+    pkey: 'tencent',
     patterns: [
       /v\.qq\.com\/x\/page\/([a-zA-Z0-9]+)\.html/,
       /v\.qq\.com\/x\/cover\/[^/]+\/([a-zA-Z0-9]+)\.html/,
@@ -353,7 +353,7 @@ const URL_PLATFORM_MAP = [
   },
   {
     platform: 'youku',
-    pkey: 'youkuId',
+    pkey: 'youku',
     patterns: [
       /v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html/,
     ],
@@ -689,7 +689,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   const model = process.env.AI_MODEL || '';
   const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
-  const aiTimeout = parseInt(process.env.AI_TIMEOUT || String(timeout), 10);
+  const aiTimeout = timeout;
 
   if (!apiKey || !baseUrl || !model) {
     return { text: null, retries: 0, error: 'AI config incomplete' };
