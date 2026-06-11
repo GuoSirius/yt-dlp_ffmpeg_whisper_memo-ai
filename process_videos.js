@@ -1201,7 +1201,7 @@ function generateReport(results, config, sheetName) {
   // ── 单 sheet 报告 ──
   const dir = path.join(REPORTS_DIR, sheetName);
   fs.mkdirSync(dir, { recursive: true });
-  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15).replace(/(\d{8})(\d{6})/, '$1_$2');
+  const ts = new Date().toISOString().split('.')[0].replace(/[-:T]/g, '').replace(/(\d{8})(\d{6})/, '$1_$2');
   const reportFile = path.join(dir, `report_${ts}.json`);
 
   const summary = computeSummary(results);
