@@ -843,6 +843,10 @@ def step_download(
         "-f", PLATFORM_CONFIG[pkey].get("format", "bestvideo+bestaudio/best"),
     ]
 
+    # 强制覆盖已有文件（--force 时 yt-dlp 也需忽略本地文件）
+    if force:
+        cmd += ["--force-overwrites"]
+
     # 平台级并发分片（加速下载）
     cf = PLATFORM_CONFIG[pkey].get("concurrent_fragments")
     if cf:

@@ -828,6 +828,10 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
     '-f', cfg.format || 'bestvideo+bestaudio/best',
   ];
 
+  if (force) {
+    args.push('--force-overwrites');
+  }
+
   if (cfg.concurrent_fragments) {
     args.push('--concurrent-fragments', String(cfg.concurrent_fragments));
   }
@@ -2337,8 +2341,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .option('--sheet <name>', '指定 sheet 名称')
     .option('--id <id>', '指定 extra.id 或 title（单条测试）')
-    .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', parseInt, 0)
-    .option('--limit <n>', '最多处理 N 条任务，默认无限制', parseInt, 0)
+    .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', v => parseInt(v, 10), 0)
+    .option('--limit <n>', '最多处理 N 条任务，默认无限制', v => parseInt(v, 10), 0)
     .option('--step <step>', '指定执行步骤（可多次指定），如 --step transcode --step transcribe', (val, prev) => {
       const allowed = ['download', 'transcode', 'transcribe', 'analyze'];
       if (!allowed.includes(val)) {
@@ -2348,13 +2352,13 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       return [...(prev || []), val];
     })
     .option('--force', '强制重做下载+转码（忽略已有文件）')
-    .option('--concurrency <n>', '并发数，默认 1', parseInt, 1)
-    .option('--retry <n>', '每步失败最大重试次数，默认 0', parseInt, 0)
-    .option('--retry-delay <n>', '重试间隔基数（秒），默认 5', parseFloat, 5.0)
-    .option('--download-timeout <n>', '下载超时（秒），默认 600', parseInt, 600)
-    .option('--transcode-timeout <n>', '转码超时（秒），默认 600', parseInt, 600)
-    .option('--transcribe-timeout <n>', '识别超时（秒），默认 600', parseInt, 600)
-    .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', parseInt, 300)
+    .option('--concurrency <n>', '并发数，默认 1', v => parseInt(v, 10), 1)
+    .option('--retry <n>', '每步失败最大重试次数，默认 0', v => parseInt(v, 10), 0)
+    .option('--retry-delay <n>', '重试间隔基数（秒），默认 5', v => parseFloat(v), 5.0)
+    .option('--download-timeout <n>', '下载超时（秒），默认 600', v => parseInt(v, 10), 600)
+    .option('--transcode-timeout <n>', '转码超时（秒），默认 600', v => parseInt(v, 10), 600)
+    .option('--transcribe-timeout <n>', '识别超时（秒），默认 600', v => parseInt(v, 10), 600)
+    .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', v => parseInt(v, 10), 300)
     .option('--dry-run', '干跑模式，只列任务不执行')
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
