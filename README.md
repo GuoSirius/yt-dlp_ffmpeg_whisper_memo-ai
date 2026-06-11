@@ -158,8 +158,22 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ├── transcoded/                   # ffmpeg 转码输出（wav 16kHz mono）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
-├── reports/                      # 执行报告（JSON）
-│   └── report_YYYYMMDD_HHMMSS.json
+├── reports/                      # 执行报告（按 sheet/站点分目录）
+│   ├── YouTube视频/
+│   │   ├── report_YYYYMMDD_HHMMSS.json   # JSON 报告（机器可读，用于重跑）
+│   │   └── tasks/                        # 人类可读文本摘要
+│   │       ├── 2143.txt
+│   │       └── ...
+│   ├── 普诺赛中文站/
+│   │   ├── report_YYYYMMDD_HHMMSS.json
+│   │   └── tasks/
+│   │       └── ...
+│   ├── youtube/                  # --url 模式按平台名分目录
+│   │   ├── report_YYYYMMDD_HHMMSS.json
+│   │   └── tasks/
+│   └── local/                    # --input 模式默认目录
+│       ├── report_YYYYMMDD_HHMMSS.json
+│       └── tasks/
 ├── scripts/                      # 辅助脚本
 │   ├── release.js                 # 版本发布脚本
 │   └── regenerate-changelog.js  # CHANGELOG 重建脚本
@@ -253,12 +267,12 @@ node process_videos.js --limit 3 --concurrency 1        # 只处理前3条
 ### 重跑失败
 
 ```bash
-# 第一次跑完后生成 reports/report_xxx.json
+# 第一次跑完后生成 reports/{sheet名称}/report_xxx.json
 # 查看失败项：
-node process_videos.js --retry-failed reports/report_20260610_143000.json --dry-run
+node process_videos.js --retry-failed reports/YouTube视频/report_20260610_143000.json --dry-run
 
 # 重跑：
-node process_videos.js --retry-failed reports/report_20260610_143000.json --concurrency 2 --retry 3
+node process_videos.js --retry-failed reports/YouTube视频/report_20260610_143000.json --concurrency 2 --retry 3
 ```
 
 ### 超时控制（防止任务卡死）
@@ -360,7 +374,7 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 | `--transcribe-timeout <n>` | int | 600 | 单个识别任务最长执行时间（秒） |
 | `--analyze-timeout <n>` | int | 300 | 单个 AI 分析任务最长执行时间（秒） |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
-| `--retry-failed <path>` | path | — | 从报告 JSON 重跑失败项 |
+| `--retry-failed <path>` | path | — | 从报告 JSON 重跑失败项（如 `reports/YouTube视频/report_xxx.json`） |
 | `--init` | flag | off | 复制 .env.example 到当前目录并重命名为 .env |
 | `--file <path>` | path | — | 指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量） |
 | `--input <path>` | path | — | 指定本地视频文件路径（跳过下载，直接转码→识别→分析） |
@@ -512,7 +526,11 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 
 ## 报告格式
 
-执行后在 `reports/` 生成 `report_YYYYMMDD_HHMMSS.json`：
+执行后在 `reports/{sheet名称}/` 生成两种报告：
+
+### JSON 报告（机器可读）
+
+路径：`reports/{sheet名称}/report_YYYYMMDD_HHMMSS.json`
 
 ```json
 {
@@ -538,6 +556,26 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 }
 ```
 
+### 文本报告（人类可读）
+
+路径：`reports/{sheet名称}/tasks/{stem}.txt`
+
+包含视频信息、语音识别内容和 AI 分析关键词，方便人工查阅。
+
+### 报告分组规则
+
+| 运行模式 | 报告目录 | 说明 |
+|---------|----------|------|
+| Excel 批量（--sheet） | `reports/{sheet名}/` | 每个 Excel sheet 独立一个目录 |
+| Excel 批量（全部 sheet） | `reports/{sheetA}/` + `reports/{sheetB}/` + ... | 多 sheet 时每 sheet 各生成一份报告 |
+| --url 直链 | `reports/{平台名}/` | 平台名如 youtube、bilibili、tencentVid 等 |
+| --input 本地文件 | `reports/local/` | 可通过 --sheet 自定义目录名 |
+| --retry-failed | 读取指定 JSON 文件 | 新报告写入同目录 |
+
+> **设计原则**：每个 sheet/站点独立一个子目录，JSON 和 TXT 报告共存，避免所有结果混杂在同一个扁平目录下。
+
+### 状态含义
+
 - **success**：下载 + 转码 + 识别全部成功（AI 分析失败不影响此状态）
 - **partial**：下载 + 转码成功，识别或 AI 分析失败
 - **failed**：下载或转码失败
@@ -560,7 +598,7 @@ node process_videos.js --sheet "YouTube视频" --id 2143 --retry 2
 node process_videos.js --concurrency 3 --retry 3
 
 # 4. 查看报告，重跑失败项
-node process_videos.js --retry-failed reports/report_xxx.json --concurrency 2 --retry 3
+node process_videos.js --retry-failed reports/YouTube视频/report_xxx.json --concurrency 2 --retry 3
 ```
 
 ---

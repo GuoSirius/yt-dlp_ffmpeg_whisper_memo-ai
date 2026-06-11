@@ -1305,11 +1305,26 @@ def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) ->
     return True
 
 
-def generate_report(results: list[TaskResult], config: dict) -> Path:
-    """生成执行报告 JSON 文件，返回报告路径"""
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+def generate_report(results: list[TaskResult], config: dict, sheet_name: str | None = None) -> Path | list[Path]:
+    """生成执行报告 JSON 文件。
+    - sheet_name 提供时：报告存入 REPORTS_DIR/{sheet_name}/report_{ts}.json
+    - 不提供时：按 r.sheet 分组，每 sheet 调用自身，返回路径列表
+    """
+    if sheet_name is None:
+        # ── 按 sheet 分组生成 ──
+        sheet_groups: dict[str, list[TaskResult]] = {}
+        for r in results:
+            sheet_groups.setdefault(r.sheet, []).append(r)
+        paths = []
+        for sheet, items in sheet_groups.items():
+            paths.append(generate_report(items, config, sheet))
+        return paths
+
+    # ── 单 sheet 报告 ──
+    dir_path = REPORTS_DIR / sheet_name
+    dir_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_file = REPORTS_DIR / f"report_{timestamp}.json"
+    report_file = dir_path / f"report_{timestamp}.json"
 
     summary = compute_summary(results)
 
@@ -1629,7 +1644,7 @@ def _run_url_task(opts):
     analyze_text = an.file if (an and isinstance(an.file, str)) else ""
 
     if transcribe_text or analyze_text:
-        out_dir = REPORTS_DIR / "url-tasks"
+        out_dir = REPORTS_DIR / platform / "tasks"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = out_dir / f"{stem}.txt"
         lines = [
@@ -1649,13 +1664,14 @@ def _run_url_task(opts):
 
     # 生成标准报告 JSON（与 Excel 模式格式一致）
     _generate_report_for_result(result, {"steps": steps, "max_retries": max_retries,
-                                    "retry_delay": retry_delay, "concurrency": 1, "force": force})
+                                    "retry_delay": retry_delay, "concurrency": 1, "force": force},
+                                   sheet_name=platform)
 
-def _generate_report_for_result(result, config):
+def _generate_report_for_result(result, config, sheet_name=None):
     """为单个 TaskResult 生成标准报告 JSON + 控制台摘要"""
     if result is None:
         return
-    report_path = generate_report([result], config)
+    report_path = generate_report([result], config, sheet_name=sheet_name)
     print_report_summary([result])
 
 
@@ -2197,6 +2213,29 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
         result.analyze = StepResult('skipped')
 
     result.overall_status = 'success'
+
+    # ── 保存文本结果 ──
+    tr = result.transcribe
+    an = result.analyze
+    transcribe_text = tr.file if (tr and isinstance(tr.file, str)) else ""
+    analyze_text = an.file if (an and isinstance(an.file, str)) else ""
+
+    if transcribe_text or analyze_text:
+        out_dir = REPORTS_DIR / sheet_name / "tasks"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{used_stem}.txt"
+        lines = [
+            f"文件: {input_path}",
+            f"平台: local",
+            "", "=" * 60, "",
+        ]
+        if transcribe_text:
+            lines.extend(["【语音识别内容】", "", transcribe_text, ""])
+        if analyze_text:
+            lines.extend(["【AI关键词分析】", "", analyze_text, ""])
+        out_file.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\n  📄 结果已保存至: {out_file}")
+
     return result
 
 
@@ -2210,7 +2249,7 @@ if __name__ == "__main__":
 示例:
   python process_videos.py --concurrency 3 --retry 3
   python process_videos.py --sheet "YouTube视频" --id 2143
-  python process_videos.py --retry-failed output/reports/report_20260610_141800.json
+  python process_videos.py --retry-failed output/reports/YouTube视频/report_20260610_141800.json
   python process_videos.py --dry-run
         """,
     )
@@ -2255,7 +2294,7 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
         "--retry-failed",
-        help="从指定报告 JSON 重跑失败项（output/reports/report_xxx.json）",
+        help="从指定报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）",
     )
     parser.add_argument("--init", action="store_true", help="复制 .env.example 到当前目录并重命名为 .env")
     parser.add_argument(
@@ -2493,7 +2532,7 @@ if __name__ == "__main__":
             "concurrency": 1,
             "force": args.force,
         }
-        report_path = generate_report([result], config)
+        report_path = generate_report([result], config, sheet_name=sheet_name)
         print_report_summary([result])
         print(f"  整体状态: {result.overall_status}")
         if result.download:

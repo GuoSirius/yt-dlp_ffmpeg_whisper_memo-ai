@@ -1178,10 +1178,31 @@ function computeSummary(results) {
   return { total: results.length, success, partial, failed, no_video: noVideo };
 }
 
-function generateReport(results, config) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+/**
+ * 生成执行报告 JSON 文件。
+ * - 提供 sheetName 时：报告存入 REPORTS_DIR/{sheetName}/report_{ts}.json
+ * - 不提供时：按 r.sheet 分组，每 sheet 调用自身，返回路径数组
+ */
+function generateReport(results, config, sheetName) {
+  if (!sheetName) {
+    // ── 按 sheet 分组生成 ──
+    const sheetGroups = new Map();
+    for (const r of results) {
+      if (!sheetGroups.has(r.sheet)) sheetGroups.set(r.sheet, []);
+      sheetGroups.get(r.sheet).push(r);
+    }
+    const paths = [];
+    for (const [sheet, items] of sheetGroups) {
+      paths.push(generateReport(items, config, sheet));
+    }
+    return paths;
+  }
+
+  // ── 单 sheet 报告 ──
+  const dir = path.join(REPORTS_DIR, sheetName);
+  fs.mkdirSync(dir, { recursive: true });
   const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15).replace(/(\d{8})(\d{6})/, '$1_$2');
-  const reportFile = path.join(REPORTS_DIR, `report_${ts}.json`);
+  const reportFile = path.join(dir, `report_${ts}.json`);
 
   const summary = computeSummary(results);
 
@@ -1671,7 +1692,7 @@ async function runInputTask(opts) {
 
   // ── 保存文本结果 ──
   if (transcribeText || analyzeText) {
-    const outDir = path.join(REPORTS_DIR, 'input-tasks');
+    const outDir = path.join(REPORTS_DIR, sheetName, 'tasks');
     fs.mkdirSync(outDir, { recursive: true });
     const outFile = path.join(outDir, `${usedStem}.txt`);
     const lines = [
@@ -1801,7 +1822,7 @@ async function runUrlTask(opts) {
   const analyzeText = (result.analyze && typeof result.analyze.file === 'string') ? result.analyze.file : '';
 
   if (transcribeText || analyzeText) {
-    const outDir = path.join(REPORTS_DIR, 'url-tasks');
+    const outDir = path.join(REPORTS_DIR, platform, 'tasks');
     fs.mkdirSync(outDir, { recursive: true });
     const outFile = path.join(outDir, `${stem}.txt`);
     const lines = [
@@ -1936,10 +1957,10 @@ async function run({
     sheets, target_id: targetId, steps, max_retries: maxRetries,
     retry_delay: retryDelay, concurrency, force,
   };
-  const reportPath = generateReport(results, config);
+  const reportPaths = generateReport(results, config);
   printReportSummary(results);
 
-  logInfo(`all done! report: ${reportPath}`);
+  logInfo(`all done! reports: ${Array.isArray(reportPaths) ? reportPaths.join(', ') : reportPaths}`);
 }
 
 function printDryRun(tasks, steps, env) {
@@ -2132,9 +2153,9 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
 
   const config = { retry_from: reportPath, steps, max_retries: maxRetries,
     retry_delay: retryDelay, concurrency, force };
-  const reportFilePath = generateReport(results, config);
+  const reportPaths = generateReport(results, config);
   printReportSummary(results);
-  logInfo(`all done! report: ${reportFilePath}`);
+  logInfo(`all done! reports: ${Array.isArray(reportPaths) ? reportPaths.join(', ') : reportPaths}`);
 }
 
 // ============================== CLI ==============================
@@ -2163,7 +2184,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--transcribe-timeout <n>', '识别超时（秒），默认 600', parseInt, 600)
     .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', parseInt, 300)
     .option('--dry-run', '干跑模式，只列任务不执行')
-    .option('--retry-failed <path>', '从报告 JSON 重跑失败项')
+    .option('--retry-failed <path>', '从报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
     .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
     .option('--input <path>', '指定本地视频文件路径（跳过下载，直接转码→识别→分析）')
@@ -2314,7 +2335,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     // 生成标准报告 JSON（与 Excel 模式格式一致）
     if (urlResult) {
       const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
-      generateReport([urlResult], config);
+      generateReport([urlResult], config, parsed.platform);
       printReportSummary([urlResult]);
     }
 
@@ -2438,7 +2459,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     // 生成标准报告 JSON（与 Excel 模式格式一致）
     if (inputResult) {
       const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
-      generateReport([inputResult], config);
+      generateReport([inputResult], config, sheetName);
       printReportSummary([inputResult]);
     }
 
