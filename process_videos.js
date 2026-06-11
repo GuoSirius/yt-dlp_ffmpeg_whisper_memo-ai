@@ -739,7 +739,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   const apiKey = process.env.AI_API_KEY || '';
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
   const model = process.env.AI_MODEL || '';
-  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。重要规则：如果内容是英文，关键词必须全部是英文，绝对不能输出中文关键词；如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}';
+  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。如果内容是全英文的，则关键词全部是英文，如果内容中含有中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
