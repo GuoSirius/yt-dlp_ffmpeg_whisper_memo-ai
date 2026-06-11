@@ -48,8 +48,8 @@ jobs:
       - name: Extract version changelog
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          # 提取当前版本段：从 ## [VERSION] 到下一个 ## [ 开头（或文件尾）
-          sed -n "/^## \[${VERSION}\]/,/^## \[/p" CHANGELOG.md \
+          # 提取当前版本段：匹配任意层级标题 (## / ### / ...)，不硬编码 # 数量
+          sed -nE "/^#+ \[${VERSION}\]/,/^#+ \[/p" CHANGELOG.md \
             | sed '$d' \
             | sed '1d' \
             > /tmp/release_body.txt
