@@ -3,11 +3,14 @@
 基于 `process_videos.js` (Node.js) 或 `process_videos.py` (Python)，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
 
 **五种使用方式，覆盖不同场景：**
-- **Excel 批量处理**：从 Excel 文件读取视频 ID，自动完成全流程（最常用）
-- **直链下载**：通过 `--url` 直接指定视频链接，自动识别平台并下载
-- **本地文件**：通过 `--input` 指定本地视频文件，跳过下载直接转码分析
-- **纯文本分析**：通过 `--content` 直接提供文本内容，跳过所有视频步骤，直接做 AI 关键词分析
-- **Excel列文本批量分析**：通过 `--content-column` 读取 Excel 某列的已有文本，批量做 AI 分析
+
+| 模式 | 输入 | 跳过步骤 | 适用场景 |
+|------|------|---------|----------|
+| **Excel 批量** | Excel 行（多视频） | — | 批量处理全流程 |
+| **--url 直链** | 单个视频 URL | — | 临时下载单个视频 |
+| **--input 本地** | 本地视频/音频文件 | 下载 | 处理已有文件 |
+| **--content 纯文本** | 文件路径或内联文本 | 下载+转码+识别 | 已有文本直接分析 |
+| **--content-column** | Excel 列的已有文本 | 下载+转码+识别 | 批量分析 Excel 中的文本 |
 
 ---
 
@@ -41,7 +44,7 @@ pip install pandas openpyxl requests python-dotenv questionary
 ### 必装工具
 
 | 工具 | 版本要求 | 安装方式 | 用途 |
-|---|---|---|---|
+|------|-----------|----------|------|
 | Python | 3.9+ | [python.org](https://www.python.org/) | 脚本运行 |
 | yt-dlp | 最新 | `pip install yt-dlp` 或 [GitHub Release](https://github.com/yt-dlp/yt-dlp/releases) | 视频下载 |
 | ffmpeg + ffprobe | 4.0+ | [ffmpeg.org](https://ffmpeg.org/download.html) 或 `winget install ffmpeg` | 音频转码 + 时长检测 |
@@ -53,7 +56,7 @@ pip install pandas openpyxl requests python-dotenv questionary
 YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式。
 
 | 方式 | 安装命令 |
-|---|---|
+|------|----------|
 | Node.js（推荐） | [nodejs.org](https://nodejs.org/) 下载 LTS 版，安装后 `node --version` 验证 |
 | Deno | `winget install DenoLand.Deno` 或 [deno.com](https://deno.com/) |
 
@@ -62,8 +65,10 @@ YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式�
 ### Python 依赖
 
 ```bash
-pip install pandas openpyxl requests python-dotenv
+pip install pandas openpyxl requests python-dotenv questionary
 ```
+
+> `questionary` 为可选依赖（交互式确认时使用），建议一并安装。
 
 ### 环境变量配置（.env）
 
@@ -83,10 +88,10 @@ cp .env.example .env
 |------|------|------|
 | 输入 | `EXCEL_FILE` | Excel 文件路径 |
 | 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` / `COL_KEYWORDS` | 唯一标识列 / 标题列 / 识别文本输出列 / AI 关键词输出列 |
-| 列映射 | `COL_TENCENTVID` / `COL_BILIBILIBVID` / `COL_YOUTUBEID` / `COL_YOUKUID` | 各平台视频 ID 所在列 |
+| 列映射 | `COL_TENCENT` / `COL_BILIBILI` / `COL_YOUTUBE` / `COL_YOUKU` | 各平台视频 ID 所在列 |
 | Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
-| 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtubeId}`） |
+| 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtube}`） |
 | 平台 | `{平台}_COOKIES_FROM_BROWSER` | 从浏览器直读 cookie（推荐 Firefox，替代手动导出文件） |
 | 平台 | `{平台}_COOKIE_FILE` | cookie 文件路径（备用方案，需定期更新） |
 | 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge） |
@@ -101,7 +106,7 @@ cp .env.example .env
 | AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
 | AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
 | AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符 |
-| AI 分析 | `AI_TIMEOUT` | 单次分析请求超时（秒，默认 300） |
+| AI 分析 | `AI_TEMPERATURE` | AI 推理温度 (0.0~2.0) |
 
 ### .env 配置项变更权限
 
@@ -110,11 +115,11 @@ cp .env.example .env
 | 标记 | 含义 | 涵盖的配置项 | 示例 |
 |------|------|-------------|------|
 | **【自由】** | 值可随意改为任意合法内容 | 路径、开关、数字、字符串、URL、UA、格式参数等 | `EXCEL_FILE`, `YOUTUBE_PROXY`, `WHISPER_MODEL` |
-| **【调序】** | 只能从固定集合中增减/排序，不能用集合外的值 | `PLATFORM_PRIORITY` | 只能包含 `bilibiliBvid` / `youtubeId` / `tencentVid` / `youkuId` |
-| **【关联】** | 值需与脚本内约定的 Key 名一致 | URL 模板中的 `{占位符}` | `{youtubeId}` 必须跟 `COL_YOUTUBEID` 的后缀一致 |
+| **【调序】** | 只能从固定集合中增减/排序，不能用集合外的值 | `PLATFORM_PRIORITY` | 只能包含 `bilibili` / `youtube` / `tencent` / `youku` |
+| **【关联】** | 值需与脚本内约定的 Key 名一致 | URL 模板中的 `{占位符}` | `{youtube}` 必须跟 `COL_YOUTUBE` 的后缀一致 |
 | **【固定】** | 除非 Excel 列名或脚本内部逻辑改变，否则不应修改 | 列名映射 | `COL_ID=extra.id`、`COL_TITLE=title` 等 |
 
-> **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktokId`、`douyinId` 等无效 key 会导致脚本无法识别。
+> **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktok`、`douyin` 等无效 key 会导致脚本无法识别。
 
 ### Whisper 语音识别
 
@@ -139,9 +144,7 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ```
 脚本会直接调用 `whisper` CLI，无需额外服务进程。
 
----
-
-## 目录结构
+### 目录结构
 
 ```
 ├── process_videos.js              # Node.js 主流程脚本（推荐）
@@ -154,28 +157,32 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ├── cookies/                     # 站点 cookie 文件
 │   ├── bilibili.txt            # B站 cookie（Netscape 格式）
 │   └── youtube.txt             # YouTube cookie 备用（Firefox 直读方案不需要）
-├── downloads/                    # yt-dlp 下载输出（mp4）
-│   ├── YouTube视频/
-│   └── 普诺赛中文站/
-├── transcoded/                   # ffmpeg 转码输出（wav 16kHz mono）
-│   ├── YouTube视频/
-│   └── 普诺赛中文站/
-├── reports/                      # 执行报告（按 sheet/站点分目录）
-│   ├── YouTube视频/
-│   │   ├── report_YYYYMMDD_HHMMSS.json   # JSON 报告（机器可读，用于重跑）
-│   │   └── tasks/                        # 人类可读文本摘要
-│   │       ├── 2143.txt
-│   │       └── ...
-│   ├── 普诺赛中文站/
-│   │   ├── report_YYYYMMDD_HHMMSS.json
-│   │   └── tasks/
-│   │       └── ...
-│   ├── youtube/                  # --url 模式按平台名分目录
-│   │   ├── report_YYYYMMDD_HHMMSS.json
-│   │   └── tasks/
-│   └── local/                    # --input 模式默认目录
-│       ├── report_YYYYMMDD_HHMMSS.json
-│       └── tasks/
+├── output/                       # 输出根目录（可通过环境变量覆盖）
+│   ├── downloads/                # yt-dlp 下载输出（mp4）
+│   │   ├── youtube/              # 按平台分目录
+│   │   └── bilibili/
+│   ├── transcoded/               # ffmpeg 转码输出（wav 16kHz mono）
+│   │   ├── youtube/
+│   │   └── bilibili/
+│   └── reports/                 # 执行报告（按 sheet/平台分目录）
+│       ├── YouTube视频/
+│       │   ├── report_YYYYMMDD_HHMMSS.json   # JSON 报告（机器可读，用于重跑）
+│       │   └── tasks/                        # 人类可读文本摘要
+│       │       ├── 2143.txt
+│       │       └── ...
+│       ├── 普诺赛中文站/
+│       │   ├── report_YYYYMMDD_HHMMSS.json
+│       │   └── tasks/
+│       │       └── ...
+│       ├── youtube/                  # --url 模式按平台名分目录
+│       │   ├── report_YYYYMMDD_HHMMSS.json
+│       │   └── tasks/
+│       ├── local/                    # --input 模式默认目录
+│       │   ├── report_YYYYMMDD_HHMMSS.json
+│       │   └── tasks/
+│       └── content/                  # --content 模式固定目录
+│           ├── report_YYYYMMDD_HHMMSS.json
+│           └── tasks/
 ├── scripts/                      # 辅助脚本
 │   ├── release.js                 # 版本发布脚本
 │   └── regenerate-changelog.js  # CHANGELOG 重建脚本
@@ -215,9 +222,20 @@ yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 
 ### B站（bilibili）
 
-1. 同样使用上述 Chrome 扩展
+**方案 A（推荐）：直接从 Firefox 浏览器读 cookie**
+
+1. 用 Firefox 浏览器登录 [bilibili.com](https://www.bilibili.com)
+2. 在 `.env` 中设置 `BILIBILI_COOKIES_FROM_BROWSER=firefox`
+3. 脚本自动通过 `--cookies-from-browser firefox` 读取
+
+> Firefox cookie 直读方案同样适用于 B站，无需手动导出。
+
+**方案 B（备用）：从文件读取 cookie**
+
+1. Chrome 安装扩展 [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
 2. 访问 [bilibili.com](https://www.bilibili.com) 并登录
 3. 点击扩展图标 → Export → 保存为 `cookies/bilibili.txt`
+4. 在 `.env` 中注释掉 `BILIBILI_COOKIES_FROM_BROWSER`，启用 `BILIBILI_COOKIE_FILE=cookies/bilibili.txt`
 
 ---
 
@@ -419,7 +437,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 ## 参数说明
 
 | 参数 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
+|------|------|---------|------|
 | `--sheet <name>` | str | 全部 | 指定 sheet 名称 |
 | `--id <id>` | str | — | 指定 extra.id 或 title（单条测试） |
 | `--offset <n>` | int | 0 | 跳过前 N 条任务（从 0 开始），适合调试大量数据 |
@@ -449,7 +467,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 ## 重试规则
 
 | 可重试 | 不重试 |
-|---|---|
+|----------|----------|
 | 网络超时、连接拒绝 | HTTP 404 / 403 / 401 |
 | yt-dlp 下载中断 | 视频已删除 / 私有 |
 | whisper 服务超时 | 无效 URL、文件不存在 |
@@ -462,7 +480,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 脚本默认不会重复处理已有文件，但会在以下情况自动触发重做：
 
 | 步骤 | 跳过条件 | 自动重做条件 |
-|---|---|---|
+|------|-----------|----------------|
 | 下载 | 同名文件已存在（非 `--force`） | `--force` 或文件不存在 |
 | 转码 | WAV 已存在 **且** MP4 时间戳 ≤ WAV 时间戳 | `--force` 或 **MP4 比 WAV 新**（重新下载过） |
 | 识别 | —（每次必跑，覆盖写入 Excel） | — |
@@ -505,8 +523,8 @@ AI_MODEL=agnes-2.0-flash
 # 提示词模板（{content} 会被识别文本替换）
 AI_PROMPT_TPL=帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}
 
-# 请求超时（秒）
-AI_TIMEOUT=300
+# 请求超时（秒，通过 --analyze-timeout 参数设置）
+# 不再使用 AI_TIMEOUT 环境变量（已统一为 --analyze-timeout 参数）
 ```
 
 ### 工作原理
@@ -544,11 +562,9 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 |--------|------|------|
 | 1 | `{id}` | `2143` |
 | 2 | `{id}_{title}` | `2143_产品介绍` |
-| 3 | `{id}_{title}_{platformVid}` | `2143_产品介绍_BV1xx4y1z7Ab` |
+| 3 | `{id}_{title}_{platform}` | `2143_产品介绍_bilibili` |
 
 > 去重仅在同 sheet 内生效，不同 sheet 之间允许同名文件（存放在不同子目录）。
-
----
 
 ---
 
@@ -557,8 +573,8 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 执行时会同时展示**总体进度**和**单视频进度**：
 
 ```text
-[1/91] [2143] 开始处理 (sheet=YouTube视频, platform=youtubeId, title=xxx)
-  [2143] 开始下载 (平台=youtubeId)
+[1/91] [2143] 开始处理 (sheet=YouTube视频, platform=youtube, title=xxx)
+  [2143] 开始下载 (平台=youtube)
   [2143] https://youtu.be/zzJmKPX8a3c
   [2143] 解析页面...
   [2143] 15.2% 2.50MiB/s ETA 00:17          ← 下载实时进度
@@ -579,7 +595,7 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 ```
 
 | 层级 | 显示内容 |
-|---|---|
+|------|----------|
 | 总体进度 | 完成/总任务数、百分比、✅成功 ❌失败 ⚠️部分 ⏭️无视频 四维计数 |
 | 下载 | yt-dlp 实时百分比 + 速度 + ETA |
 | 转码 | 先 ffprobe 取时长，再实时解析 `time=` 算百分比（如 `25.3% (38s/150s)`） |
@@ -595,7 +611,7 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根（可通过 `DOWNLOADS_DIR` / `TRANSCODED_DIR` / `REPORTS_DIR` 环境变量覆盖）。
 
 > `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）  
-> `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencentVid`、`youku`）  
+> `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencent`、`youku`）  
 > `{stem}` = 去重后的安全文件名（不含扩展名）  
 
 ### ① Excel 批量模式（默认）
@@ -778,11 +794,11 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 脚本支持四个视频平台的下载，各有不同的反爬配置：
 
 | 平台 | 字段 | 反爬措施 |
-|---|---|---|
-| B站 (bilibili) | `extra.bilibiliBvid` | Chrome UA + Referer 头 + 有效 cookie + 并发分片 |
-| YouTube | `extra.youtubeId` | Chrome UA + Firefox cookie 直读 + 代理 + Node.js 解 n-sig |
-| 腾讯视频 | `extra.tencentVid` | 无需特殊配置 |
-| 优酷 | `extra.youkuId` | 无需特殊配置（部分视频需会员） |
+|------|-------|----------|
+| B站 (bilibili) | `extra.bilibili` | Chrome UA + Referer 头 + 有效 cookie + 并发分片 |
+| YouTube | `extra.youtube` | Chrome UA + Firefox cookie 直读 + 代理 + Node.js 解 n-sig |
+| 腾讯视频 | `extra.tencent` | 无需特殊配置 |
+| 优酷 | `extra.youku` | 无需特殊配置（部分视频需会员） |
 
 > YouTube 反爬最强：需要 **代理** + **登录态 cookie** + **JS runtime 解 n-sig** 三者配合。
 > 脚本会自动给 yt-dlp 及其 node/ejs 子进程注入 `HTTPS_PROXY` 环境变量，确保所有流量走代理。
@@ -795,7 +811,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 #### YouTube
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
-|---|---|---|
+|----------|-----------|-------------------|
 | 标准观看页 | `https://www.youtube.com/watch?v=VIDEO_ID` | `youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})` |
 | 短链接 | `https://youtu.be/VIDEO_ID` | `youtu\.be/([a-zA-Z0-9_-]{11})` |
 | Shorts | `https://www.youtube.com/shorts/VIDEO_ID` | `youtube\.com/shorts/([a-zA-Z0-9_-]{11})` |
@@ -815,7 +831,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 #### B站（bilibili）
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
-|---|---|---|
+|----------|-----------|-------------------|
 | 标准页（BV 号） | `https://www.bilibili.com/video/BV1xx411c7mD` | `bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})` |
 | 标准页（av 号） | `https://www.bilibili.com/video/av170001` | `bilibili\.com\/video\/av(\d+)` |
 | 短链接 | `https://b23.tv/BV1xx411c7mD` | `b23\.tv\/(BV[a-zA-Z0-9]{10})` |
@@ -836,7 +852,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 #### 腾讯视频
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
-|---|---|---|
+|----------|-----------|-------------------|
 | 标准页（x/page） | `https://v.qq.com/x/page/VIDEO_ID.html` | `v\.qq\.com\/x\/page\/([a-zA-Z0-9]+)\.html` |
 | 标准页（x/cover） | `https://v.qq.com/x/cover/COVER/VIDEO_ID.html` | `v\.qq\.com\/x\/cover\/[^\/]+\/([a-zA-Z0-9]+)\.html` |
 | 内嵌页 | `https://v.qq.com/txp/iframe/player.html?vid=VIDEO_ID` | `[?&]vid=([a-zA-Z0-9]+)` |
@@ -853,7 +869,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 #### 优酷（Youku）
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
-|---|---|---|
+|----------|-----------|-------------------|
 | 标准页（v_show） | `https://v.youku.com/v_show/id_VIDEO_ID.html` | `v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html` |
 | 标准页（video） | `https://v.youku.com/video/VIDEO_ID` | `v\.youku\.com\/video\/([a-zA-Z0-9=]+)` |
 | 标准页（www） | `https://www.youku.com/v_show/id_VIDEO_ID.html` | `www\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html` |
@@ -866,18 +882,18 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 - **格式互转**：
   - 优酷内嵌格式较复杂，建议直接使用标准页链接（`{YOUKU_URL_TPL}`）
 
-> **脚本使用提示**：Excel 中只需填入视频 ID（如 `zzJmKPX8a3c`、`BV1pg411b7Ug`、`o0325y3hqh`、`XMzgxNzExNTY4MA==`），脚本自动替换 URL 模板中的 `{youtubeId}`、`{bilibiliBvid}` 等占位符生成下载链接。
+> **脚本使用提示**：Excel 中只需填入视频 ID（如 `zzJmKPX8a3c`、`BV1pg411b7Ug`、`o0325y3hqh`、`XMzgxNzExNTY4MA==`），脚本自动替换 URL 模板中的 `{youtube}`、`{bilibili}` 等占位符生成下载链接。
 
 ### 常见下载错误
 
 | 错误 | 平台 | 原因 | 解决方案 |
-|---|---|---|---|
+|------|------|------|----------|
 | `Sign in to confirm you're not a bot` | YouTube | cookie 过期或无效 | 检查 Firefox 登录态，或重新导出 cookie 文件 |
 | `cookies does no longer seem to be valid` | YouTube | cookie 文件超过 48h | 用 Firefox cookies-from-browser 方案（免维护） |
 | `Unable to download webpage: HTTP Error 403` | YouTube | IP 被识别为非 YouTube 地区 | 确保代理运行（端口 7897），检查 `YOUTUBE_PROXY` |
 | `n challenge solving failed` | YouTube | 无 JS 运行时 | 安装 Node.js，确保 `YOUTUBE_JS_RUNTIMES=node` |
 | `Requested format is not available` | YouTube | n-sig 未解开，格式不可用 | 同上，安装 JS 运行时 |
-| `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` |
+| `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` 或使用 Firefox 直读 |
 | `HTTP Error 403` | B站 | 地区限制或视频已删除 | 检查视频是否可访问 |
 | `dpapi decryption failed` | YouTube | Windows Chrome cookie 加密 | **改用 Firefox**（`.env` 中设 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`） |
 
@@ -895,7 +911,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 3. 克隆或下载项目文件（`.env.example`、`.env`、`cookies/` 等）
 4. 安装必装工具：`yt-dlp`、`ffmpeg`、`ffprobe`，确保均在 PATH
 5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
-6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
+6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`（或设置 `BILIBILI_COOKIES_FROM_BROWSER=firefox`）
 7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
 8. `video-pipeline --dry-run` 验证
 
@@ -906,7 +922,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 3. 安装 Python 依赖：`pip install pandas openpyxl requests python-dotenv questionary`
 4. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径、代理端口和字段映射
 5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
-6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
+6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`（或设置 `BILIBILI_COOKIES_FROM_BROWSER=firefox`）
 7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
 8. `python process_videos.py --dry-run` 验证
 
