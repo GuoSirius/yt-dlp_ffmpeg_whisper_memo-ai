@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.5] - 2026-06-11
+
+### Features
+
+- 新增 --offset / --limit 参数，支持跳过和限量处理 Excel 数据 (`d691822`)
+
+### Bug Fixes
+
+- base_dir 改用 cwd 而非脚本安装目录，修复全局安装后路径解析错误 (`0fe5b1e`)
+
+### Documentation
+
+- update (`45a8d45`)
+
+
 ## [1.2.4] - 2026-06-11
 
 ### Features
