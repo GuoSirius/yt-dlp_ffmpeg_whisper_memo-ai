@@ -1,32 +1,33 @@
 # Changelog
 
-## Unreleased — 2026-06-11
+## [Unreleased]
 
-### ✨ Features
+### Features
 
 - rename npm package to video-pipeline (`644cc8a`)
 - add --url option to Python version (parity with Node.js) (`e1df301`)
 - add --url option for direct video URL download pipeline (`468bc1e`)
 - use arrow-key navigation for --init conflict prompt (`571f24a`)
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
+- correct changelog per-version ranges + fix getLastTag for Windows (`755222a`)
 - hard-fail on GitHub push failure + verify tag on remote (`5ca14ab`)
 - regenerate CHANGELOG with correct per-version commit ranges (`e265f57`)
 
-## 1.0.2 — 2026-06-11
+## [1.0.2] - 2026-06-11
 
-### ✨ Features
+### Features
 
 - migrate to ESM, interactive --init, move data files to data/ (`a5edd07`)
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - changelog generation + arrow-key version select + default Y confirm (`f7f3ce0`)
 
-## 1.0.1 — 2026-06-11
+## [1.0.1] - 2026-06-11
 
-### ✨ Features
+### Features
 
 - upgrade deps + add --init/--file/--env-file CLI options (`879d05c`)
 - npm 发布体系搭建 + Node.js 关键修复 (`d3e2c40`)
@@ -44,24 +45,24 @@
 - run_with_progress 同步化 + 智能重转码 + 文档更新 (`375a9d2`)
 - video processing pipeline with platform fixes and timeout control (`24b178d`)
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - update husky commit-msg hook to v9 format (`25f557e`)
 - 下载失败后清理残留的 .part/.ytdl 临时文件 (`0251a4b`)
 - yt-dlp 子进程( node/ejs )不走代理导致 n-sig 求解失败 (`e00ec5f`)
-- whisper.cpp server API 适配 — /inference 不传 model/language (`3a83ab5`)
+- whisper.cpp server API 适配 - /inference 不传 model/language (`3a83ab5`)
 - 移除 run_with_progress 逐行 DEBUG 打印，解决 Windows 控制台中文路径乱码 (`fb20e4d`)
 
-### 📝 Documentation
+### Documentation
 
 - README 新增各平台 URL 格式与视频ID提取正则 (`3cd423d`)
 - README 修复目录重复 + 新增 .env 变更权限说明 (`e27d267`)
 - .env.example 增加变更权限标注(自由/调序/关联/固定) (`b542865`)
 - 文档全面更新 + security: cookie 文件移出版本控制 (`a90b5af`)
 - 更新 .env.example (代理端口7897, 注释完善, WHISPER_MODEL标注仅local) (`63dca08`)
-- service 模式语言说明修正 — API 不支持指定语言 (`adcb265`)
+- service 模式语言说明修正 - API 不支持指定语言 (`adcb265`)
 
-### 🔧 Chores
+### Chores
 
 - add auto-changelog dev dependency (`9785cbf`)
 - env 审查优化 + 清理 __pycache__ 跟踪 (`02361b8`)

@@ -94,17 +94,17 @@ function getRemotes() {
 // ==================== Changelog 生成（Conventional Commits 分节） ====================
 
 const SECTION_MAP = {
-  feat:     { label: '✨ Features',        emoji: '✨' },
-  fix:      { label: '🐛 Bug Fixes',       emoji: '🐛' },
-  perf:     { label: '⚡ Performance',      emoji: '⚡' },
-  refactor: { label: '♻️ Refactoring',      emoji: '♻️' },
-  docs:     { label: '📝 Documentation',    emoji: '📝' },
-  style:    { label: '💄 Styles',           emoji: '💄' },
-  test:     { label: '✅ Tests',            emoji: '✅' },
-  ci:       { label: '🔄 CI/CD',            emoji: '🔄' },
-  build:    { label: '📦 Build',            emoji: '📦' },
-  chore:    { label: '🔧 Chores',           emoji: '🔧' },
-  revert:   { label: '⏪ Reverts',          emoji: '⏪' },
+  feat:     { label: 'Features' },
+  fix:      { label: 'Bug Fixes' },
+  perf:     { label: 'Performance' },
+  refactor: { label: 'Refactoring' },
+  docs:     { label: 'Documentation' },
+  style:    { label: 'Styles' },
+  test:     { label: 'Tests' },
+  ci:       { label: 'CI/CD' },
+  build:    { label: 'Build' },
+  chore:    { label: 'Chores' },
+  revert:   { label: 'Reverts' },
 };
 
 function parseConventionalCommit(line) {
@@ -131,7 +131,7 @@ function generateChangelogEntry(version, date) {
   }
 
   const log = runSilent(`git log --oneline --no-merges ${range}`);
-  if (!log) return `## ${version} — ${date}\n\n_No changes._\n`;
+  if (!log) return `## [${version}] - ${date}\n\n_No changes._\n`;
 
   const commits = log.split('\n').filter(Boolean).map(parseConventionalCommit)
     // 过滤 chore(release): vX.Y.Z 提交
@@ -153,12 +153,12 @@ function generateChangelogEntry(version, date) {
 
   // Build sections
   const lines = [];
-  lines.push(`## ${version} — ${date}`);
+  lines.push(`## [${version}] - ${date}`);
   lines.push('');
 
   // BREAKING first
   if (BREAKING.length) {
-    lines.push('### ⚠️ BREAKING CHANGES');
+    lines.push('### BREAKING CHANGES');
     lines.push('');
     for (const c of BREAKING) {
       lines.push(`- ${c.subject} (\`${c.hash}\`)`);
@@ -191,7 +191,7 @@ function updateChangelog(version, date) {
   // 移除可能存在的同名版本旧条目（防止重复）
   // 兼容条目在文件开头（无前置 \n）和在中间两种情况
   const esc = version.replace(/\./g, '\\.');
-  const re = new RegExp(`(^|\\n)## ${esc} — .*?(?=\\n## |$)`, 's');
+  const re = new RegExp(`(^|\\n)## \\[${esc}\\] - .*?(?=\\n## |$)`, 's');
   existing = existing.replace(re, '');
 
   // 插入新条目到 header 之后
@@ -223,8 +223,8 @@ function showChanges() {
     }
     console.log(`\n  ${c('bold', String(lines.length))} commits since last tag:\n`);
     for (const [type, count] of Object.entries(types)) {
-      const icon = (SECTION_MAP[type] || {}).emoji || '📌';
-      console.log(`    ${icon} ${type}: ${count}`);
+      const icon = (SECTION_MAP[type] || {}).label || type;
+      console.log(`    ${icon}: ${count}`);
     }
   } else {
     console.log(c('dim', '  (no commits since last tag)'));

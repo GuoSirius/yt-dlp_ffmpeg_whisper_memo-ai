@@ -34,17 +34,17 @@ function getLastTag() {
 }
 
 const SECTION_MAP = {
-  feat:      { label: '✨ Features',        emoji: '✨' },
-  fix:       { label: '🐛 Bug Fixes',       emoji: '🐛' },
-  perf:      { label: '⚡ Performance',      emoji: '⚡' },
-  refactor:  { label: '♻️ Refactoring',      emoji: '♻️' },
-  docs:      { label: '📝 Documentation',    emoji: '📝' },
-  style:     { label: '💄 Styles',           emoji: '💄' },
-  test:      { label: '✅ Tests',            emoji: '✅' },
-  ci:        { label: '🔄 CI/CD',            emoji: '🔄' },
-  build:     { label: '📦 Build',            emoji: '📦' },
-  chore:     { label: '🔧 Chores',           emoji: '🔧' },
-  revert:    { label: '⏪ Reverts',          emoji: '⏪' },
+  feat:      { label: 'Features' },
+  fix:       { label: 'Bug Fixes' },
+  perf:      { label: 'Performance' },
+  refactor:  { label: 'Refactoring' },
+  docs:      { label: 'Documentation' },
+  style:     { label: 'Styles' },
+  test:      { label: 'Tests' },
+  ci:        { label: 'CI/CD' },
+  build:     { label: 'Build' },
+  chore:     { label: 'Chores' },
+  revert:    { label: 'Reverts' },
 };
 
 function parseConventionalCommit(line) {
@@ -64,12 +64,12 @@ function parseConventionalCommit(line) {
  */
 function generateEntry(tag, date, range) {
   const log = runSilent(`git log --oneline --no-merges ${range}`);
-  if (!log) return `## ${tag.replace(/^v/, '')} — ${date}\n\n_No changes._\n`;
+  if (!log) return `## [${tag.replace(/^v/, '')}] - ${date}\n\n_No changes._\n`;
 
   const commits = log.split('\n').filter(Boolean).map(parseConventionalCommit)
     .filter(c => !(c.type === 'chore' && /^v\d+\.\d+\.\d+/.test(c.subject)));
 
-  if (!commits.length) return `## ${tag.replace(/^v/, '')} — ${date}\n\n_No changes._\n`;
+  if (!commits.length) return `## [${tag.replace(/^v/, '')}] - ${date}\n\n_No changes._\n`;
 
   const groups = {};
   const BREAKING = [];
@@ -80,11 +80,11 @@ function generateEntry(tag, date, range) {
   }
 
   const lines = [];
-  lines.push(`## ${tag.replace(/^v/, '')} — ${date}`);
+  lines.push(`## [${tag.replace(/^v/, '')}] - ${date}`);
   lines.push('');
 
   if (BREAKING.length) {
-    lines.push('### ⚠️ BREAKING CHANGES');
+    lines.push('### BREAKING CHANGES');
     lines.push('');
     for (const c of BREAKING) lines.push(`- ${c.subject} (\`${c.hash}\`)`);
     lines.push('');
@@ -140,7 +140,7 @@ if (latestTag) {
     console.log(`  → Processing unreleased (range: ${unreleasedRange})`);
     const entry = generateEntry('HEAD', date, unreleasedRange);
     // 替换标题中的 "HEAD" 为 "Unreleased"
-    entries.push(entry.replace(/^## HEAD — .+/, `## Unreleased — ${date}`));
+    entries.push(entry.replace(/^## \[HEAD\] - .+/, '## [Unreleased]'));
   }
 }
 
