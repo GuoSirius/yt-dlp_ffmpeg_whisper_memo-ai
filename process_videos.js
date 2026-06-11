@@ -90,19 +90,50 @@ const PLATFORM_COL_MAP = {
 
 // ============================== 工具函数 ==============================
 function c(color, text) {
-  const colors = {
-    bold:    '\x1b[1m',
-    dim:     '\x1b[2m',
-    yellow:  '\x1b[93m',
-    cyan:    '\x1b[96m',
-    green:   '\x1b[92m',
-    red:     '\x1b[91m',
-    blue:    '\x1b[94m',
-    magenta: '\x1b[95m',
+  const codes = {
+    // styles
+    bold:      '\x1b[1m',
+    dim:       '\x1b[2m',
+    underline: '\x1b[4m',
+    // foreground
+    black:   '\x1b[30m',
+    red:     '\x1b[31m',
+    green:   '\x1b[32m',
+    yellow:  '\x1b[33m',
+    blue:    '\x1b[34m',
+    magenta: '\x1b[35m',
+    cyan:    '\x1b[36m',
+    white:   '\x1b[37m',
+    gray:    '\x1b[90m',
+    // background
+    bgBlack:   '\x1b[40m',
+    bgRed:     '\x1b[41m',
+    bgGreen:   '\x1b[42m',
+    bgYellow:  '\x1b[43m',
+    bgBlue:    '\x1b[44m',
+    bgMagenta: '\x1b[45m',
+    bgCyan:    '\x1b[46m',
+    bgWhite:   '\x1b[47m',
+    bgGray:    '\x1b[100m',
+    // reset
     reset:   '\x1b[0m',
   };
-  return (colors[color] || '') + text + colors.reset;
+  if (Array.isArray(color)) {
+    return color.map(cl => codes[cl] || '').join('') + text + codes.reset;
+  }
+  return (codes[color] || '') + text + codes.reset;
 }
+
+// 日志样式辅助
+function styleStart(msg)  { return c(['bold', 'cyan'], `► ${msg}`); }
+function styleDone(msg)   { return c(['bold', 'green'], `✔ ${msg}`); }
+function styleFail(msg)   { return c(['bold', 'red'], `✘ ${msg}`); }
+function styleWarn(msg)   { return c(['bold', 'yellow'], `⚠ ${msg}`); }
+function styleSkip(msg)   { return c(['dim', 'yellow'], `⏭ ${msg}`); }
+function styleInfo(msg)   { return c('cyan', `  ${msg}`); }
+function styleCount(n, label) { return c('bold', n) + ' ' + label; }
+function styleSection(title) { return '\n' + c(['bold', 'blue'], `═══ ${title} ═══`); }
+function styleProgress(cur, total) { return c('cyan', `[${cur}/${total}]`); }
 
 const PLATFORM_PRIORITY = (process.env.PLATFORM_PRIORITY || 'bilibili,youtube,tencent,youku')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -182,13 +213,19 @@ const PLATFORM_CONFIG = buildPlatformConfig();
 
 // ============================== 日志 ==============================
 function logInfo(msg) {
-  console.log(`${timestamp()} ${c('cyan', '[INFO]')} ${msg}`);
+  console.log(`${timestamp()} ${c('green', '[INFO]')}  ${msg}`);
 }
 function logWarn(msg) {
-  console.log(`${timestamp()} ${c('yellow', '[WARN]')} ${msg}`);
+  console.log(`${timestamp()} ${c('yellow', '[WARN]')}  ${msg}`);
 }
 function logError(msg) {
-  console.log(`${timestamp()} ${c('red', '[ERROR]')} ${msg}`);
+  console.log(`${timestamp()} ${c(['bold', 'red'], '[ERROR]')} ${msg}`);
+}
+function logStep(msg) {
+  console.log(`${timestamp()} ${c('cyan', '[STEP]')}  ${msg}`);
+}
+function logDebug(msg) {
+  if (process.env.DEBUG) console.log(`${timestamp()} ${c('gray', '[DEBUG]')} ${msg}`);
 }
 function timestamp() {
   return new Date().toTimeString().slice(0, 8);
@@ -219,12 +256,17 @@ class OverallProgress {
   summaryLine() {
     const pct = this.total ? (this.completed / this.total * 100).toFixed(1) : '0.0';
     const parts = [];
-    parts.push(c('dim', `[总进度 ${this.completed}/${this.total} (${pct}%)]`));
-    parts.push(this.success > 0 ? c('green', `✅${this.success}`) : c('dim', '✅0'));
-    parts.push(this.failed > 0 ? c('red', `❌${this.failed}`) : c('dim', '❌0'));
-    parts.push(this.partial > 0 ? c('yellow', `⚠️${this.partial}`) : c('dim', '⚠️0'));
-    parts.push(this.noVideo > 0 ? c('cyan', `⏹️${this.noVideo}`) : c('dim', '⏹️0'));
-    return parts.join('  ');
+    // 进度条样式
+    const barWidth = 20;
+    const filled = Math.round(barWidth * this.completed / this.total);
+    const bar = c('green', '█'.repeat(filled)) + c('dim', '░'.repeat(barWidth - filled));
+    parts.push(`\n${bar} ${c('bold', `${pct}%`)} ${c('dim', `(${this.completed}/${this.total})`)}`);
+    // 状态统计
+    parts.push(this.success > 0 ? c(['bold', 'green'], `  ✅ 成功: ${this.success}`) : c('dim', `  ✅ 成功: 0`));
+    parts.push(this.failed > 0 ? c(['bold', 'red'], `  ❌ 失败: ${this.failed}`) : c('dim', `  ❌ 失败: 0`));
+    parts.push(this.partial > 0 ? c(['bold', 'yellow'], `  ⚠️  部分: ${this.partial}`) : c('dim', `  ⚠️  部分: 0`));
+    parts.push(this.noVideo > 0 ? c('cyan', `  ⏹️  无视频: ${this.noVideo}`) : c('dim', `  ⏹️  无视频: 0`));
+    return parts.join('\n');
   }
 }
 
@@ -721,7 +763,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     const progressInterval = setInterval(() => {
       if (!done) {
         const elapsed = ((Date.now() - analyzeStart) / 1000).toFixed(0);
-        lockedPrint(`  [${label}] ${c('green', 'AI analyzing...')} ${elapsed}s`);
+        lockedPrint(`  [${label}] ${c('cyan', 'AI 分析中')}... ${elapsed}s`);
       }
     }, 5000);
 
@@ -752,7 +794,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
       lastErr = String(e.message).slice(0, 500);
       if (attempt < maxAttempts - 1) {
         const delay = Math.min(retryDelay * Math.pow(2, attempt), 30);
-        lockedPrint(`  [${label}] AI attempt ${attempt + 1} ${c('red', 'failed')}: ${lastErr.slice(0, 100)}, retrying in ${delay}s...`);
+        lockedPrint(`  [${label}] ${styleWarn(`AI 分析第 ${attempt + 1} 次尝试失败`)}: ${lastErr.slice(0, 100)}, ${delay}s 后重试...`);
         await sleep(delay * 1000);
       }
     }
@@ -809,14 +851,14 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   if (!force) {
     const existing = findDownloadedFile(dlDir, stem);
     if (existing) {
-      lockedPrint(c('dim', `  [${stem}] exists ${path.basename(existing)}, skip download`));
+      lockedPrint(styleSkip(`[${stem}] 已存在 ${path.basename(existing)}, 跳过下载`));
       return { file: existing, retries: 0, error: null };
     }
   }
 
   const videoUrl = buildUrl(pkey, vid);
-  lockedPrint(`  [${stem}] ${c('cyan', 'start download')} (platform=${pkey})`);
-  lockedPrint(`  [${stem}] ${videoUrl}`);
+  lockedPrint(styleStart(`[${stem}] 开始下载 (platform=${pkey})`));
+  lockedPrint(c('dim', `  ${videoUrl}`));
 
   const cfg = PLATFORM_CONFIG[pkey];
   const args = [
@@ -874,16 +916,18 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   try {
     await retryCall(doDownload, maxRetries, retryDelay, stem);
   } catch (e) {
-    logError(`[${stem}] yt-dlp download failed: ${(e.stderr || e.message).slice(-2000)}`);
-    return { file: null, retries: maxRetries, error: (e.stderr || e.message).slice(0, 500) };
+    const errMsg = (e.stderr || e.message || '').slice(-2000);
+    lockedPrint(styleFail(`[${stem}] 下载失败: ${errMsg.slice(0, 200)}`));
+    return { file: null, retries: maxRetries, error: errMsg.slice(0, 500) };
   }
 
   const downloaded = findDownloadedFile(dlDir, stem);
   if (downloaded) {
-    lockedPrint(`  [${stem}] ${c('green', 'download done')} -> ${path.basename(downloaded)}`);
+    const sizeMB = (fs.statSync(downloaded).size / 1024 / 1024).toFixed(1);
+    lockedPrint(styleDone(`[${stem}] 下载完成 -> ${path.basename(downloaded)} (${sizeMB} MB)`));
     return { file: downloaded, retries: 0, error: null };
   }
-  logError(`[${stem}] file not found after download`);
+  lockedPrint(styleFail(`[${stem}] 下载后未找到文件`));
   return { file: null, retries: 0, error: 'file not found after download' };
 }
 
@@ -912,16 +956,18 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
     const srcMtime = fs.statSync(srcFile).mtimeMs;
     const outMtime = fs.statSync(outFile).mtimeMs;
     if (srcMtime > outMtime) {
-      lockedPrint(`  [${stem}] source updated (re-downloaded), re-transcoding`);
+      lockedPrint(styleWarn(`[${stem}] 源文件已更新(重新下载), 重新转码`));
     } else {
-      lockedPrint(`  [${stem}] transcode file exists, skip`);
+      lockedPrint(styleSkip(`[${stem}] 转码文件已存在, 跳过 (${path.basename(outFile)})`));
       return { file: outFile, retries: 0, error: null };
     }
   }
 
-  lockedPrint(`  [${stem}] start transcode -> ${path.basename(outFile)}`);
-
   const totalDur = getDuration(srcFile);
+  lockedPrint(styleStart(`[${stem}] 开始转码 -> ${path.basename(outFile)}`));
+  if (totalDur && totalDur > 0) {
+    lockedPrint(c('dim', `  时长: ${Math.floor(totalDur / 60)}:${(totalDur % 60).toFixed(0).padStart(2, '0')}`));
+  }
 
   async function doTranscode() {
     const args = ['-y', '-i', srcFile, ...FFMPEG_TRANSCODE_ARGS, outFile];
@@ -947,7 +993,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
             progress = `${elapsed.toFixed(1)}s`;
           }
           if (progress !== lastProgress) {
-            lockedPrint(`  [${stem}] transcode: ${progress}`);
+            lockedPrint(`  [${stem}] ${c('cyan', '转码中')} ${progress}`);
             lastProgress = progress;
           }
         }
@@ -974,11 +1020,13 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 
   try {
     await retryCall(doTranscode, maxRetries, retryDelay, stem);
-    lockedPrint(`  [${stem}] ${c('green', 'transcode done')}`);
+    const sizeMB = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
+    lockedPrint(styleDone(`[${stem}] 转码完成 (${sizeMB} MB)`));
     return { file: outFile, retries: 0, error: null };
   } catch (e) {
-    logError(`[${stem}] ffmpeg transcode failed: ${(e.stderr || e.message).slice(-2000)}`);
-    return { file: null, retries: maxRetries, error: (e.stderr || e.message).slice(0, 500) };
+    const errMsg = (e.stderr || e.message || '').slice(-2000);
+    lockedPrint(styleFail(`[${stem}] 转码失败: ${errMsg.slice(0, 200)}`));
+    return { file: null, retries: maxRetries, error: errMsg.slice(0, 500) };
   }
 }
 
@@ -994,12 +1042,14 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 600) 
   }
 
   const fileSizeMB = (fs.statSync(audioFile).size / (1024 * 1024)).toFixed(1);
+  const dur = getDuration(audioFile);
+  const durStr = dur ? `, 时长 ${Math.floor(dur / 60)}:${(dur % 60).toFixed(0).padStart(2, '0')}` : '';
   if (WHISPER_BACKEND === 'local') {
     const langLabel = WHISPER_LANGUAGE || 'auto';
-    lockedPrint(`  [${stem}] ${c('magenta', 'start transcribe')} [local(${WHISPER_MODEL}/${langLabel})] (${fileSizeMB}MB)...`);
+    lockedPrint(styleStart(`[${stem}] 开始语音识别 [local(${WHISPER_MODEL}/${langLabel})] (${fileSizeMB}MB${durStr})`));
   } else {
     const modelLabel = WHISPER_SERVICE_MODEL || WHISPER_MODEL || '(server default)';
-    lockedPrint(`  [${stem}] ${c('magenta', 'start transcribe')} [service(${modelLabel})] (${fileSizeMB}MB)...`);
+    lockedPrint(styleStart(`[${stem}] 开始语音识别 [service(${modelLabel})] (${fileSizeMB}MB${durStr})`));
   }
 
   if (WHISPER_BACKEND === 'local') {
@@ -1035,10 +1085,10 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(`  [${stem}] ${c('green', 'transcribe done')} (${elapsed}s, ${text.length} chars)`);
+    lockedPrint(styleDone(`[${stem}] 识别完成 (${elapsed}s, ${text.length} 字符)`));
     return { text, retries: 0, error: null };
   } catch (e) {
-    logError(`[${stem}] local whisper transcribe failed: ${e.message}`);
+    lockedPrint(styleFail(`[${stem}] 识别失败: ${e.message}`));
     return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
   }
 }
@@ -1049,7 +1099,7 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
   const progressInterval = setInterval(() => {
     if (!done) {
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-      lockedPrint(`  [${stem}] transcribing... ${elapsed}s`);
+      lockedPrint(`  [${stem}] ${c('magenta', '识别中')}... ${elapsed}s`);
     }
   }, 5000);
 
@@ -1057,7 +1107,7 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
     try {
       // Switch model if needed
       if (WHISPER_SERVICE_MODEL && WHISPER_SERVICE_MODEL !== _SERVICE_MODEL_LOADED) {
-        lockedPrint(`  [${stem}] switch model: ${WHISPER_SERVICE_MODEL}`);
+        lockedPrint(c('dim', `  [${stem}] 切换模型: ${WHISPER_SERVICE_MODEL}`));
         const loadForm = new FormData();
         loadForm.append('model', WHISPER_SERVICE_MODEL);
         const loadResp = await fetch(`${WHISPER_SERVICE}/load`, {
@@ -1099,10 +1149,10 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(`  [${stem}] ${c('green', 'transcribe done')} (${elapsed}s, ${text.length} chars)`);
+    lockedPrint(styleDone(`[${stem}] 识别完成 (${elapsed}s, ${text.length} 字符)`));
     return { text, retries: 0, error: null };
   } catch (e) {
-    logError(`[${stem}] whisper transcribe failed: ${e.message}`);
+    lockedPrint(styleFail(`[${stem}] 识别失败: ${e.message}`));
     return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
   } finally {
     done = true;
@@ -1262,26 +1312,26 @@ function generateReport(results, config, sheetName) {
 function printReportSummary(results) {
   const { total, success, partial, failed, no_video: noVid } = computeSummary(results);
 
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`  执行摘要`);
-  console.log(`${'='.repeat(60)}`);
-  console.log(`  总计: ${total}`);
-  console.log(`  ✅ 成功: ${success}`);
-  console.log(`  ⚠️ 部分成功: ${partial}`);
-  console.log(`  ❌ 失败: ${failed}`);
-  console.log(`  ⏭️ 无视频ID: ${noVid}`);
-  console.log(`${'='.repeat(60)}`);
+  console.log(styleSection('执行摘要'));
+  console.log(`  ${c('bold', '总计:')} ${styleCount(total, '条')}`);
+  if (success > 0) console.log(`  ${c('green', '✅ 成功:')} ${styleCount(success, '条')}`);
+  if (partial > 0) console.log(`  ${c('yellow', '⚠️  部分成功:')} ${styleCount(partial, '条')}`);
+  if (failed > 0) console.log(`  ${c('red', '❌ 失败:')} ${styleCount(failed, '条')}`);
+  if (noVid > 0) console.log(`  ${c('dim', '⏭️  无视频ID:')} ${styleCount(noVid, '条')}`);
+  console.log(c('dim', '='.repeat(60)));
 
   const failures = results.filter(r => r.overall_status !== 'success');
   if (failures.length) {
-    console.log(`\n失败/异常详情:`);
+    console.log(`\n${c('bold', '失败/异常详情:')}`);
     for (const r of failures) {
-      const icon = { partial: '⚠️', failed: '❌', no_video: '⏭️' }[r.overall_status] || '?';
-      console.log(`  ${icon} [${r.sheet}] ${r.id_val} (${(r.title || 'N/A').slice(0, 30)})`);
-      if (r.error) console.log(`       错误: ${r.error.slice(0, 120)}`);
-      if (r.download.status === 'failed') console.log(`       下载失败: ${(r.download.error || 'N/A').slice(0, 120)}`);
-      if (r.transcode.status === 'failed') console.log(`       转码失败: ${(r.transcode.error || 'N/A').slice(0, 120)}`);
-      if (r.transcribe.status === 'failed') console.log(`       识别失败: ${(r.transcribe.error || 'N/A').slice(0, 120)}`);
+      const icon = { partial: c('yellow', '⚠️'), failed: c('red', '❌'), no_video: c('dim', '⏭️') }[r.overall_status] || '?';
+      const statusLabel = { partial: '部分成功', failed: '失败', no_video: '无视频ID' }[r.overall_status] || r.overall_status;
+      console.log(`  ${icon} [${r.sheet}] ${c('bold', r.id_val)} - ${statusLabel}`);
+      console.log(`    标题: ${(r.title || 'N/A').slice(0, 50)}`);
+      if (r.error) console.log(`    ${c('red', '错误:')} ${r.error.slice(0, 120)}`);
+      if (r.download.status === 'failed') console.log(`    ${c('red', '下载失败:')} ${(r.download.error || 'N/A').slice(0, 120)}`);
+      if (r.transcode.status === 'failed') console.log(`    ${c('red', '转码失败:')} ${(r.transcode.error || 'N/A').slice(0, 120)}`);
+      if (r.transcribe.status === 'failed') console.log(`    ${c('red', '识别失败:')} ${(r.transcribe.error || 'N/A').slice(0, 120)}`);
     }
   }
 }
@@ -1593,7 +1643,7 @@ async function runInputTask(opts) {
     whisperAvailable, fileInfo,
   } = opts;
 
-  console.log(c('dim', '\n── 开始执行 ──\n'));
+  console.log(styleSection(`开始处理: ${usedStem}`));
 
   // ── 解决 stem 重名 ──
   let usedStem = stem;
@@ -1615,7 +1665,7 @@ async function runInputTask(opts) {
     }
   }
   if (usedStem !== stem) {
-    console.log(`  ⚠️  stem "${stem}" 已存在 → 使用 "${usedStem}"`);
+    lockedPrint(styleWarn(`stem "${stem}" 已存在 → 使用 "${usedStem}"`));
   }
 
   // ── 构建 TaskResult ──
@@ -1623,29 +1673,29 @@ async function runInputTask(opts) {
   result.download = new StepResult('skipped');
 
   // ── download: 跳过（本地文件）──
-  console.log(`  [${usedStem}] 📥 下载: ${c('yellow', '已跳过 (本地文件)')}`);
+  lockedPrint(styleSkip(`[${usedStem}] 下载: 已跳过 (本地文件)`));
 
   // ── transcode ──
   let tcFile = null;
   if (steps.includes('transcode')) {
-    console.log(`  [${usedStem}] 🎵 开始转码...`);
+    logStep(`[${usedStem}] 开始转码...`);
     try {
       const { file, error } = await stepTranscode(inputPath, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
       tcFile = file;
       if (file && fs.existsSync(file)) {
         const size = (fs.statSync(file).size / 1024 / 1024).toFixed(1);
-        console.log(`  [${usedStem}] 🎵 转码完成: ${file} (${size} MB)`);
+        lockedPrint(styleDone(`[${usedStem}] 转码完成: ${path.basename(file)} (${size} MB)`));
         result.transcode = new StepResult('success', file);
       } else {
-        console.log(`  [${usedStem}] 🎵 转码: ${c(file ? 'yellow' : 'red', file ? '已跳过 (文件已存在)' : '失败 — ' + (error || ''))}`);
+        lockedPrint(styleWarn(`[${usedStem}] 转码: ${file ? '已跳过 (文件已存在)' : '失败 — ' + (error || '')}`));
         result.transcode = new StepResult(file ? 'skipped' : 'failed', file, error);
       }
     } catch (e) {
-      console.log(`  [${usedStem}] 🎵 转码: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+      lockedPrint(styleFail(`[${usedStem}] 转码异常: ${(e.message || '').slice(0, 200)}`));
       result.transcode = new StepResult('failed', null, String(e.message).slice(0, 500));
     }
     if (!tcFile) {
-      console.log(c('yellow', '\n⚠️  转码未产出文件，后续步骤将跳过\n'));
+      lockedPrint(styleFail(`\n[${usedStem}] 转码未产出文件，后续步骤将跳过`));
       result.overall_status = 'failed';
       result.error = 'transcode failed';
       return result;
@@ -1656,9 +1706,9 @@ async function runInputTask(opts) {
     if (fs.existsSync(expectedTc)) {
       tcFile = expectedTc;
       result.transcode = new StepResult('success', tcFile);
-      console.log(`  [${usedStem}] 🎵 转码: ${c('yellow', '使用已有文件 ' + path.basename(expectedTc))}`);
+      lockedPrint(styleInfo(`使用已有转码文件: ${path.basename(expectedTc)}`));
     } else {
-      console.log(`  [${usedStem}] 🎵 转码: ${c('red', '未找到转码文件，将尝试用原始文件识别（可能失败）')}`);
+      lockedPrint(styleWarn(`未找到转码文件，将尝试用原始文件识别（可能失败）`));
       tcFile = inputPath;
       result.transcode = new StepResult('warning', inputPath, 'transcode file not found, using raw input');
     }
@@ -1671,25 +1721,25 @@ async function runInputTask(opts) {
   let transcribeText = '';
   if (steps.includes('transcribe') && tcFile) {
     if (!whisperAvailable) {
-      console.log(`  [${usedStem}] 📝 识别: ${c('red', 'whisper 不可用')}`);
+      lockedPrint(styleFail(`[${usedStem}] whisper 不可用，跳过识别`));
       result.transcribe = new StepResult('failed', null, 'whisper unreachable');
       result.overall_status = 'failed';
       result.error = 'whisper unreachable';
       return result;
     } else {
-      console.log(`  [${usedStem}] 📝 开始语音识别...`);
+      // stepTranscribe 内部已经有日志输出
       try {
         const { text, error } = await stepTranscribe(tcFile, maxRetries, retryDelay, transcribeTimeout);
         if (text && typeof text === 'string') {
           transcribeText = text;
-          console.log(`  [${usedStem}] 📝 识别完成: ${text.length} 字符`);
+          // 日志已在 stepTranscribe 中输出
           result.transcribe = new StepResult('success', text);
         } else {
-          console.log(`  [${usedStem}] 📝 识别: ${c('red', '失败 — ' + (error || ''))}`);
+          lockedPrint(styleFail(`[${usedStem}] 识别失败: ${(error || '').slice(0, 200)}`));
           result.transcribe = new StepResult('failed', null, error);
         }
       } catch (e) {
-        console.log(`  [${usedStem}] 📝 识别: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        lockedPrint(styleFail(`[${usedStem}] 识别异常: ${(e.message || '').slice(0, 200)}`));
         result.transcribe = new StepResult('failed', null, String(e.message).slice(0, 500));
       }
     }
@@ -1702,23 +1752,23 @@ async function runInputTask(opts) {
   if (steps.includes('analyze') && transcribeText) {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
-      console.log(`  [${usedStem}] 🤖 开始 AI 分析...`);
+      logStep(`[${usedStem}] 开始 AI 分析...`);
       try {
         const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout, usedStem);
         if (kw && typeof kw === 'string') {
           analyzeText = kw;
-          console.log(`  [${usedStem}] 🤖 AI分析完成: ${kw.length} 字符`);
+          lockedPrint(styleDone(`[${usedStem}] AI 分析完成: ${kw.length} 字符`));
           result.analyze = new StepResult('success', kw);
         } else {
-          console.log(`  [${usedStem}] 🤖 AI分析: ${c('red', '失败 — ' + (error || ''))}`);
+          lockedPrint(styleFail(`[${usedStem}] AI 分析失败: ${(error || '').slice(0, 200)}`));
           result.analyze = new StepResult('failed', null, error);
         }
       } catch (e) {
-        console.log(`  [${usedStem}] 🤖 AI分析: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        lockedPrint(styleFail(`[${usedStem}] AI 分析异常: ${(e.message || '').slice(0, 200)}`));
         result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500));
       }
     } else {
-      console.log(`  [${usedStem}] 🤖 AI分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+      lockedPrint(styleWarn(`[${usedStem}] AI 分析已禁用 (AI_ENABLED=false)`));
       result.analyze = new StepResult('skipped');
     }
   } else {
@@ -2138,39 +2188,36 @@ async function run({
 }
 
 function printDryRun(tasks, steps, env) {
-  console.log(`\n${'='.repeat(60)}`);
-  console.log(`  干跑模式 - 任务清单 (${tasks.length} 条)`);
-  console.log('='.repeat(60));
+  console.log(styleSection(`干跑模式 - 任务清单 (${tasks.length} 条)`));
 
   // 环境检测
-  console.log('\n  --- 环境检测 ---');
+  console.log(`\n  ${c('bold', '环境检测:')}`);
   if (steps.includes('download')) {
-    console.log(`  ${env.ytdlp ? '✅' : '❌'} yt-dlp: ${YTDLP}`);
+    console.log(`  ${env.ytdlp ? c('green', '✅ yt-dlp') : c('red', '❌ yt-dlp')}: ${YTDLP}`);
   } else {
-    console.log(`  ⏭ yt-dlp: 未启用（步骤不含 download）`);
+    console.log(`  ${c('dim', '⏭ yt-dlp: 未启用（步骤不含 download）')}`);
   }
   if (steps.includes('transcode')) {
-    console.log(`  ${env.ffmpeg ? '✅' : '❌'} ffmpeg: ${FFMPEG}`);
-    console.log(`  ${env.ffprobe ? '✅' : '❌'} ffprobe: ${FFPROBE}`);
+    console.log(`  ${env.ffmpeg ? c('green', '✅ ffmpeg') : c('red', '❌ ffmpeg')}: ${FFMPEG}`);
+    console.log(`  ${env.ffprobe ? c('green', '✅ ffprobe') : c('red', '❌ ffprobe')}: ${FFPROBE}`);
   } else {
-    console.log(`  ⏭ ffmpeg: 未启用（步骤不含 transcode）`);
-    console.log(`  ⏭ ffprobe: 未启用（步骤不含 transcode）`);
+    console.log(`  ${c('dim', '⏭ ffmpeg/ffprobe: 未启用（步骤不含 transcode）')}`);
   }
   if (steps.includes('transcribe')) {
     const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : `service ${WHISPER_SERVICE}`;
-    console.log(`  ${env.whisper ? '✅' : '❌'} whisper (${backend})`);
+    console.log(`  ${env.whisper ? c('green', `✅ whisper (${backend})`) : c('red', `❌ whisper (${backend})`)}`);
   } else {
-    console.log(`  ⏭ whisper: 未启用（步骤不含 transcribe）`);
+    console.log(`  ${c('dim', '⏭ whisper: 未启用（步骤不含 transcribe）')}`);
   }
   if (steps.includes('analyze')) {
     const aiModel = process.env.AI_MODEL || '';
-    console.log(`  ${env.ai ? `✅ AI分析 (${aiModel}): 配置完整` : `❌ AI分析: ${env.issues[env.issues.length - 1] || ''}`}`);
+    console.log(`  ${env.ai ? c('green', `✅ AI分析 (${aiModel}): 配置完整`) : c('red', `❌ AI分析: ${env.issues[env.issues.length - 1] || ''}`)}`);
   } else {
-    console.log(`  ⏭ AI分析: 未启用（步骤不含 analyze）`);
+    console.log(`  ${c('dim', '⏭ AI分析: 未启用（步骤不含 analyze）')}`);
   }
 
   // 任务列表
-  console.log('\n  --- 任务步骤状态 ---');
+  console.log(`\n  ${c('bold', '任务步骤状态:')}`);
   for (let i = 0; i < tasks.length; i++) {
     const { row, sheetName } = tasks[i];
     const { pkey, vid } = getVideoId(row);
@@ -2187,44 +2234,44 @@ function printDryRun(tasks, steps, env) {
     const keywordsVal = row[COL_KEYWORDS];
     const keywordsFilled = keywordsVal != null && String(keywordsVal).trim() !== '';
 
-    console.log(`\n  ${i + 1}. [${sheetName}] ${stem}`);
-    console.log(`     platform=${pkey}, url=${url}`);
+    console.log(`\n  ${styleProgress(i + 1, tasks.length)} [${c('cyan', sheetName)}] ${c('bold', stem)}`);
+    console.log(`     ${c('dim', `platform=${pkey}`)}`);
 
     if (!pkey) {
-      console.log('     ⚠️ 无可用视频 ID');
+      console.log(`     ${styleFail('无可用视频 ID')}`);
       continue;
     }
 
     if (steps.includes('download')) {
       let status;
-      if (dlExists) status = '[跳过-已有文件]';
-      else if (!env.ytdlp) status = '[不可用-yt-dlp]';
-      else status = '[待执行]';
-      console.log(`      download : ${status}`);
+      if (dlExists) status = c('yellow', '[跳过-已有文件]');
+      else if (!env.ytdlp) status = c('red', '[不可用-yt-dlp]');
+      else status = c('green', '[待执行]');
+      console.log(`      ${c('bold', 'download')} : ${status}`);
     }
     if (steps.includes('transcode')) {
       let status;
-      if (tcExists) status = '[跳过-已有文件]';
-      else if (!env.ffmpeg) status = '[不可用-ffmpeg]';
-      else if (!dlExists) status = '[等待-需先下载]';
-      else status = '[待执行]';
-      console.log(`      transcode: ${status}`);
+      if (tcExists) status = c('yellow', '[跳过-已有文件]');
+      else if (!env.ffmpeg) status = c('red', '[不可用-ffmpeg]');
+      else if (!dlExists) status = c('yellow', '[等待-需先下载]');
+      else status = c('green', '[待执行]');
+      console.log(`      ${c('bold', 'transcode')}: ${status}`);
     }
     if (steps.includes('transcribe')) {
       let status;
-      if (contentFilled) status = `[跳过-content已有${String(contentVal).length}字符]`;
-      else if (!env.whisper) status = '[不可用-whisper]';
-      else if (!tcExists) status = '[等待-需先转码]';
-      else status = '[待执行]';
-      console.log(`      transcribe: ${status}`);
+      if (contentFilled) status = c('yellow', `[跳过-content已有${String(contentVal).length}字符]`);
+      else if (!env.whisper) status = c('red', '[不可用-whisper]');
+      else if (!tcExists) status = c('yellow', '[等待-需先转码]');
+      else status = c('green', '[待执行]');
+      console.log(`      ${c('bold', 'transcribe')}: ${status}`);
     }
     if (steps.includes('analyze')) {
       let status;
-      if (keywordsFilled) status = `[跳过-keywords已有${String(keywordsVal).length}字符]`;
-      else if (!env.ai) status = '[不可用-AI未配置]';
-      else if (!contentFilled && !tcExists) status = '[等待-需先识别]';
-      else status = '[待执行]';
-      console.log(`      analyze  : ${status}`);
+      if (keywordsFilled) status = c('yellow', `[跳过-keywords已有${String(keywordsVal).length}字符]`);
+      else if (!env.ai) status = c('red', '[不可用-AI未配置]');
+      else if (!contentFilled && !tcExists) status = c('yellow', '[等待-需先识别]');
+      else status = c('green', '[待执行]');
+      console.log(`      ${c('bold', 'analyze')}  : ${status}`);
     }
   }
 }
