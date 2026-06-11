@@ -294,6 +294,75 @@ def get_video_id(row: pd.Series) -> tuple[str | None, str | None]:
 def build_url(pkey: str, vid: str) -> str:
     return PLATFORM_CONFIG[pkey]["url_tpl"].replace(f"{{{pkey}}}", vid)
 
+# ═══════════════════════════════════════════════════════════════════
+# URL 解析（--url 模式）— 将被注入到 process_videos.py
+# ═══════════════════════════════════════════════════════════════════
+
+_URL_PLATFORM_MAP = [
+    {
+        "platform": "bilibili",
+        "pkey": "bilibiliBvid",
+        "patterns": [
+            re.compile(r"bilibili\.com/video/(BV[a-zA-Z0-9]{10})"),
+            re.compile(r"b23\.tv/([a-zA-Z0-9]+)"),
+            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\\s]*\\baid=(\\d+)'),
+        ],
+    },
+    {
+        "platform": "youtube",
+        "pkey": "youtubeId",
+        "patterns": [
+            re.compile(
+                r"(?:youtube\.com/(?:watch\?v=|embed/|shorts/|live/)|youtu\.be/)([a-zA-Z0-9_-]{11})"
+            ),
+        ],
+    },
+    {
+        "platform": "tencent",
+        "pkey": "tencentVid",
+        "patterns": [
+            re.compile(r"v\.qq\.com/x/page/([a-zA-Z0-9]+)\.html"),
+            re.compile(r"v\.qq\.com/x/cover/[^/]+/([a-zA-Z0-9]+)\.html"),
+            re.compile(r"[?&]vid=([a-zA-Z0-9]+)"),
+        ],
+    },
+    {
+        "platform": "youku",
+        "pkey": "youkuId",
+        "patterns": [
+            re.compile(r"v\.youku\.com/v_show/id_([a-zA-Z0-9=]+)\.html"),
+        ],
+    },
+]
+
+
+def parse_url(url: str) -> dict | None:
+    """
+    解析视频 URL，返回 {"platform","pkey","video_id","watch_url"} 或 None。
+    支持标准链接、短链接、内嵌 iframe URL。
+    """
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+
+    # 提取 iframe src
+    iframe_match = re.search(r"""src=["']([^"']+)["']""", url)
+    if iframe_match:
+        url = iframe_match.group(1)
+
+    for entry in _URL_PLATFORM_MAP:
+        for pat in entry["patterns"]:
+            m = pat.search(url)
+            if m and m.group(1):
+                return {
+                    "platform": entry["platform"],
+                    "pkey": entry["pkey"],
+                    "video_id": m.group(1),
+                    "watch_url": url,
+                }
+    return None
+
+
 
 # ─────────────────────────────── 文件名去重 ──────────────────────────────────
 
@@ -344,6 +413,42 @@ def precompute_stems(df: pd.DataFrame, sheet_name: str) -> None:
     # Store
     for idx, stem in resolved.items():
         _STEM_CACHE[(sheet_name, idx)] = stem
+
+def resolve_url_conflict(proposed_path):
+    """URL 模式文件冲突处理：箭头键选择（覆盖/跳过/自定义）。"""
+    import questionary as qy
+
+    if not proposed_path.exists():
+        return {"action": "proceed", "path": proposed_path}
+
+    stem = proposed_path.stem
+    parent = proposed_path.parent
+    ext = proposed_path.suffix
+
+    print(f"\n⚠️  文件已存在: {proposed_path}")
+
+    action = qy.select(
+        "如何处理?",
+        choices=[
+            {"name": "覆盖 (重新下载替换)", "value": "overwrite"},
+            {"name": "跳过 (保留已有文件)", "value": "skip"},
+            {"name": "自定义文件名", "value": "custom"},
+        ],
+    ).ask()
+
+    if action == "skip":
+        return {"action": "skip", "path": None}
+    if action == "overwrite":
+        return {"action": "proceed", "path": proposed_path}
+
+    # custom name
+    custom_name = qy.text("输入自定义文件名 (不含扩展名):", default=stem).ask()
+    if not custom_name or not custom_name.strip():
+        print("文件名不能为空，使用默认名称")
+        return {"action": "proceed", "path": proposed_path}
+    new_path = parent / f"{custom_name}{ext}"
+    return resolve_url_conflict(new_path)
+
 
 
 def stem_name(row: pd.Series, sheet_name: str = "") -> str:
@@ -1326,6 +1431,126 @@ def process_one_task(
 
 # ─────────────────────────────── 主控流程 ───────────────────────────────────
 
+# ═══════════════════════════════════════════════════════════════════
+# URL 直链流水线（--url 模式）— 将被注入到 process_videos.py
+# ═══════════════════════════════════════════════════════════════════
+
+def _run_url_task(opts):
+    """执行 URL 直链的完整流水线。"""
+    watch_url = opts["watch_url"]
+    platform = opts["platform"]
+    pkey = opts["pkey"]
+    video_id = opts["video_id"]
+    stem = opts["stem"]
+    dl_dir = opts["dl_dir"]
+    steps = opts["steps"]
+    max_retries = opts["max_retries"]
+    retry_delay = opts["retry_delay"]
+    force = opts["force"]
+    download_timeout = opts["download_timeout"]
+    transcode_timeout = opts["transcode_timeout"]
+    transcribe_timeout = opts["transcribe_timeout"]
+    analyze_timeout = opts["analyze_timeout"]
+
+    sheet_name = platform
+    platform_field = PLATFORM_CONFIG[pkey].get("field", "") if pkey in PLATFORM_CONFIG else ""
+
+    # 构建合成 row: 一个伪装成 Excel 行的 Series
+    import pandas as pd
+    synthetic_row = pd.Series(dtype=object)
+    if platform_field:
+        synthetic_row[platform_field] = video_id
+    synthetic_row[COL_ID] = video_id
+    synthetic_row[COL_TITLE] = video_id
+    # 预缓存 stem（url-tasks, 0），供 stem_name 查找
+    _STEM_CACHE[("url-tasks", 0)] = stem
+
+    print("\n── 开始执行 ──\n")
+
+    result = process_one_task(
+        synthetic_row,
+        "url-tasks",
+        steps,
+        max_retries,
+        retry_delay,
+        force,
+        True,  # whisper_available（上游已检查）
+        "",
+        download_timeout,
+        transcode_timeout,
+        transcribe_timeout,
+        analyze_timeout,
+    )
+
+    # ── 展示结果 ──
+    print("\n── 结果 ──\n")
+    successes = []
+
+    dl = result.download
+    if dl and dl.file and Path(dl.file).exists():
+        size_mb = Path(dl.file).stat().st_size / 1024 / 1024
+        print(f"  📥 下载: {dl.file} ({size_mb:.1f} MB)")
+        successes.append("download")
+    elif dl and dl.status == "skipped":
+        print("  📥 下载: 已跳过 (文件已存在)")
+        successes.append("download")
+    elif dl:
+        print(f"  📥 下载: 失败 — {dl.error or ''}")
+
+    tc = result.transcode
+    if tc and tc.file and Path(tc.file).exists():
+        size_mb = Path(tc.file).stat().st_size / 1024 / 1024
+        print(f"  🎵 转码: {tc.file} ({size_mb:.1f} MB)")
+        successes.append("transcode")
+    elif tc and tc.status == "skipped":
+        print("  🎵 转码: 已跳过 (文件已存在)")
+        successes.append("transcode")
+    elif tc:
+        print(f"  🎵 转码: 失败 — {tc.error or ''}")
+
+    tr = result.transcribe
+    if tr and tr.file and isinstance(tr.file, str):
+        print(f"  📝 识别: {len(tr.file)} 字符")
+        successes.append("transcribe")
+    elif tr and tr.status == "skipped":
+        print("  📝 识别: 已跳过")
+        successes.append("transcribe")
+    elif tr:
+        print(f"  📝 识别: 失败 — {tr.error or ''}")
+
+    an = result.analyze
+    if an and an.file and isinstance(an.file, str):
+        print(f"  🤖 AI分析: {len(an.file)} 字符")
+        successes.append("analyze")
+    elif an and an.status == "skipped":
+        print("  🤖 AI分析: 已跳过")
+    elif an:
+        print(f"  🤖 AI分析: 失败 — {an.error or ''}")
+
+    # 保存文本结果
+    transcribe_text = tr.file if (tr and isinstance(tr.file, str)) else ""
+    analyze_text = an.file if (an and isinstance(an.file, str)) else ""
+
+    if transcribe_text or analyze_text:
+        out_dir = REPORTS_DIR / "url-tasks"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{stem}.txt"
+        lines = [
+            f"URL: {watch_url}",
+            f"平台: {platform}",
+            f"视频ID: {video_id}",
+            "", "=" * 60, "",
+        ]
+        if transcribe_text:
+            lines.extend(["【语音识别内容】", "", transcribe_text, ""])
+        if analyze_text:
+            lines.extend(["【AI关键词分析】", "", analyze_text, ""])
+        out_file.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\n  📄 结果已保存至: {out_file}")
+
+    print(f"\n🎉 全部完成! ({len(successes)}/{len(steps)} 步成功)\n")
+
+
 def run(
     target_sheet: str | None,
     target_id: str | None,
@@ -1790,6 +2015,14 @@ if __name__ == "__main__":
         "--env-file",
         help="指定要加载的 .env 文件路径（默认: 当前目录 .env）",
     )
+    parser.add_argument(
+        "--url",
+        help="直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接",
+    )
+    parser.add_argument(
+        "--name",
+        help="指定下载文件名，不含扩展名（与 --url 配合使用）",
+    )
     args = parser.parse_args()
 
     # ── init 模式 ──
@@ -1842,6 +2075,78 @@ if __name__ == "__main__":
         log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
 
     steps = [args.step] if args.step else ["download", "transcode", "transcribe", "analyze"]
+    # ── --url 模式：直接处理单个视频链接 ──
+    if args.url:
+        parsed = parse_url(args.url)
+        if not parsed:
+            print(f"\n❌ 无法识别的 URL: {args.url}")
+            print("支持的平台: YouTube, B站, 腾讯视频, 优酷")
+            print("URL 格式示例:")
+            print("  https://www.bilibili.com/video/BV1xxxyyyzzz")
+            print("  https://www.youtube.com/watch?v=xxxxxxxxxxx")
+            print("  https://v.qq.com/x/page/x0000xxxxx.html")
+            print("  https://v.youku.com/v_show/id_XXXXXXX.html")
+            sys.exit(1)
+
+        platform = parsed["platform"]
+        video_id = parsed["video_id"]
+        watch_url = parsed["watch_url"]
+        pkey = parsed["pkey"]
+
+        print("\n── URL 任务 ──")
+        print(f"  平台: {platform}")
+        print(f"  视频ID: {video_id}")
+        print(f"  链接: {watch_url}")
+
+        # 构建文件路径: downloads/<platform>/<name>.mp4
+        DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        dl_dir = DOWNLOADS_DIR / platform
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        file_name = args.name if args.name else video_id
+        proposed_path = dl_dir / f"{file_name}.mp4"
+
+        # 冲突处理（--force 时直接覆盖）
+        if args.force:
+            final_path = proposed_path
+            final_stem = file_name
+        else:
+            conflict = resolve_url_conflict(proposed_path)
+            if conflict["action"] == "skip":
+                print("\n⏭️  已跳过\n")
+                sys.exit(0)
+            final_path = conflict["path"]
+            final_stem = final_path.stem
+
+        print(f"  文件: {final_path}")
+
+        # 检查 whisper 可用性
+        whisper_available = True
+        if "transcribe" in steps:
+            whisper_available = _check_whisper_available()
+            if not whisper_available:
+                backend = "local CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+                log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+
+        # 执行流水线
+        _run_url_task({
+            "watch_url": watch_url,
+            "platform": platform,
+            "pkey": pkey,
+            "video_id": video_id,
+            "stem": final_stem,
+            "dl_dir": dl_dir,
+            "steps": steps,
+            "max_retries": args.retry,
+            "retry_delay": args.retry_delay,
+            "force": args.force,
+            "download_timeout": args.download_timeout,
+            "transcode_timeout": args.transcode_timeout,
+            "transcribe_timeout": args.transcribe_timeout,
+            "analyze_timeout": args.analyze_timeout,
+        })
+
+        sys.exit(0)
+
     run(
         target_sheet=args.sheet,
         target_id=args.vid_id,
