@@ -34,6 +34,7 @@ from __future__ import annotations
 import os
 import sys
 import re
+import shutil
 import argparse
 import subprocess
 import logging
@@ -1326,21 +1327,133 @@ def run(
 
     # ── 干跑模式 ──
     if dry_run:
-        print(f"\n{'='*60}")
+        print("\n" + "=" * 60)
         print(f"  干跑模式 - 任务清单 ({len(tasks)} 条)")
-        print(f"{'='*60}")
+        print("=" * 60)
+
+        # ── 环境检测 ──
+        print("\n  --- 环境检测 ---")
+
+        # yt-dlp
+        ytdlp_ok = shutil.which(YTDLP) is not None
+        if ytdlp_ok:
+            print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
+        else:
+            print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
+
+        # ffmpeg
+        ffmpeg_ok = shutil.which(FFMPEG) is not None
+        if ffmpeg_ok:
+            print(f"  ✅ ffmpeg: 可用 ({FFMPEG})")
+        else:
+            print(f"  ❌ ffmpeg: 不可用 ({FFMPEG})")
+
+        # ffprobe
+        ffprobe_ok = shutil.which(FFPROBE) is not None
+        if ffprobe_ok:
+            print(f"  ✅ ffprobe: 可用 ({FFPROBE})")
+        else:
+            print(f"  ❌ ffprobe: 不可用 ({FFPROBE})")
+
+        # whisper
+        if "transcribe" in steps:
+            whisper_ok = _check_whisper_available()
+            backend_info = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
+            if whisper_ok:
+                print(f"  ✅ whisper ({backend_info}): 可用")
+            else:
+                print(f"  ❌ whisper ({backend_info}): 不可用")
+        else:
+            whisper_ok = False
+            print(f"  ⏭ whisper: 未启用（步骤不含 transcribe）")
+
+        # AI 分析
+        if "analyze" in steps:
+            ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
+            ai_key = os.getenv("AI_API_KEY", "")
+            ai_url = os.getenv("AI_BASE_URL", "")
+            ai_model = os.getenv("AI_MODEL", "")
+            if not ai_enabled:
+                ai_ok = False
+                print(f"  ❌ AI分析: 未启用 (AI_ENABLED=false)")
+            elif not ai_key or not ai_url:
+                ai_ok = False
+                print(f"  ❌ AI分析: 配置不完整（缺少 AI_API_KEY / AI_BASE_URL）")
+            else:
+                ai_ok = True
+                print(f"  ✅ AI分析 ({ai_model}): 配置完整")
+        else:
+            ai_ok = False
+            print(f"  ⏭ AI分析: 未启用（步骤不含 analyze）")
+
+        # ── 任务列表 ──
+        print("\n  --- 任务步骤状态 ---")
         for i, (row, sheet_name) in enumerate(tasks):
             pkey, vid = get_video_id(row)
             stem = stem_name(row, sheet_name)
             url = build_url(pkey, vid) if pkey else "N/A"
-            dl_exists = (DOWNLOADS_DIR / sheet_name / stem).with_suffix(".mp4").exists()
-            tc_exists = (TRANSCODED_DIR / sheet_name / (stem + TRANSCODE_EXT)).exists()
-            print(f"  {i + 1}. [{sheet_name}] {stem}")
+
+            dl_path = (DOWNLOADS_DIR / sheet_name / stem).with_suffix(".mp4")
+            tc_path = TRANSCODED_DIR / sheet_name / (stem + TRANSCODE_EXT)
+            dl_exists = dl_path.exists()
+            tc_exists = tc_path.exists()
+
+            # 检查 Excel 列是否已填写
+            content_val = row.get(COL_CONTENT)
+            content_filled = pd.notna(content_val) and str(content_val).strip() != ""
+            keywords_val = row.get(COL_KEYWORDS)
+            keywords_filled = pd.notna(keywords_val) and str(keywords_val).strip() != ""
+
+            print(f"\n  {i+1}. [{sheet_name}] {stem}")
             print(f"     platform={pkey}, url={url}")
-            steps_str = ", ".join(s for s in ["download", "transcode", "transcribe", "analyze"] if s in steps)
-            print(f"     步骤: {steps_str}")
+
             if not pkey:
                 print(f"     ⚠️ 无可用视频 ID")
+                continue
+
+            # 每步状态
+            if "download" in steps:
+                if dl_exists:
+                    status = "[跳过-已有文件]"
+                elif not ytdlp_ok:
+                    status = "[不可用-yt-dlp]"
+                else:
+                    status = "[待执行]"
+                print(f"      download : {status}")
+
+            if "transcode" in steps:
+                if tc_exists:
+                    status = "[跳过-已有文件]"
+                elif not ffmpeg_ok:
+                    status = "[不可用-ffmpeg]"
+                elif not dl_exists:
+                    status = "[等待-需先下载]"
+                else:
+                    status = "[待执行]"
+                print(f"      transcode: {status}")
+
+            if "transcribe" in steps:
+                if content_filled:
+                    status = f"[跳过-content已有{len(str(content_val))}字符]"
+                elif not whisper_ok:
+                    status = "[不可用-whisper]"
+                elif not tc_exists:
+                    status = "[等待-需先转码]"
+                else:
+                    status = "[待执行]"
+                print(f"      transcribe: {status}")
+
+            if "analyze" in steps:
+                if keywords_filled:
+                    status = f"[跳过-keywords已有{len(str(keywords_val))}字符]"
+                elif not ai_ok:
+                    status = "[不可用-AI未配置]"
+                elif not content_filled and not tc_exists:
+                    status = "[等待-需先识别]"
+                else:
+                    status = "[待执行]"
+                print(f"      analyze  : {status}")
+
         return
 
     # ── 检测 whisper ──
@@ -1472,7 +1585,10 @@ def run_from_report(
     if dry_run:
         print(f"\n  干跑模式 - 重跑 {len(tasks)} 条失败项")
         for i, (row, sheet_name) in enumerate(tasks):
-            print(f"  {i + 1}. [{sheet_name}] {stem_name(row, sheet_name)}")
+            pkey, vid = get_video_id(row)
+            stem = stem_name(row, sheet_name)
+            url = build_url(pkey, vid) if pkey else "N/A"
+            print(f"  {i+1}. [{sheet_name}] {stem}  platform={pkey}  url={url}")
         return
 
     whisper_available = _check_whisper_available() if "transcribe" in steps else False
