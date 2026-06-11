@@ -1,6 +1,6 @@
-# 视频下载 / 转码 / 文本识别 流程
+# 视频下载 / 转码 / 文本识别 / AI 分析 流程
 
-基于 `process_videos.py`，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → 写回 Excel。
+基于 `process_videos.py`，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
 
 ## 环境依赖
 
@@ -48,7 +48,7 @@ cp .env.example .env
 | 分类 | 变量 | 说明 |
 |------|------|------|
 | 输入 | `EXCEL_FILE` | Excel 文件路径 |
-| 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` | 唯一标识列 / 标题列 / 输出列 |
+| 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` / `COL_KEYWORDS` | 唯一标识列 / 标题列 / 识别文本输出列 / AI 关键词输出列 |
 | 列映射 | `COL_TENCENTVID` / `COL_BILIBILIBVID` / `COL_YOUTUBEID` / `COL_YOUKUID` | 各平台视频 ID 所在列 |
 | Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
@@ -64,6 +64,10 @@ cp .env.example .env
 | 服务 | `WHISPER_LANGUAGE` | 语言代码 (仅 backend=local)，空=多语言自动检测（默认） |
 | 服务 | `WHISPER_SERVICE_MODEL` | 模型文件路径 (仅 backend=service)，如 models/ggml-base.bin |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
+| AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
+| AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
+| AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符 |
+| AI 分析 | `AI_TIMEOUT` | 单次分析请求超时（秒，默认 300） |
 
 ### .env 配置项变更权限
 
@@ -162,7 +166,7 @@ yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 ### 单条测试
 
 ```bash
-# 下载 + 转码 + 识别，指定 sheet + extra.id
+# 下载 + 转码 + 识别 + AI分析，指定 sheet + extra.id
 python process_videos.py --sheet "YouTube视频" --id 2143
 
 # 只跑下载
@@ -173,6 +177,9 @@ python process_videos.py --sheet "普诺赛中文站" --id 16 --step transcode
 
 # 只跑识别（需要已有转码文件）
 python process_videos.py --sheet "普诺赛中文站" --id 16 --step transcribe
+
+# 只跑 AI 分析（需要已有识别文本）
+python process_videos.py --sheet "普诺赛中文站" --id 16 --step analyze
 
 # 强制重新下载（忽略已有文件）
 python process_videos.py --sheet "YouTube视频" --id 2143 --force
@@ -211,9 +218,10 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 python process_videos.py \
     --download-timeout 900 \    # 下载 15 分钟
     --transcode-timeout 600 \   # 转码 10 分钟
-    --transcribe-timeout 1200   # 识别 20 分钟
+    --transcribe-timeout 1200 \ # 识别 20 分钟
+    --analyze-timeout 180       # AI 分析 3 分钟
 
-# 默认值：下载 600s / 转码 300s / 识别 600s
+# 默认值：下载 600s / 转码 600s / 识别 600s / AI 分析 300s
 ```
 
 - 超时属于**可重试错误**，会触发指数退避重试（`--retry` 控制次数）
@@ -277,6 +285,55 @@ yt-dlp 下载过程中会生成 `.part`（未完成分片）和 `.ytdl`（元数
 | 下载失败后 | 立即清理，避免无效文件占磁盘 |
 
 > 例如：`2152.mp4.part` + `2152.mp4.ytdl` 会在下次下载该视频时自动删除，无需手动清理。
+
+---
+
+## AI 关键词归纳
+
+在识别完成后，脚本可自动调用 OpenAI 兼容 API 对识别文本做关键词归纳，结果写入 `keywords` 列。
+
+### 配置
+
+在 `.env` 中配置以下变量（见 `.env.example`）：
+
+```env
+# 启用/禁用 AI 分析环节
+AI_ENABLED=true
+
+# OpenAI 兼容 API（支持任何兼容接口）
+AI_API_KEY=sk-xxx
+AI_BASE_URL=https://apihub.agnes-ai.com/v1
+AI_MODEL=agnes-2.0-flash
+
+# 提示词模板（{content} 会被识别文本替换）
+AI_PROMPT_TPL=帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}
+
+# 请求超时（秒）
+AI_TIMEOUT=300
+```
+
+### 工作原理
+
+1. whisper 识别完成 → 得到文本（存入 `content` 列）
+2. 将文本替换 `{content}` 占位符 → 发送到 AI API
+3. AI 返回关键词归纳 → 写入 `keywords` 列
+
+> **提示词模板可自由定制**：只需保留 `{content}` 占位符，提示词内容可改为翻译、摘要、分类等任意任务。
+
+### 单独运行
+
+```bash
+# 已有识别文本，只跑 AI 分析
+python process_videos.py --sheet "普诺赛中文站" --id 427 --step analyze
+
+# 单独跑 analyze 超过 16 条不会写入 Excel
+# 要想写入 Excel 跑完整流程 --step analyze
+python process_videos.py --sheet "YouTube视频" --step analyze --concurrency 2
+```
+
+### 禁用 AI 分析
+
+设置 `AI_ENABLED=false`，识别完成后跳过 AI 分析步骤。
 
 ---
 
@@ -358,8 +415,8 @@ yt-dlp 下载过程中会生成 `.part`（未完成分片）和 `.ytdl`（元数
 }
 ```
 
-- **success**：下载 + 转码 + 识别全部成功
-- **partial**：下载 + 转码成功，识别失败（如 whisper 服务挂了）
+- **success**：下载 + 转码 + 识别全部成功（AI 分析失败不影响此状态）
+- **partial**：下载 + 转码成功，识别或 AI 分析失败
 - **failed**：下载或转码失败
 - **no_video**：该行无可用视频 ID
 

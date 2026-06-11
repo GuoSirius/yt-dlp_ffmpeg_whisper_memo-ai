@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-视频下载、转码、文本识别一体化流程脚本
+视频下载、转码、文本识别、AI分析一体化流程脚本
 
 用法:
   # 跑全量（两个视频 sheet），3 并发，失败重试 3 次
@@ -17,6 +17,7 @@
   python process_videos.py --sheet "YouTube视频" --id 2143 --step download
   python process_videos.py --sheet "YouTube视频" --id 2143 --step transcode
   python process_videos.py --sheet "YouTube视频" --id 2143 --step transcribe
+  python process_videos.py --sheet "YouTube视频" --id 2143 --step analyze
 
   # 强制重新下载
   python process_videos.py --sheet "YouTube视频" --id 2143 --force
@@ -89,6 +90,7 @@ FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s1
 COL_ID = os.getenv("COL_ID", "extra.id")
 COL_TITLE = os.getenv("COL_TITLE", "title")
 COL_CONTENT = os.getenv("COL_CONTENT", "content")
+COL_KEYWORDS = os.getenv("COL_KEYWORDS", "keywords")
 COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencentVid")
 COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibiliBvid")
 COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtubeId")
@@ -258,6 +260,7 @@ class TaskResult:
     download: StepResult = field(default_factory=lambda: StepResult("skipped"))
     transcode: StepResult = field(default_factory=lambda: StepResult("skipped"))
     transcribe: StepResult = field(default_factory=lambda: StepResult("skipped"))
+    analyze: StepResult = field(default_factory=lambda: StepResult("skipped"))
     overall_status: str = "pending"   # "success" | "partial" | "failed" | "no_video"
     error: str | None = None
 
@@ -540,6 +543,76 @@ def make_ffmpeg_parser(total_duration: float | None) -> callable:
             pass
         return None
     return _parse
+
+
+def step_analyze(
+    text: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 300,
+) -> tuple[str | None, int, str | None]:
+    """调用 OpenAI 兼容 API 对识别文本做关键词归纳。
+    返回 (keywords_text, retries_used, error_msg)。
+    """
+    if not text or not text.strip():
+        return None, 0, "识别文本为空，跳过 AI 分析"
+
+    api_key = os.getenv("AI_API_KEY", "")
+    base_url = os.getenv("AI_BASE_URL", "")
+    model = os.getenv("AI_MODEL", "")
+    prompt_tpl = os.getenv(
+        "AI_PROMPT_TPL",
+        "帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}"
+    )
+    ai_timeout = int(os.getenv("AI_TIMEOUT", str(timeout)))
+
+    if not api_key or not base_url or not model:
+        return None, 0, "AI 配置不完整（缺少 AI_API_KEY / AI_BASE_URL / AI_MODEL）"
+
+    # 组装提示词
+    prompt = prompt_tpl.replace("{content}", text)
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.3,
+    }
+
+    import urllib.request
+    import urllib.parse
+    import json as _json
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    data = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+    last_err = None
+    for attempt in range(1, max_retries + 2):  # 首次 + max_retries 次重试
+        try:
+            with urllib.request.urlopen(req, timeout=ai_timeout) as resp:
+                body = _json.loads(resp.read().decode("utf-8"))
+            content = body["choices"][0]["message"]["content"]
+            return content.strip(), (attempt - 1), None
+        except Exception as e:
+            err_str = str(e)[:500]
+            last_err = err_str
+            if attempt <= max_retries + 1:
+                sleep_sec = retry_delay * (2 ** (attempt - 1))
+                with _print_lock:
+                    print(f"  [analyze] 第 {attempt} 次失败：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
+                import time as _time
+                _time.sleep(min(sleep_sec, 30))
+            else:
+                break
+
+    return None, max_retries + 1, f"AI 分析失败（重试 {max_retries+1} 次）：{last_err}"
+
+
 
 def _cleanup_partial_files(dl_dir: Path, stem: str) -> None:
     """清理下载残留文件（.part 和 .ytdl）"""
@@ -872,7 +945,7 @@ def _transcribe_service(
 
 # ─────────────────────────────── Excel 批量写回 ─────────────────────────────
 
-def write_all_contents_to_excel(results: list[TaskResult]):
+def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None):
     """
     将所有识别文本批量写回 Excel。
     使用 openpyxl 直接操作，单线程安全。
@@ -933,6 +1006,35 @@ def write_all_contents_to_excel(results: list[TaskResult]):
 
         if not matched:
             log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
+
+    # 写入 keywords 列（AI 分析结果）
+    if keywords_dict:
+        for (kw_sheet, kw_key), kw_text in keywords_dict.items():
+            if kw_sheet not in wb.sheetnames:
+                continue
+            ws_kw = wb[kw_sheet]
+            hdrs = {cell.value: cell.column for cell in ws_kw[1]}
+            if COL_KEYWORDS not in hdrs:
+                log.warning(f"[{kw_sheet}] 找不到 {COL_KEYWORDS} 列，跳过 keywords 写入")
+                continue
+            kw_col = hdrs[COL_KEYWORDS]
+            for row in ws_kw.iter_rows(min_row=2):
+                matched = False
+                id_col_kw = hdrs.get(COL_ID)
+                title_col_kw = hdrs.get(COL_TITLE)
+                if id_col_kw and row[id_col_kw - 1].value is not None:
+                    try:
+                        if str(int(float(row[id_col_kw - 1].value))) == str(kw_key):
+                            matched = True
+                    except (ValueError, TypeError):
+                        pass
+                if not matched and title_col_kw:
+                    if str(row[title_col_kw - 1].value) == str(kw_key):
+                        matched = True
+                if matched:
+                    row[kw_col - 1].value = kw_text
+                    log.info(f"[{kw_sheet}/{kw_key}] keywords 已写入（{len(kw_text)} 字符）")
+                    break
 
     wb.save(str(EXCEL_FILE))
     wb.close()
@@ -1029,6 +1131,7 @@ def process_one_task(
     download_timeout: int = 600,
     transcode_timeout: int = 600,
     transcribe_timeout: int = 600,
+    analyze_timeout: int = 300,
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
     pkey, vid = get_video_id(row)
@@ -1135,10 +1238,33 @@ def process_one_task(
             result.error = f"下载+转码成功但识别失败: {err}"
         else:
             result.overall_status = "success"
-    elif "transcribe" in steps and not tc_file:
-        result.transcribe = StepResult("skipped")
-        result.overall_status = "partial"
-        result.error = "缺少转码文件，无法识别"
+
+    # ── AI 分析（transcribe 之后执行）──
+    if "analyze" in steps and result.transcribe.status == "success":
+        ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
+        if ai_enabled:
+            txt = result.transcribe.file  # 借用 file 字段存文本
+            if txt:
+                try:
+                    kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout)
+                except Exception as e:
+                    kw, retries, err = None, max_retries, str(e)[:500]
+                result.analyze = StepResult(
+                    status="success" if kw else "failed",
+                    file=kw,
+                    error=err,
+                    retries_used=retries,
+                )
+                if kw:
+                    print(f"  [{result.stem}] AI 分析完成（{len(kw)} 字符）", flush=True)
+                else:
+                    print(f"  [{result.stem}] AI 分析失败：{err}", flush=True)
+            else:
+                result.analyze = StepResult("skipped", error="识别文本为空")
+        else:
+            result.analyze = StepResult("skipped")
+    elif "analyze" in steps and result.transcribe.status != "success":
+        result.analyze = StepResult("skipped", error="transcribe 未成功，跳过 AI 分析")
 
     if result.overall_status == "pending":
         result.overall_status = "success"
@@ -1161,13 +1287,15 @@ def run(
     download_timeout: int = 600,
     transcode_timeout: int = 300,
     transcribe_timeout: int = 600,
+    analyze_timeout: int = 120,
 ):
     """主执行流程"""
     # ── 重跑失败模式 ──
     if retry_failed:
         return run_from_report(retry_failed, steps, max_retries, retry_delay,
                                concurrency, force, dry_run,
-                               download_timeout, transcode_timeout, transcribe_timeout)
+                               download_timeout, transcode_timeout, transcribe_timeout,
+                               analyze_timeout)
 
     # ── 构建任务列表 ──
     sheets = [target_sheet] if target_sheet else VIDEO_SHEETS
@@ -1209,7 +1337,8 @@ def run(
             tc_exists = (TRANSCODED_DIR / sheet_name / (stem + TRANSCODE_EXT)).exists()
             print(f"  {i + 1}. [{sheet_name}] {stem}")
             print(f"     platform={pkey}, url={url}")
-            print(f"     下载={dl_exists}, 转码={tc_exists}")
+            steps_str = ", ".join(s for s in ["download", "transcode", "transcribe", "analyze"] if s in steps)
+            print(f"     步骤: {steps_str}")
             if not pkey:
                 print(f"     ⚠️ 无可用视频 ID")
         return
@@ -1233,7 +1362,7 @@ def run(
                     process_one_task, row, sheet_name, steps,
                     max_retries, retry_delay, force, whisper_available,
                     pos_label,
-                    download_timeout, transcode_timeout, transcribe_timeout,
+                    download_timeout, transcode_timeout, transcribe_timeout, analyze_timeout,
                 )
             ] = (row, sheet_name)
 
@@ -1260,7 +1389,12 @@ def run(
 
     # ── 批量写回 Excel ──
     if "transcribe" in steps:
-        write_all_contents_to_excel(results)
+        # 收集 AI 分析结果，一并写入 Excel
+        kw_dict: dict[tuple[str, str], str] = {}
+        for tr in results:
+            if tr.analyze.status == "success" and tr.analyze.file:
+                kw_dict[(tr.sheet, tr.id_val)] = tr.analyze.file
+        write_all_contents_to_excel(results, kw_dict if kw_dict else None)
 
     # ── 生成报告 ──
     config = {
@@ -1285,6 +1419,7 @@ def run_from_report(
     download_timeout: int = 600,
     transcode_timeout: int = 300,
     transcribe_timeout: int = 600,
+    analyze_timeout: int = 120,
 ):
     """从报告加载失败项，重新执行"""
     with open(report_path, "r", encoding="utf-8") as f:
@@ -1354,7 +1489,7 @@ def run_from_report(
                     process_one_task, row, sheet_name, steps,
                     max_retries, retry_delay, force, whisper_available,
                     pos_label,
-                    download_timeout, transcode_timeout, transcribe_timeout,
+                    download_timeout, transcode_timeout, transcribe_timeout, analyze_timeout,
                 )
             ] = (row, sheet_name)
 
@@ -1379,7 +1514,12 @@ def run_from_report(
                 print(f"\n{overall.summary_line()}\n", flush=True)
 
     if "transcribe" in steps:
-        write_all_contents_to_excel(results)
+        # 收集 AI 分析结果，一并写入 Excel
+        kw_dict: dict[tuple[str, str], str] = {}
+        for tr in results:
+            if tr.analyze.status == "success" and tr.analyze.file:
+                kw_dict[(tr.sheet, tr.id_val)] = tr.analyze.file
+        write_all_contents_to_excel(results, kw_dict if kw_dict else None)
 
     config = {
         "mode": "retry-failed",
@@ -1411,7 +1551,7 @@ if __name__ == "__main__":
     parser.add_argument("--sheet", help="指定 sheet 名称（默认全部视频 sheet）")
     parser.add_argument("--id", dest="vid_id", help="指定 extra.id 或 title（单条测试）")
     parser.add_argument(
-        "--step", choices=["download", "transcode", "transcribe"],
+        "--step", choices=["download", "transcode", "transcribe", "analyze"],
         help="只执行指定步骤（默认全跑）",
     )
     parser.add_argument("--force", action="store_true", help="强制重新执行，忽略已有文件")
@@ -1439,6 +1579,10 @@ if __name__ == "__main__":
         "--transcribe-timeout", type=int, default=600,
         help="单个识别任务的最长执行时间（秒），默认 600s（10 分钟）",
     )
+    parser.add_argument(
+        "--analyze-timeout", type=int, default=120,
+        help="单个 AI 分析任务的最长执行时间（秒），默认 120s（2 分钟）",
+    )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
         "--retry-failed",
@@ -1446,7 +1590,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    steps = [args.step] if args.step else ["download", "transcode", "transcribe"]
+    steps = [args.step] if args.step else ["download", "transcode", "transcribe", "analyze"]
     run(
         target_sheet=args.sheet,
         target_id=args.vid_id,
@@ -1460,4 +1604,5 @@ if __name__ == "__main__":
         download_timeout=args.download_timeout,
         transcode_timeout=args.transcode_timeout,
         transcribe_timeout=args.transcribe_timeout,
+        analyze_timeout=args.analyze_timeout,
     )
