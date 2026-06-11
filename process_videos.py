@@ -1950,6 +1950,181 @@ def run_from_report(
     report_path_new = generate_report(results, config)
     print_report_summary(results)
     log.info(f"重跑完成！报告: {report_path_new}")
+# ─────────────────────────────── 本地文件流水线（--input 模式）───────────────────────────────────────
+
+def validate_input_file(file_path):
+    """验证本地视频文件，检测可执行步骤"""
+    result = {
+        'valid': False, 'format': '', 'has_video': False, 'has_audio': False,
+        'video_codec': '', 'audio_codec': '', 'duration': 0, 'width': 0, 'height': 0,
+        'errors': [], 'feasible_steps': [],
+    }
+
+    # 1. 文件存在性
+    path_obj = Path(file_path)
+    if not path_obj.exists():
+        result['errors'].append('文件不存在')
+        return result
+
+    if not path_obj.is_file():
+        result['errors'].append('不是一个文件')
+        return result
+
+    if path_obj.stat().st_size == 0:
+        result['errors'].append('文件大小为 0')
+        return result
+
+    # 2. ffprobe 分析
+    if not shutil.which(FFPROBE):
+        result['errors'].append(f'ffprobe 不可用 ({FFPROBE})')
+        result['valid'] = True
+        result['feasible_steps'] = ['transcode', 'transcribe', 'analyze']
+        return result
+
+    try:
+        probe_cmd = [
+            FFPROBE, '-v', 'error',
+            '-show_entries', 'stream=codec_type,codec_name,width,height',
+            '-show_entries', 'format=format_name,duration',
+            '-of', 'json',
+            str(path_obj)
+        ]
+        probe_raw = subprocess.check_output(probe_cmd, timeout=30, text=True)
+        info = json.loads(probe_raw)
+
+        # 提取 format 信息
+        if 'format' in info:
+            result['format'] = (info['format'].get('format_name', '') or '').split(',')[0]
+            result['duration'] = float(info['format'].get('duration', 0) or 0)
+
+        # 提取 stream 信息
+        if 'streams' in info:
+            for s in info['streams']:
+                if s.get('codec_type') == 'video':
+                    result['has_video'] = True
+                    result['video_codec'] = s.get('codec_name', '')
+                    result['width'] = s.get('width', 0)
+                    result['height'] = s.get('height', 0)
+                if s.get('codec_type') == 'audio':
+                    result['has_audio'] = True
+                    result['audio_codec'] = s.get('codec_name', '')
+
+        result['valid'] = True
+
+        # 3. 判断可执行步骤
+        if result['has_video']:
+            result['feasible_steps'].append('transcode')
+        if result['has_audio']:
+            result['feasible_steps'].extend(['transcribe', 'analyze'])
+        
+        # 无视频无音频 → 所有步骤不可行
+        if not result['has_video'] and not result['has_audio']:
+            result['feasible_steps'] = []
+            result['errors'].append('文件不包含视频或音频流，无法处理')
+        elif result['has_video'] and not result['has_audio']:
+            result['errors'].append('文件不含音频轨道，将跳过语音识别和 AI 分析')
+
+    except Exception as e:
+        result['errors'].append(f'ffprobe 解析失败: {str(e)[:200]}')
+        result['valid'] = True
+
+    return result
+
+
+def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, force, 
+                   transcode_timeout, transcribe_timeout, analyze_timeout, custom_name=None):
+    """--input 模式的独立流水线"""
+    stem = custom_name or os.path.splitext(os.path.basename(str(input_path)))[0]
+    result = TaskResult(
+        sheet=sheet_name, id_val='-', title=stem, stem=stem,
+        platform='local', video_url=None,
+        overall_status='pending', download=StepResult('skipped'),
+    )
+
+    tc_file = None
+
+    # ── 转码 ──
+    if 'transcode' in steps:
+        try:
+            tc_file, retries, err = step_transcode(
+                input_path, sheet_name, max_retries, retry_delay, force, transcode_timeout
+            )
+        except Exception as e:
+            tc_file, retries, err = None, max_retries, str(e)[:500]
+
+        result.transcode = StepResult(
+            status='success' if tc_file else 'failed',
+            file=str(tc_file) if tc_file else None,
+            error=err,
+            retries_used=retries,
+        )
+
+        if not tc_file:
+            result.overall_status = 'failed'
+            result.error = f'转码失败: {err}'
+            return result
+    else:
+        # 不转码，直接使用输入文件
+        tc_file = input_path
+        result.transcode = StepResult('success', file=str(tc_file))
+
+    # ── 识别 ──
+    if 'transcribe' in steps and tc_file:
+        if not whisper_available:
+            result.transcribe = StepResult('failed', error=f'whisper 服务不可达 ({WHISPER_SERVICE})')
+            result.overall_status = 'failed'
+            result.error = '转码成功但 whisper 服务不可达'
+            return result
+
+        try:
+            text_file, retries, err = step_transcribe(
+                tc_file, sheet_name, max_retries, retry_delay, transcribe_timeout
+            )
+        except Exception as e:
+            text_file, retries, err = None, max_retries, str(e)[:500]
+
+        result.transcribe = StepResult(
+            status='success' if text_file else 'failed',
+            file=str(text_file) if text_file else None,
+            error=err,
+            retries_used=retries,
+        )
+
+        if not text_file:
+            result.overall_status = 'partial'
+            result.error = f'转码成功但识别失败: {err}'
+            return result
+    else:
+        result.transcribe = StepResult('skipped')
+
+    # ── AI 分析 ──
+    if 'analyze' in steps:
+        if result.transcribe.status != 'success':
+            result.analyze = StepResult('skipped', error='识别步骤未成功，跳过 AI 分析')
+        else:
+            try:
+                analyze_ok, retries, err = step_analyze(
+                    result.transcribe.file, sheet_name, max_retries, retry_delay, analyze_timeout
+                )
+            except Exception as e:
+                analyze_ok, retries, err = False, max_retries, str(e)[:500]
+
+            result.analyze = StepResult(
+                status='success' if analyze_ok else 'failed',
+                file=result.transcribe.file if analyze_ok else None,
+                error=err,
+                retries_used=retries,
+            )
+
+            if not analyze_ok:
+                result.overall_status = 'partial'
+                result.error = f'转码+识别成功但 AI 分析失败: {err}'
+                return result
+    else:
+        result.analyze = StepResult('skipped')
+
+    result.overall_status = 'success'
+    return result
 
 
 # ─────────────────────────────── 入口 ───────────────────────────────────────
@@ -2021,7 +2196,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--name",
-        help="指定下载文件名，不含扩展名（与 --url 配合使用）",
+        help="指定下载文件名，不含扩展名（与 --url / --input 配合使用）",
+    )
+    parser.add_argument(
+        "--input",
+        help="指定本地视频文件路径（跳过下载，直接转码→识别→分析）",
     )
     args = parser.parse_args()
 
@@ -2075,6 +2254,11 @@ if __name__ == "__main__":
         log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
 
     steps = [args.step] if args.step else ["download", "transcode", "transcribe", "analyze"]
+    
+    # ── --input 模式：移除 download 步骤 ──
+    if args.input and not args.step:
+        steps = ["transcode", "transcribe", "analyze"]
+    
     # ── --url 模式：直接处理单个视频链接 ──
     if args.url:
         parsed = parse_url(args.url)
@@ -2145,6 +2329,97 @@ if __name__ == "__main__":
             "analyze_timeout": args.analyze_timeout,
         })
 
+        sys.exit(0)
+
+    # ── --input 模式：直接处理本地视频文件 ──
+    if args.input:
+        input_path = Path(args.input).resolve()
+        
+        print("\n── 文件校验 ──")
+        print(f"  文件: {input_path}")
+        
+        file_info = validate_input_file(input_path)
+        
+        if not file_info['valid']:
+            print(f"\n❌ 无法处理该文件:")
+            for err in file_info['errors']:
+                print(f"   - {err}")
+            sys.exit(1)
+        
+        print(f"  格式: {file_info['format']}")
+        if file_info['has_video']:
+            print(f"  视频: {file_info['video_codec']} {file_info['width']}x{file_info['height']}")
+        if file_info['has_audio']:
+            print(f"  音频: {file_info['audio_codec']}")
+        print(f"  时长: {int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d} ({file_info['duration']:.1f}s)")
+        
+        if file_info['errors']:
+            print(f"\n⚠️  警告:")
+            for err in file_info['errors']:
+                print(f"   - {err}")
+        
+        print(f"\n  可执行步骤: {' → '.join(file_info['feasible_steps'])}")
+        
+        # 检查请求的步骤是否都可行
+        for step in steps:
+            if step not in file_info['feasible_steps']:
+                print(f"\n❌ 错误: 文件不支持 '{step}' 步骤")
+                print(f"   支持的步骤: {', '.join(file_info['feasible_steps'])}")
+                sys.exit(1)
+        
+        # 确定 sheet 名称（用于输出目录）
+        sheet_name = args.sheet if args.sheet else "local"
+        
+        # 检查 whisper 可用性
+        whisper_available = True
+        if "transcribe" in steps:
+            whisper_available = _check_whisper_available()
+            if not whisper_available:
+                backend = "local CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+                log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+        
+        # dry-run 模式
+        if args.dry_run:
+            print(f"\n── 开始执行 (dry-run) ──\n")
+            print(f"  [本地文件] 将执行步骤: {' → '.join(steps)}")
+            print(f"  输入文件: {input_path}")
+            if args.name:
+                print(f"  输出名称: {args.name}")
+            sys.exit(0)
+        
+        # 执行流水线
+        result = run_input_task(
+            input_path=input_path,
+            sheet_name=sheet_name,
+            steps=steps,
+            max_retries=args.retry,
+            retry_delay=args.retry_delay,
+            force=args.force,
+            transcode_timeout=args.transcode_timeout,
+            transcribe_timeout=args.transcribe_timeout,
+            analyze_timeout=args.analyze_timeout,
+            custom_name=args.name,
+        )
+        
+        # 输出结果
+        print(f"\n── 执行结果 ──")
+        print(f"  整体状态: {result.overall_status}")
+        if result.download:
+            print(f"  下载: {result.download.status}")
+        if result.transcode:
+            print(f"  转码: {result.transcode.status}")
+            if result.transcode.file:
+                print(f"    输出: {result.transcode.file}")
+        if result.transcribe:
+            print(f"  识别: {result.transcribe.status}")
+            if result.transcribe.file:
+                print(f"    输出: {result.transcribe.file}")
+        if result.analyze:
+            print(f"  分析: {result.analyze.status}")
+        
+        if result.error:
+            print(f"\n  错误: {result.error}")
+        
         sys.exit(0)
 
     run(

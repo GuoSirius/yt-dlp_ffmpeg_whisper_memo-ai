@@ -1,6 +1,38 @@
-# 视频下载 / 转码 / 文本识别 / AI 分析 流程
+# 视频处理流水线 (Video Pipeline)
 
-基于 `process_videos.py`，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
+基于 `process_videos.js` (Node.js) 或 `process_videos.py` (Python)，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
+
+**两种使用方式：**
+- **Excel 批量处理**：从 Excel 文件读取视频 ID，自动完成全流程
+- **直链下载**：通过 `--url` 直接指定视频链接，自动识别平台并下载
+- **本地文件**：通过 `--input` 指定本地视频文件，跳过下载直接转码分析
+
+---
+
+## 安装方式
+
+### Node.js 版本（推荐）
+
+```bash
+# 全局安装
+npm install -g video-pipeline
+
+# 使用后可直接调用
+video-pipeline --help
+```
+
+### Python 版本
+
+```bash
+# 克隆或下载脚本
+git clone https://gitee.com/siriussupreme/yt-dlp_ffmpeg_whisper_memo-ai.git
+cd yt-dlp_ffmpeg_whisper_memo-ai
+
+# 安装 Python 依赖
+pip install pandas openpyxl requests python-dotenv questionary
+```
+
+---
 
 ## 环境依赖
 
@@ -110,21 +142,33 @@ WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指
 ## 目录结构
 
 ```
-├── process_videos.py              # 主流程脚本
-├── .env.example                   # 环境变量模板（可提交 Git）
-├── .env                           # 实际环境变量（已 gitignore，按需修改）
-├── export_2026-06-10_split.xlsx   # 数据源（YouTube视频 / 普诺赛中文站 两个 sheet）
-├── cookies/
-│   ├── bilibili.txt               # B站 cookie（Netscape 格式）
-│   └── youtube.txt                # YouTube cookie 备用（Firefox 直读方案不需要）
-├── downloads/                     # yt-dlp 下载输出（mp4）
+├── process_videos.js              # Node.js 主流程脚本（推荐）
+├── process_videos.py              # Python 主流程脚本（备选）
+├── package.json                   # Node.js 项目配置（npm 包）
+├── .env.example                  # 环境变量模板（可提交 Git）
+├── .env                          # 实际环境变量（已 gitignore，按需修改）
+├── data/                         # 数据源目录
+│   └── export_2026-06-10_split.xlsx   # Excel 数据源
+├── cookies/                     # 站点 cookie 文件
+│   ├── bilibili.txt            # B站 cookie（Netscape 格式）
+│   └── youtube.txt             # YouTube cookie 备用（Firefox 直读方案不需要）
+├── downloads/                    # yt-dlp 下载输出（mp4）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
-├── transcoded/                    # ffmpeg 转码输出（wav 16kHz mono）
+├── transcoded/                   # ffmpeg 转码输出（wav 16kHz mono）
 │   ├── YouTube视频/
 │   └── 普诺赛中文站/
-└── reports/                       # 执行报告（JSON）
-    └── report_YYYYMMDD_HHMMSS.json
+├── reports/                      # 执行报告（JSON）
+│   └── report_YYYYMMDD_HHMMSS.json
+├── scripts/                      # 辅助脚本
+│   ├── release.js                 # 版本发布脚本
+│   └── regenerate-changelog.js  # CHANGELOG 重建脚本
+├── .github/                      # GitHub Actions 工作流
+├── .husky/                      # Git hooks（commit 消息检查）
+├── node_modules/                 # Node.js 依赖（已 gitignore）
+├── CHANGELOG.md                  # 版本变更记录
+├── README.md                     # 使用文档
+└── LICENSE                       # MIT 许可证
 ```
 
 ---
@@ -167,35 +211,39 @@ yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 
 ```bash
 # 下载 + 转码 + 识别 + AI分析，指定 sheet + extra.id
+node process_videos.js --sheet "YouTube视频" --id 2143
+# 或 Python 版本
 python process_videos.py --sheet "YouTube视频" --id 2143
 
 # 只跑下载
+node process_videos.js --sheet "普诺赛中文站" --id 16 --step download
+# 或 Python 版本
 python process_videos.py --sheet "普诺赛中文站" --id 16 --step download
 
 # 只跑转码（需要已有下载文件）
-python process_videos.py --sheet "普诺赛中文站" --id 16 --step transcode
+node process_videos.js --sheet "普诺赛中文站" --id 16 --step transcode
 
 # 只跑识别（需要已有转码文件）
-python process_videos.py --sheet "普诺赛中文站" --id 16 --step transcribe
+node process_videos.js --sheet "普诺赛中文站" --id 16 --step transcribe
 
 # 只跑 AI 分析（需要已有识别文本）
-python process_videos.py --sheet "普诺赛中文站" --id 16 --step analyze
+node process_videos.js --sheet "普诺赛中文站" --id 16 --step analyze
 
 # 强制重新下载（忽略已有文件）
-python process_videos.py --sheet "YouTube视频" --id 2143 --force
+node process_videos.js --sheet "YouTube视频" --id 2143 --force
 ```
 
 ### 批量全量
 
 ```bash
 # 全量执行（2 个并发，失败重试 3 次）
-python process_videos.py --concurrency 2 --retry 3
+node process_videos.js --concurrency 2 --retry 3
 
 # 只跑某一 sheet
-python process_videos.py --sheet "YouTube视频" --concurrency 2 --retry 3
+node process_videos.js --sheet "YouTube视频" --concurrency 2 --retry 3
 
 # 先干跑预览
-python process_videos.py --dry-run
+node process_videos.js --dry-run
 ```
 
 ### 重跑失败
@@ -203,10 +251,10 @@ python process_videos.py --dry-run
 ```bash
 # 第一次跑完后生成 reports/report_xxx.json
 # 查看失败项：
-python process_videos.py --retry-failed reports/report_20260610_143000.json --dry-run
+node process_videos.js --retry-failed reports/report_20260610_143000.json --dry-run
 
 # 重跑：
-python process_videos.py --retry-failed reports/report_20260610_143000.json --concurrency 2 --retry 3
+node process_videos.js --retry-failed reports/report_20260610_143000.json --concurrency 2 --retry 3
 ```
 
 ### 超时控制（防止任务卡死）
@@ -215,7 +263,7 @@ python process_videos.py --retry-failed reports/report_20260610_143000.json --co
 
 ```bash
 # 自定义超时（单位秒）
-python process_videos.py \
+node process_videos.js \
     --download-timeout 900 \    # 下载 15 分钟
     --transcode-timeout 600 \   # 转码 10 分钟
     --transcribe-timeout 1200 \ # 识别 20 分钟
@@ -227,6 +275,51 @@ python process_videos.py \
 - 超时属于**可重试错误**，会触发指数退避重试（`--retry` 控制次数）
 - 无论超时多少次，**不会阻塞其他并发任务**，失败项会记录到报告
 - 超时失败的任务可用 `--retry-failed` 单独重跑
+
+### 直接指定 URL 下载
+
+```bash
+# 直接指定视频链接，自动识别平台（支持标准链接、短链接、内嵌链接）
+node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c"
+python process_videos.py --url "https://www.bilibili.com/video/BV1xx411c7mD"
+
+# 指定输出文件名（不含扩展名）
+node process_videos.js --url "https://youtu.be/zzJmKPX8a3c" --name "产品介绍"
+
+# 只执行部分步骤
+node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c" --step transcode
+```
+
+**支持的 URL 格式：**
+- YouTube: 标准页、短链接、Shorts、内嵌页、直播
+- B站: 标准页（BV/av号）、短链接、内嵌页、移动端
+- 腾讯视频: 标准页、内嵌页、移动端
+- 优酷: 标准页
+
+**文件命名规则：**
+- 默认：`{平台}_{视频ID}`（如 `youtube_zzJmKPX8a3c`）
+- 自定义：通过 `--name` 指定（如 `--name "产品介绍"`）
+- 冲突处理：自动提示选择（覆盖 / 跳过 / 自定义名称）
+
+### 处理本地文件
+
+```bash
+# 指定本地视频文件，跳过下载，直接转码→识别→分析
+node process_videos.js --input "downloads/产品介绍.mp4"
+python process_videos.py --input "downloads/产品介绍.mp4"
+
+# 指定输出文件名
+node process_videos.js --input "downloads/产品介绍.mp4" --name "产品介绍_分析"
+
+# 只执行部分步骤
+node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
+```
+
+**文件校验：**
+- 检查文件是否存在
+- 检查文件格式是否支持（视频/音频）
+- 检查是否可以正常读取
+- 校验失败会提示错误并退出
 
 ### 工具预检（执行前自动检测）
 
@@ -249,19 +342,25 @@ python process_videos.py \
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `--sheet` | str | 全部 | 指定 sheet：`YouTube视频` 或 `普诺赛中文站` |
-| `--id` | str | — | 指定 extra.id 或 title（单条测试） |
-| `--step` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` |
+| `--sheet <name>` | str | 全部 | 指定 sheet 名称 |
+| `--id <id>` | str | — | 指定 extra.id 或 title（单条测试） |
+| `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `analyze` |
 | `--force` | flag | off | 强制重做下载+转码，忽略已有文件 |
-| `--concurrency` | int | 1 | 并发数，建议 2~3 |
-| `--retry` | int | 0 | 每步失败最大重试次数 |
-| `--retry-delay` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
-| `--download-timeout` | int | 600 | 单个下载任务最长执行时间（秒） |
-| `--transcode-timeout` | int | 600 | 单个转码任务最长执行时间（秒） |
-| `--transcribe-timeout` | int | 600 | 单个识别任务最长执行时间（秒） |
-| `--analyze-timeout` | int | 300 | 单个 AI 分析任务最长执行时间（秒） |
+| `--concurrency <n>` | int | 1 | 并发数，建议 2~3 |
+| `--retry <n>` | int | 0 | 每步失败最大重试次数 |
+| `--retry-delay <n>` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
+| `--download-timeout <n>` | int | 600 | 单个下载任务最长执行时间（秒） |
+| `--transcode-timeout <n>` | int | 600 | 单个转码任务最长执行时间（秒） |
+| `--transcribe-timeout <n>` | int | 600 | 单个识别任务最长执行时间（秒） |
+| `--analyze-timeout <n>` | int | 300 | 单个 AI 分析任务最长执行时间（秒） |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
-| `--retry-failed` | path | — | 从报告 JSON 重跑失败项 |
+| `--retry-failed <path>` | path | — | 从报告 JSON 重跑失败项 |
+| `--init` | flag | off | 复制 .env.example 到当前目录并重命名为 .env |
+| `--file <path>` | path | — | 指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量） |
+| `--input <path>` | path | — | 指定本地视频文件路径（跳过下载，直接转码→识别→分析） |
+| `--url <url>` | str | — | 直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接 |
+| `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input 配合使用） |
+| `--env-file <path>` | path | .env | 指定要加载的 .env 文件路径 |
 
 ---
 
@@ -340,11 +439,13 @@ AI_TIMEOUT=300
 
 ```bash
 # 已有识别文本，只跑 AI 分析
+node process_videos.js --sheet "普诺赛中文站" --id 427 --step analyze
+# 或 Python 版本
 python process_videos.py --sheet "普诺赛中文站" --id 427 --step analyze
 
 # 单独跑 analyze 超过 16 条不会写入 Excel
 # 要想写入 Excel 跑完整流程 --step analyze
-python process_videos.py --sheet "YouTube视频" --step analyze --concurrency 2
+node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 ```
 
 ### 禁用 AI 分析
@@ -442,16 +543,18 @@ python process_videos.py --sheet "YouTube视频" --step analyze --concurrency 2
 
 ```bash
 # 1. 干跑预览
+node process_videos.js --dry-run
+# 或 Python 版本
 python process_videos.py --dry-run
 
 # 2. 单条验证
-python process_videos.py --sheet "YouTube视频" --id 2143 --retry 2
+node process_videos.js --sheet "YouTube视频" --id 2143 --retry 2
 
 # 3. 全量执行
-python process_videos.py --concurrency 3 --retry 3
+node process_videos.js --concurrency 3 --retry 3
 
 # 4. 查看报告，重跑失败项
-python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 --retry 3
+node process_videos.js --retry-failed reports/report_xxx.json --concurrency 2 --retry 3
 ```
 
 ---
@@ -568,22 +671,58 @@ python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 
 
 ## 换电脑使用
 
-1. 安装上述所有必装工具，确保 `yt-dlp`、`ffmpeg`、`ffprobe`、`node` 均在 PATH
-2. `pip install pandas openpyxl requests python-dotenv`
-3. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径、代理端口和字段映射
-4. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
-5. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
-6. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
-7. `python process_videos.py --dry-run` 验证
+### Node.js 版本
+
+1. 安装 Node.js (18+)：[nodejs.org](https://nodejs.org/)
+2. 安装视频处理工具：
+   ```bash
+   npm install -g video-pipeline
+   ```
+3. 克隆或下载项目文件（`.env.example`、`.env`、`cookies/` 等）
+4. 安装必装工具：`yt-dlp`、`ffmpeg`、`ffprobe`，确保均在 PATH
+5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
+6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
+7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
+8. `video-pipeline --dry-run` 验证
+
+### Python 版本
+
+1. 安装 Python 3.9+：[python.org](https://www.python.org/)
+2. 安装必装工具：`yt-dlp`、`ffmpeg`、`ffprobe`，确保均在 PATH
+3. 安装 Python 依赖：`pip install pandas openpyxl requests python-dotenv questionary`
+4. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径、代理端口和字段映射
+5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
+6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`
+7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
+8. `python process_videos.py --dry-run` 验证
+
+---
 
 ## 适配其他 Excel
 
 如果需要用这套脚本处理**其他项目的 Excel**（列名不同、平台不同）：
+
+**方法一：修改 .env 文件**
 
 1. 复制 `.env.example` 为新 `.env`（或修改现有 `.env`）
 2. 修改 `EXCEL_FILE` 指向新 Excel
 3. 修改列映射（`COL_ID`、`COL_TITLE`、`COL_CONTENT` 及各平台列名）
 4. 修改 `VIDEO_SHEETS` 为新的 sheet 名称
 5. 如需新平台，在 `PLATFORM_PRIORITY` 中添加 key，并配置对应的 `{KEY}_URL_TPL`
-6. `python process_videos.py --dry-run` 验证配置
+6. `node process_videos.js --dry-run` 验证配置
 7. 跑全量
+
+**方法二：使用 --file 选项（推荐）**
+
+```bash
+# 直接指定 Excel 文件，无需修改 .env
+node process_videos.js --file "data/其他项目.xlsx" --dry-run
+
+# 配合 --env-file 使用自定义环境变量
+node process_videos.js --file "data/其他项目.xlsx" --env-file ".env.其他项目" --dry-run
+```
+
+**优点：**
+- 无需修改 `.env` 文件
+- 可以为不同项目创建不同的 `.env` 配置文件
+- 命令行优先级高于环境变量

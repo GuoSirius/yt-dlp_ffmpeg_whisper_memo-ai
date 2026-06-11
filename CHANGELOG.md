@@ -13,19 +13,6 @@
 - normalize CHANGELOG format to Keep a Changelog standard (`2b887f4`)
 - correct changelog per-version ranges + fix getLastTag for Windows (`755222a`)
 
-
-## [Unreleased]
-
-### Features
-
-- rename npm package to video-pipeline (`644cc8a`)
-- add --url option to Python version (parity with Node.js) (`e1df301`)
-
-### Bug Fixes
-
-- normalize CHANGELOG format to Keep a Changelog standard (`2b887f4`)
-- correct changelog per-version ranges + fix getLastTag for Windows (`755222a`)
-
 ## [1.0.3] - 2026-06-11
 
 ### Features

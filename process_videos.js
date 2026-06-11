@@ -80,6 +80,21 @@ const PLATFORM_COL_MAP = {
   youkuId: COL_YOUKUID,
 };
 
+// ============================== 工具函数 ==============================
+function c(color, text) {
+  const colors = {
+    dim: '\x1b[2m',
+    yellow: '\x1b[33m',
+    cyan: '\x1b[36m',
+    green: '\x1b[32m',
+    red: '\x1b[31m',
+    blue: '\x1b[34m',
+    magenta: '\x1b[35m',
+    reset: '\x1b[0m',
+  };
+  return (colors[color] || '') + text + colors.reset;
+}
+
 const PLATFORM_PRIORITY = (process.env.PLATFORM_PRIORITY || 'bilibiliBvid,youtubeId,tencentVid,youkuId')
   .split(',').map(s => s.trim()).filter(Boolean);
 
@@ -1360,6 +1375,248 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
 
 // ============================== 主控流程 ==============================
 // ═══════════════════════════════════════════════════════════════════
+// 本地文件流水线（--input 模式）
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * 验证本地视频文件，检测可执行步骤
+ * 返回 { valid, format, hasVideo, hasAudio, videoCodec, audioCodec,
+ *         duration, width, height, errors, feasibleSteps }
+ */
+function validateInputFile(filePath) {
+  const result = {
+    valid: false, format: '', hasVideo: false, hasAudio: false,
+    videoCodec: '', audioCodec: '', duration: 0, width: 0, height: 0,
+    errors: [], feasibleSteps: [],
+  };
+
+  // 1. 文件存在性
+  const absPath = path.resolve(filePath);
+  if (!fs.existsSync(absPath)) {
+    result.errors.push('文件不存在');
+    return result;
+  }
+  const stat = fs.statSync(absPath);
+  if (!stat.isFile()) {
+    result.errors.push('不是一个文件');
+    return result;
+  }
+  if (stat.size === 0) {
+    result.errors.push('文件大小为 0');
+    return result;
+  }
+
+  // 2. ffprobe 分析
+  if (!which(FFPROBE)) {
+    result.errors.push(`ffprobe 不可用 (${FFPROBE})`);
+    result.valid = true; // 文件本身有效，但无法探测流信息
+    result.feasibleSteps = ['transcode', 'transcribe', 'analyze']; // 乐观推测
+    return result;
+  }
+
+  try {
+    const probeRaw = execSync(
+      `${FFPROBE} -v error -show_entries stream=codec_type,codec_name,width,height -show_entries format=format_name,duration -of json "${absPath}"`,
+      { encoding: 'utf-8', timeout: 30000 }
+    );
+    const info = JSON.parse(probeRaw);
+
+    // 提取 format 信息
+    if (info.format) {
+      result.format = (info.format.format_name || '').split(',')[0];
+      result.duration = parseFloat(info.format.duration || '0');
+    }
+
+    // 提取 stream 信息
+    if (info.streams) {
+      for (const s of info.streams) {
+        if (s.codec_type === 'video') {
+          result.hasVideo = true;
+          result.videoCodec = s.codec_name || '';
+          result.width = s.width || 0;
+          result.height = s.height || 0;
+        }
+        if (s.codec_type === 'audio') {
+          result.hasAudio = true;
+          result.audioCodec = s.codec_name || '';
+        }
+      }
+    }
+
+    result.valid = true;
+
+    // 3. 判断可执行步骤
+    if (result.hasVideo) {
+      result.feasibleSteps.push('transcode');
+    }
+    if (result.hasAudio) {
+      result.feasibleSteps.push('transcribe', 'analyze');
+    }
+    // 无视频无音频 → 所有步骤不可行
+    if (!result.hasVideo && !result.hasAudio) {
+      result.feasibleSteps = [];
+      result.errors.push('文件不包含视频或音频流，无法处理');
+    }
+
+    // 如果只有视频没有音频：只能转码
+    if (result.hasVideo && !result.hasAudio) {
+      result.errors.push('文件不含音频轨道，将跳过语音识别和 AI 分析');
+    }
+
+  } catch (e) {
+    result.errors.push(`ffprobe 解析失败: ${(e.stderr || e.message || '').slice(0, 200)}`);
+    result.valid = true; // 文件存在且不为空，让 ffmpeg 自行判断
+    result.feasibleSteps = ['transcode', 'transcribe', 'analyze'];
+  }
+
+  return result;
+}
+
+/**
+ * 处理 --input 模式下的文件冲突（已存在的转码/识别结果）
+ * @param {string} proposedPath - 即将生成的输出文件路径
+ * @returns {Promise<{action: 'overwrite'|'skip', path: string}>}
+ */
+async function resolveInputConflict(proposedPath) {
+  if (!fs.existsSync(proposedPath)) {
+    return { action: 'overwrite', path: proposedPath };
+  }
+  const size = (fs.statSync(proposedPath).size / 1024 / 1024).toFixed(1);
+  console.log(`\n⚠️  文件已存在: ${proposedPath} (${size} MB)`);
+  const choice = await select({
+    message: '如何处理已有文件?',
+    choices: [
+      { name: '覆盖已有文件 (overwrite)', value: 'overwrite', description: '删除现有文件，重新生成' },
+      { name: '跳过此步骤 (skip)', value: 'skip', description: '保留现有文件，不重新处理' },
+    ],
+  });
+  return { action: choice, path: proposedPath };
+}
+
+/**
+ * --input 模式的独立流水线
+ * 不通过 processOneTask（因为它依赖 findDownloadedFile 从 DOWNLOADS_DIR 找文件），
+ * 直接串联 step 函数，保证输入文件路径准确传递。
+ */
+async function runInputTask(opts) {
+  const {
+    inputPath, stem, sheetName, steps,
+    maxRetries, retryDelay, force,
+    transcodeTimeout, transcribeTimeout, analyzeTimeout,
+    whisperAvailable, fileInfo,
+  } = opts;
+
+  console.log(c('dim', '\n── 开始执行 ──\n'));
+
+  // ── download: 跳过（本地文件）──
+  console.log(`  [${stem}] 📥 下载: ${c('yellow', '已跳过 (本地文件)')}`);
+
+  // ── transcode ──
+  let tcFile = null;
+  if (steps.includes('transcode')) {
+    console.log(`  [${stem}] 🎵 开始转码...`);
+    try {
+      const { file, error } = await stepTranscode(inputPath, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
+      tcFile = file;
+      if (file && fs.existsSync(file)) {
+        const size = (fs.statSync(file).size / 1024 / 1024).toFixed(1);
+        console.log(`  [${stem}] 🎵 转码完成: ${file} (${size} MB)`);
+      } else {
+        console.log(`  [${stem}] 🎵 转码: ${c(file ? 'yellow' : 'red', file ? '已跳过 (文件已存在)' : '失败 — ' + (error || ''))}`);
+      }
+    } catch (e) {
+      console.log(`  [${stem}] 🎵 转码: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+    }
+    if (!tcFile) {
+      console.log(c('yellow', '\n⚠️  转码未产出文件，后续步骤将跳过\n'));
+    }
+  } else {
+    // 无 transcode 步骤：直接用输入文件作为音频源
+    tcFile = inputPath;
+  }
+
+  // ── transcribe ──
+  let transcribeText = '';
+  if (steps.includes('transcribe') && tcFile) {
+    if (!whisperAvailable) {
+      console.log(`  [${stem}] 📝 识别: ${c('red', 'whisper 不可用')}`);
+    } else {
+      console.log(`  [${stem}] 📝 开始语音识别...`);
+      try {
+        const { text, error } = await stepTranscribe(tcFile, maxRetries, retryDelay, transcribeTimeout);
+        if (text && typeof text === 'string') {
+          transcribeText = text;
+          console.log(`  [${stem}] 📝 识别完成: ${text.length} 字符`);
+        } else {
+          console.log(`  [${stem}] 📝 识别: ${c('red', '失败 — ' + (error || ''))}`);
+        }
+      } catch (e) {
+        console.log(`  [${stem}] 📝 识别: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+      }
+    }
+  }
+
+  // ── AI analyze ──
+  let analyzeText = '';
+  if (steps.includes('analyze') && transcribeText) {
+    const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
+    if (aiEnabled) {
+      console.log(`  [${stem}] 🤖 开始 AI 分析...`);
+      try {
+        const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout);
+        if (kw && typeof kw === 'string') {
+          analyzeText = kw;
+          console.log(`  [${stem}] 🤖 AI分析完成: ${kw.length} 字符`);
+        } else {
+          console.log(`  [${stem}] 🤖 AI分析: ${c('red', '失败 — ' + (error || ''))}`);
+        }
+      } catch (e) {
+        console.log(`  [${stem}] 🤖 AI分析: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+      }
+    } else {
+      console.log(`  [${stem}] 🤖 AI分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+    }
+  }
+
+  // ── 保存文本结果 ──
+  if (transcribeText || analyzeText) {
+    const outDir = path.join(REPORTS_DIR, 'input-tasks');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outFile = path.join(outDir, `${stem}.txt`);
+    const lines = [
+      `文件: ${inputPath}`,
+      `平台: local`,
+      `文件格式: ${fileInfo.format || 'unknown'}`,
+      `时长: ${fileInfo.duration ? fileInfo.duration.toFixed(1) + 's' : 'unknown'}`,
+      '', '='.repeat(60), '',
+    ];
+    if (transcribeText) {
+      lines.push('【语音识别内容】', '', transcribeText, '');
+    }
+    if (analyzeText) {
+      lines.push('【AI 分析关键词】', '', analyzeText);
+    }
+    fs.writeFileSync(outFile, lines.join('\n'), 'utf-8');
+    console.log(`\n  📄 报告已保存: ${outFile}`);
+  }
+
+  // ── 总结 ──
+  console.log('');
+  const success = [];
+  if (tcFile) success.push('transcode');
+  if (transcribeText) success.push('transcribe');
+  if (analyzeText) success.push('analyze');
+  const failed = steps.filter(s => s !== 'download' && !success.includes(s));
+  if (failed.length === 0) {
+    console.log(c('green', '✅ 全部步骤执行成功'));
+  } else {
+    console.log(c('yellow', `⚠️  ${failed.length} 个步骤未成功: ${failed.join(', ')}`));
+  }
+  console.log('');
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
 // URL 直链流水线（--url 模式）
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1843,8 +2100,9 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
     .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
+    .option('--input <path>', '指定本地视频文件路径（跳过下载，直接转码→识别→分析）')
     .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
-    .option('--name <name>', '指定下载文件名，不含扩展名（与 --url 配合使用）')
+    .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）');
 
   program.parse();
@@ -1977,6 +2235,112 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       transcribeTimeout: opts.transcribeTimeout,
       analyzeTimeout: opts.analyzeTimeout,
       whisperAvailable,
+    });
+
+    process.exit(0);
+  }
+
+  // ── --input 模式：直接处理本地视频文件 ──
+  if (opts.input) {
+    const inputPath = path.resolve(opts.input);
+    console.log(c('dim', '\n── 文件校验 ──'));
+    console.log(`  文件: ${c('cyan', inputPath)}`);
+
+    const fileInfo = validateInputFile(inputPath);
+    if (!fileInfo.valid) {
+      console.log(c('red', `\n❌ 无法处理该文件:`));
+      for (const e of fileInfo.errors) {
+        console.log(c('red', `   ${e}`));
+      }
+      process.exit(1);
+    }
+
+    // 展示文件信息
+    console.log(`  格式: ${c('cyan', fileInfo.format || 'unknown')}`);
+    if (fileInfo.hasVideo) {
+      console.log(`  视频: ${c('cyan', fileInfo.videoCodec)} ${fileInfo.width}x${fileInfo.height}`);
+    }
+    if (fileInfo.hasAudio) {
+      console.log(`  音频: ${c('cyan', fileInfo.audioCodec)}`);
+    }
+    if (fileInfo.duration > 0) {
+      const dur = fileInfo.duration;
+      const mm = Math.floor(dur / 60);
+      const ss = Math.floor(dur % 60);
+      console.log(`  时长: ${c('cyan', `${mm}:${String(ss).padStart(2, '0')}`)} (${dur.toFixed(1)}s)`);
+    }
+    if (fileInfo.errors.length > 0) {
+      console.log('');
+      for (const e of fileInfo.errors) {
+        console.log(c('yellow', `  ⚠️  ${e}`));
+      }
+    }
+
+    // 展示可执行步骤
+    const defaultSteps = fileInfo.feasibleSteps;
+    // 用户可通过 --step 指定步骤，但只保留可行的
+    let steps;
+    if (opts.step) {
+      steps = [opts.step].filter(s => defaultSteps.includes(s));
+      if (steps.length === 0) {
+        console.log(c('yellow', `\n⚠️  --step ${opts.step} 不可行（文件不支持）\n`));
+        process.exit(1);
+      }
+    } else {
+      steps = defaultSteps;
+    }
+    console.log(`\n  可执行步骤: ${c('green', steps.join(' → '))}`);
+
+    // 确定输出文件名
+    const sheetName = 'local';
+    const baseName = opts.name || path.parse(inputPath).name;
+    const stem = baseName;
+
+    // 检查转码输出文件是否已有冲突
+    if (steps.includes('transcode') && !opts.force) {
+      const tcDir = path.join(TRANSCODED_DIR, sheetName);
+      const tcPath = path.join(tcDir, stem + TRANSCODE_EXT);
+      const conflict = await resolveInputConflict(tcPath);
+      if (conflict.action === 'skip') {
+        console.log(c('yellow', '\n⏭️  已跳过转码\n'));
+        steps = steps.filter(s => s !== 'transcode');
+      }
+    }
+
+    if (steps.length === 0) {
+      console.log(c('yellow', '\n无剩余步骤可执行\n'));
+      process.exit(0);
+    }
+
+    // 确保目录存在
+    if (steps.includes('transcode')) {
+      fs.mkdirSync(path.join(TRANSCODED_DIR, sheetName), { recursive: true });
+    }
+
+    // 检查 whisper 可用性
+    let whisperAvailable = false;
+    if (steps.includes('transcribe')) {
+      whisperAvailable = await checkWhisperAvailable();
+      if (!whisperAvailable) {
+        const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+        logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
+      }
+    }
+
+    // 执行流水线
+    await runInputTask({
+      inputPath,
+      stem,
+      sheetName,
+      steps,
+      maxRetries: opts.retry,
+      retryDelay: opts.retryDelay,
+      force: opts.force || false,
+      transcodeTimeout: opts.transcodeTimeout,
+      transcribeTimeout: opts.transcribeTimeout,
+      analyzeTimeout: opts.analyzeTimeout,
+      whisperAvailable,
+      fileInfo,
     });
 
     process.exit(0);
