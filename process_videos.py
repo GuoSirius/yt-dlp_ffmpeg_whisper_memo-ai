@@ -856,11 +856,13 @@ def step_transcode(
     src_file: Path, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
     timeout: int = 300,
+    out_stem: str | None = None,
 ) -> tuple[Path | None, int, str | None]:
     """转码。返回 (转码文件路径, 重试次数, 错误信息)"""
     tc_dir = TRANSCODED_DIR / sheet_name
     tc_dir.mkdir(parents=True, exist_ok=True)
-    out_file = tc_dir / (src_file.stem + TRANSCODE_EXT)
+    stem = out_stem if out_stem else src_file.stem
+    out_file = tc_dir / (stem + TRANSCODE_EXT)
     stem = src_file.stem
 
     if not force and out_file.exists() and out_file.stat().st_size > 0:
@@ -1314,13 +1316,7 @@ def generate_report(results: list[TaskResult], config: dict) -> Path:
     report = {
         "timestamp": datetime.now().isoformat(),
         "config": config,
-        "summary": {
-            "total": len(results),
-            "success": success_count,
-            "partial": partial_count,
-            "failed": failed_count,
-            "no_video": no_video_count,
-        },
+        "summary": summary,
         "items": [r.to_dict() for r in results],
         "failed_items": [
             {
@@ -1570,7 +1566,7 @@ def _run_url_task(opts):
 
     result = process_one_task(
         synthetic_row,
-        "url-tasks",
+        sheet_name,  # 使用平台名作为 sheet_name，按站点组织转码文件
         steps,
         max_retries,
         retry_delay,
@@ -1650,6 +1646,17 @@ def _run_url_task(opts):
         print(f"\n  📄 结果已保存至: {out_file}")
 
     print(f"\n🎉 全部完成! ({len(successes)}/{len(steps)} 步成功)\n")
+
+    # 生成标准报告 JSON（与 Excel 模式格式一致）
+    _generate_report_for_result(result, {"steps": steps, "max_retries": max_retries,
+                                    "retry_delay": retry_delay, "concurrency": 1, "force": force})
+
+def _generate_report_for_result(result, config):
+    """为单个 TaskResult 生成标准报告 JSON + 控制台摘要"""
+    if result is None:
+        return
+    report_path = generate_report([result], config)
+    print_report_summary([result])
 
 
 def run(
@@ -2075,8 +2082,23 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
                    whisper_available=True):
     """--input 模式的独立流水线"""
     stem = safe_filename(custom_name) if custom_name else os.path.splitext(os.path.basename(str(input_path)))[0]
+
+    # ── 解决 stem 重名 ──
+    used_stem = stem
+    tc_dir = TRANSCODED_DIR / sheet_name
+    tc_dir.mkdir(parents=True, exist_ok=True)
+    counter = 1
+    if 'transcode' in steps and not force:
+        test_path = tc_dir / (used_stem + TRANSCODE_EXT)
+        while test_path.exists():
+            used_stem = f"{stem}_{counter}"
+            test_path = tc_dir / (used_stem + TRANSCODE_EXT)
+            counter += 1
+    if used_stem != stem:
+        print(f"  ⚠️  stem '{stem}' 已存在 → 使用 '{used_stem}'")
+
     result = TaskResult(
-        sheet=sheet_name, id_val='-', title=stem, stem=stem,
+        sheet=sheet_name, id_val='-', title=input_path.name, stem=used_stem,
         platform='local', video_url=None,
         overall_status='pending', download=StepResult('skipped'),
     )
@@ -2087,7 +2109,8 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
     if 'transcode' in steps:
         try:
             tc_file, retries, err = step_transcode(
-                input_path, sheet_name, max_retries, retry_delay, force, transcode_timeout
+                input_path, sheet_name, max_retries, retry_delay, force, transcode_timeout,
+                out_stem=used_stem,
             )
         except Exception as e:
             tc_file, retries, err = None, max_retries, str(e)[:500]
@@ -2461,9 +2484,17 @@ if __name__ == "__main__":
             custom_name=args.name,
             whisper_available=whisper_available,
         )
-        
-        # 输出结果
-        print(f"\n── 执行结果 ──")
+
+        # 生成标准报告 JSON（与 Excel 模式格式一致）
+        config = {
+            "steps": steps,
+            "max_retries": args.retry,
+            "retry_delay": args.retry_delay,
+            "concurrency": 1,
+            "force": args.force,
+        }
+        report_path = generate_report([result], config)
+        print_report_summary([result])
         print(f"  整体状态: {result.overall_status}")
         if result.download:
             print(f"  下载: {result.download.status}")

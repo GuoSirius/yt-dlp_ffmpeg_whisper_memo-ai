@@ -1528,62 +1528,106 @@ async function runInputTask(opts) {
 
   console.log(c('dim', '\n── 开始执行 ──\n'));
 
+  // ── 解决 stem 重名 ──
+  let usedStem = stem;
+  {
+    let counter = 1;
+    const tcDir = path.join(TRANSCODED_DIR, sheetName);
+    fs.mkdirSync(tcDir, { recursive: true });
+    let testPath = path.join(tcDir, usedStem + TRANSCODE_EXT);
+    while (fs.existsSync(testPath) && !steps.includes('transcode')) {
+      // 跳过转码但转码产物已存在 → 直接用
+      break;
+    }
+    if (steps.includes('transcode') && !force) {
+      while (fs.existsSync(testPath)) {
+        usedStem = `${stem}_${counter}`;
+        testPath = path.join(tcDir, usedStem + TRANSCODE_EXT);
+        counter++;
+      }
+    }
+  }
+  if (usedStem !== stem) {
+    console.log(`  ⚠️  stem "${stem}" 已存在 → 使用 "${usedStem}"`);
+  }
+
+  // ── 构建 TaskResult ──
+  const result = new TaskResult(sheetName, usedStem, path.basename(inputPath), 'local', null, usedStem);
+  result.download = new StepResult('skipped');
+
   // ── download: 跳过（本地文件）──
-  console.log(`  [${stem}] 📥 下载: ${c('yellow', '已跳过 (本地文件)')}`);
+  console.log(`  [${usedStem}] 📥 下载: ${c('yellow', '已跳过 (本地文件)')}`);
 
   // ── transcode ──
   let tcFile = null;
   if (steps.includes('transcode')) {
-    console.log(`  [${stem}] 🎵 开始转码...`);
+    console.log(`  [${usedStem}] 🎵 开始转码...`);
     try {
       const { file, error } = await stepTranscode(inputPath, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
       tcFile = file;
       if (file && fs.existsSync(file)) {
         const size = (fs.statSync(file).size / 1024 / 1024).toFixed(1);
-        console.log(`  [${stem}] 🎵 转码完成: ${file} (${size} MB)`);
+        console.log(`  [${usedStem}] 🎵 转码完成: ${file} (${size} MB)`);
+        result.transcode = new StepResult('success', file);
       } else {
-        console.log(`  [${stem}] 🎵 转码: ${c(file ? 'yellow' : 'red', file ? '已跳过 (文件已存在)' : '失败 — ' + (error || ''))}`);
+        console.log(`  [${usedStem}] 🎵 转码: ${c(file ? 'yellow' : 'red', file ? '已跳过 (文件已存在)' : '失败 — ' + (error || ''))}`);
+        result.transcode = new StepResult(file ? 'skipped' : 'failed', file, error);
       }
     } catch (e) {
-      console.log(`  [${stem}] 🎵 转码: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+      console.log(`  [${usedStem}] 🎵 转码: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+      result.transcode = new StepResult('failed', null, String(e.message).slice(0, 500));
     }
     if (!tcFile) {
       console.log(c('yellow', '\n⚠️  转码未产出文件，后续步骤将跳过\n'));
+      result.overall_status = 'failed';
+      result.error = 'transcode failed';
+      return result;
     }
   } else if (steps.includes('transcribe')) {
-    // 无 transcode 步骤但有 transcribe：优先使用已有转码文件
     const tcDir = path.join(TRANSCODED_DIR, sheetName);
-    const expectedTc = path.join(tcDir, stem + TRANSCODE_EXT);
+    const expectedTc = path.join(tcDir, usedStem + TRANSCODE_EXT);
     if (fs.existsSync(expectedTc)) {
       tcFile = expectedTc;
-      console.log(`  [${stem}] 🎵 转码: ${c('yellow', '使用已有文件 ' + path.basename(expectedTc))}`);
+      result.transcode = new StepResult('success', tcFile);
+      console.log(`  [${usedStem}] 🎵 转码: ${c('yellow', '使用已有文件 ' + path.basename(expectedTc))}`);
     } else {
-      console.log(`  [${stem}] 🎵 转码: ${c('red', '未找到转码文件，将尝试用原始文件识别（可能失败）')}`);
+      console.log(`  [${usedStem}] 🎵 转码: ${c('red', '未找到转码文件，将尝试用原始文件识别（可能失败）')}`);
       tcFile = inputPath;
+      result.transcode = new StepResult('warning', inputPath, 'transcode file not found, using raw input');
     }
   } else {
     tcFile = inputPath;
+    result.transcode = new StepResult('success', inputPath);
   }
 
   // ── transcribe ──
   let transcribeText = '';
   if (steps.includes('transcribe') && tcFile) {
     if (!whisperAvailable) {
-      console.log(`  [${stem}] 📝 识别: ${c('red', 'whisper 不可用')}`);
+      console.log(`  [${usedStem}] 📝 识别: ${c('red', 'whisper 不可用')}`);
+      result.transcribe = new StepResult('failed', null, 'whisper unreachable');
+      result.overall_status = 'failed';
+      result.error = 'whisper unreachable';
+      return result;
     } else {
-      console.log(`  [${stem}] 📝 开始语音识别...`);
+      console.log(`  [${usedStem}] 📝 开始语音识别...`);
       try {
         const { text, error } = await stepTranscribe(tcFile, maxRetries, retryDelay, transcribeTimeout);
         if (text && typeof text === 'string') {
           transcribeText = text;
-          console.log(`  [${stem}] 📝 识别完成: ${text.length} 字符`);
+          console.log(`  [${usedStem}] 📝 识别完成: ${text.length} 字符`);
+          result.transcribe = new StepResult('success', text);
         } else {
-          console.log(`  [${stem}] 📝 识别: ${c('red', '失败 — ' + (error || ''))}`);
+          console.log(`  [${usedStem}] 📝 识别: ${c('red', '失败 — ' + (error || ''))}`);
+          result.transcribe = new StepResult('failed', null, error);
         }
       } catch (e) {
-        console.log(`  [${stem}] 📝 识别: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        console.log(`  [${usedStem}] 📝 识别: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        result.transcribe = new StepResult('failed', null, String(e.message).slice(0, 500));
       }
     }
+  } else {
+    result.transcribe = new StepResult('skipped');
   }
 
   // ── AI analyze ──
@@ -1591,28 +1635,45 @@ async function runInputTask(opts) {
   if (steps.includes('analyze') && transcribeText) {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
-      console.log(`  [${stem}] 🤖 开始 AI 分析...`);
+      console.log(`  [${usedStem}] 🤖 开始 AI 分析...`);
       try {
         const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout);
         if (kw && typeof kw === 'string') {
           analyzeText = kw;
-          console.log(`  [${stem}] 🤖 AI分析完成: ${kw.length} 字符`);
+          console.log(`  [${usedStem}] 🤖 AI分析完成: ${kw.length} 字符`);
+          result.analyze = new StepResult('success', kw);
         } else {
-          console.log(`  [${stem}] 🤖 AI分析: ${c('red', '失败 — ' + (error || ''))}`);
+          console.log(`  [${usedStem}] 🤖 AI分析: ${c('red', '失败 — ' + (error || ''))}`);
+          result.analyze = new StepResult('failed', null, error);
         }
       } catch (e) {
-        console.log(`  [${stem}] 🤖 AI分析: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        console.log(`  [${usedStem}] 🤖 AI分析: ${c('red', '异常 — ' + (e.message || '').slice(0, 200))}`);
+        result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500));
       }
     } else {
-      console.log(`  [${stem}] 🤖 AI分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+      console.log(`  [${usedStem}] 🤖 AI分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+      result.analyze = new StepResult('skipped');
     }
+  } else {
+    result.analyze = new StepResult('skipped');
+  }
+
+  // ── 判定整体状态 ──
+  if (result.transcode.status === 'failed') {
+    result.overall_status = 'failed';
+  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe')) {
+    result.overall_status = 'partial';
+  } else if (result.analyze.status === 'failed') {
+    result.overall_status = 'partial';
+  } else {
+    result.overall_status = 'success';
   }
 
   // ── 保存文本结果 ──
   if (transcribeText || analyzeText) {
     const outDir = path.join(REPORTS_DIR, 'input-tasks');
     fs.mkdirSync(outDir, { recursive: true });
-    const outFile = path.join(outDir, `${stem}.txt`);
+    const outFile = path.join(outDir, `${usedStem}.txt`);
     const lines = [
       `文件: ${inputPath}`,
       `平台: local`,
@@ -1643,6 +1704,8 @@ async function runInputTask(opts) {
     console.log(c('yellow', `⚠️  ${failed.length} 个步骤未成功: ${failed.join(', ')}`));
   }
   console.log('');
+
+  return result;
 }
 
 
@@ -1758,6 +1821,7 @@ async function runUrlTask(opts) {
   }
 
   console.log(c('bold', c('green', `\n\uD83C\uDF89 \u5168\u90E8\u5B8C\u6210! (${successes.length}/${steps.length} \u6B65\u6210\u529F)\n`)));
+  return result;
 }
 
 async function run({
@@ -2229,7 +2293,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     }
 
     // 执行流水线
-    await runUrlTask({
+    const urlResult = await runUrlTask({
       watchUrl: parsed.watchUrl,
       platform: parsed.platform,
       pkey: parsed.pkey,
@@ -2246,6 +2310,13 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       analyzeTimeout: opts.analyzeTimeout,
       whisperAvailable,
     });
+
+    // 生成标准报告 JSON（与 Excel 模式格式一致）
+    if (urlResult) {
+      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
+      generateReport([urlResult], config);
+      printReportSummary([urlResult]);
+    }
 
     process.exit(0);
   }
@@ -2349,7 +2420,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     }
 
     // 执行流水线
-    await runInputTask({
+    const inputResult = await runInputTask({
       inputPath,
       stem,
       sheetName,
@@ -2363,6 +2434,13 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       whisperAvailable,
       fileInfo,
     });
+
+    // 生成标准报告 JSON（与 Excel 模式格式一致）
+    if (inputResult) {
+      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
+      generateReport([inputResult], config);
+      printReportSummary([inputResult]);
+    }
 
     process.exit(0);
   }
