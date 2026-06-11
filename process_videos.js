@@ -1157,11 +1157,11 @@ function writeAllContentsToExcel(results, keywordsDict = null) {
 }
 
 function groupBySheetMap(updates) {
-  const result = {};
+  const result = new Map();
   for (const [compositeKey, text] of updates) {
     const [sheetName, key] = compositeKey.split('|');
-    if (!result[sheetName]) result[sheetName] = {};
-    result[sheetName][key] = text;
+    if (!result.has(sheetName)) result.set(sheetName, {});
+    result.get(sheetName)[key] = text;
   }
   return result;
 }
