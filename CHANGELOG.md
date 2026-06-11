@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.9] - 2026-06-11
+
+### Bug Fixes
+
+- yt-dlp download progress parsing and encoding (`e32acc9`)
+- yt-dlp download progress not showing — listen stdout not stderr (`8cb99b0`)
+- quote USER_AGENT values with double quotes to prevent semicolon parsing issues (`419dff2`)
+
+### Documentation
+
+- update (`f761ad4`)
+
+
 ## [1.2.8] - 2026-06-11
 
 ### Features
