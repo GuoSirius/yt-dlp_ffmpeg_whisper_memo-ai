@@ -45,13 +45,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Extract version changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # 提取当前版本段：从 ## [VERSION] 到下一个 ## [ 开头（或文件尾）
+          sed -n "/^## \[${VERSION}\]/,/^## \[/p" CHANGELOG.md \
+            | sed '$d' \
+            | sed '1d' \
+            > /tmp/release_body.txt
+          echo "=== Release body for ${VERSION} ==="
+          cat /tmp/release_body.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
+          body_path: /tmp/release_body.txt
           draft: false
           prerelease: false
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
