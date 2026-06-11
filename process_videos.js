@@ -181,27 +181,6 @@ function timestamp() {
   return new Date().toTimeString().slice(0, 8);
 }
 
-// ============================== 锁 / 并发控制 ==============================
-let _printLock = false;
-const _printQueue = [];
-function printLock(fn) {
-  return new Promise(resolve => {
-    _printQueue.push(async () => {
-      _printLock = true;
-      try { fn(); } finally { _printLock = false; }
-      resolve();
-    });
-    if (_printQueue.length === 1) processQueue();
-  });
-}
-async function processQueue() {
-  while (_printQueue.length) {
-    await _printQueue[0]();
-    _printQueue.shift();
-  }
-}
-
-// 简化：Node.js 单线程，简单场景下不需要锁
 function lockedPrint(s) {
   console.log(s);
 }
@@ -274,7 +253,12 @@ class TaskResult {
 
 // ============================== 工具函数 ==============================
 function safeFilename(name) {
-  return String(name).replace(/[\\/:*?"<>|]/g, '_').trim();
+  let safe = String(name).replace(/[\\/:*?"<>|]/g, '_').trim();
+  // 防止路径遍历：过滤 ..
+  while (safe.includes('..')) safe = safe.replace('..', '_');
+  // 防止以 . 开头（Unix 隐藏文件）
+  safe = safe.replace(/^\.+/, '');
+  return safe || 'unknown';
 }
 
 function readExcelSheet(sheetName) {
@@ -476,7 +460,7 @@ async function resolveUrlConflict(proposedPath) {
     console.log(c('yellow', '文件名不能为空，使用默认名称'));
     return { action: 'proceed', path: proposedPath };
   }
-  const newPath = path.join(dir, `${customName}${ext}`);
+  const newPath = path.join(dir, `${safeFilename(customName)}${ext}`);
   return resolveUrlConflict(newPath);
 }
 
@@ -850,7 +834,7 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   }
 
   try {
-    const { result, retriesUsed, error } = await retryCall(doDownload, maxRetries, retryDelay, stem);
+    await retryCall(doDownload, maxRetries, retryDelay, stem);
   } catch (e) {
     logError(`[${stem}] yt-dlp download failed: ${(e.stderr || e.message).slice(-2000)}`);
     return { file: null, retries: maxRetries, error: (e.stderr || e.message).slice(0, 500) };
@@ -1146,7 +1130,6 @@ function writeAllContentsToExcel(results, keywordsDict = null) {
   }
 
   // Write content column
-  writeColumn(null, COL_CONTENT, updates); // null sheetName means iterate all sheets
   for (const [sheetName, rowsObj] of groupBySheetMap(updates)) {
     writeColumn(sheetName, COL_CONTENT, Object.entries(rowsObj));
   }
@@ -1179,20 +1162,28 @@ function groupBySheetMap(updates) {
 }
 
 // ============================== 报告 ==============================
+function computeSummary(results) {
+  let success = 0, partial = 0, failed = 0, noVideo = 0;
+  for (const r of results) {
+    if (r.overall_status === 'success') success++;
+    else if (r.overall_status === 'partial') partial++;
+    else if (r.overall_status === 'failed') failed++;
+    else if (r.overall_status === 'no_video') noVideo++;
+  }
+  return { total: results.length, success, partial, failed, no_video: noVideo };
+}
+
 function generateReport(results, config) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15).replace(/(\d{8})(\d{6})/, '$1_$2');
   const reportFile = path.join(REPORTS_DIR, `report_${ts}.json`);
 
-  const success = results.filter(r => r.overall_status === 'success').length;
-  const partial = results.filter(r => r.overall_status === 'partial').length;
-  const failed = results.filter(r => r.overall_status === 'failed').length;
-  const noVideo = results.filter(r => r.overall_status === 'no_video').length;
+  const summary = computeSummary(results);
 
   const report = {
     timestamp: new Date().toISOString(),
     config,
-    summary: { total: results.length, success, partial, failed, no_video: noVideo },
+    summary,
     items: results.map(r => r.toJSON()),
     failed_items: results.filter(r => r.overall_status === 'failed' || r.overall_status === 'partial')
       .map(r => ({
@@ -1210,15 +1201,12 @@ function generateReport(results, config) {
 }
 
 function printReportSummary(results) {
-  const success = results.filter(r => r.overall_status === 'success').length;
-  const partial = results.filter(r => r.overall_status === 'partial').length;
-  const failed = results.filter(r => r.overall_status === 'failed').length;
-  const noVid = results.filter(r => r.overall_status === 'no_video').length;
+  const { total, success, partial, failed, no_video: noVid } = computeSummary(results);
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`  执行摘要`);
   console.log(`${'='.repeat(60)}`);
-  console.log(`  总计: ${results.length}`);
+  console.log(`  总计: ${total}`);
   console.log(`  ✅ 成功: ${success}`);
   console.log(`  ⚠️ 部分成功: ${partial}`);
   console.log(`  ❌ 失败: ${failed}`);
@@ -1236,6 +1224,35 @@ function printReportSummary(results) {
       if (r.transcode.status === 'failed') console.log(`       转码失败: ${(r.transcode.error || 'N/A').slice(0, 120)}`);
       if (r.transcribe.status === 'failed') console.log(`       识别失败: ${(r.transcribe.error || 'N/A').slice(0, 120)}`);
     }
+  }
+}
+
+
+// ============================== 环境预检 + 用户确认 ==============================
+async function checkAndConfirmEnv(envCheck, dryRun, confirmMsg) {
+  if (envCheck.allOk) return true;
+  console.log(`\n${'='.repeat(60)}`);
+  console.log('  \u26a0\ufe0f  工具/服务预检：以下依赖不可用');
+  console.log('='.repeat(60));
+  for (const issue of envCheck.issues) console.log(`  \u2022 ${issue}`);
+  console.log('\n  涉及的步骤将失败。');
+  if (dryRun) return true;
+  try {
+    const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise(resolve => {
+      rl.question(`\n  ${confirmMsg}(输入 yes 继续，其他任意键取消): `, ans => {
+        rl.close();
+        resolve(ans.trim().toLowerCase());
+      });
+    });
+    if (answer !== 'yes') {
+      console.log('用户取消执行（工具不可用）');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.log('非交互环境，取消执行');
+    return false;
   }
 }
 
@@ -1777,30 +1794,8 @@ async function run({
 
   logInfo(`tasks: ${tasks.length}, concurrency: ${concurrency}, max retries: ${maxRetries}`);
 
-  // ── 工具/服务预检 ──
   const envCheck = await checkEnvironmentAsync(steps);
-  if (!envCheck.allOk) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('  ⚠️  工具/服务预检：以下依赖不可用');
-    console.log('='.repeat(60));
-    for (const issue of envCheck.issues) {
-      console.log(`  • ${issue}`);
-    }
-    console.log('\n  涉及的步骤将失败。');
-    if (!dryRun) {
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await new Promise(resolve => {
-        rl.question('\n  是否继续执行？(输入 yes 继续，其他任意键取消): ', ans => {
-          rl.close();
-          resolve(ans.trim().toLowerCase());
-        });
-      });
-      if (answer !== 'yes') {
-        logInfo('用户取消执行（工具不可用）');
-        return;
-      }
-    }
-  }
+  if (!await checkAndConfirmEnv(envCheck, dryRun, '是否继续执行？')) return;
 
   // ── 干跑模式 ──
   if (dryRun) {
@@ -2011,26 +2006,8 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
     return;
   }
 
-  // ── 工具/服务预检 ──
   const envRfr = await checkEnvironmentAsync(steps);
-  if (!envRfr.allOk) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log('  ⚠️  工具/服务预检：以下依赖不可用');
-    console.log('='.repeat(60));
-    for (const issue of envRfr.issues) console.log(`  • ${issue}`);
-    console.log('\n  涉及的步骤将失败。');
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await new Promise(resolve => {
-      rl.question('\n  是否继续重跑？(输入 yes 继续，其他任意键取消): ', ans => {
-        rl.close();
-        resolve(ans.trim().toLowerCase());
-      });
-    });
-    if (answer !== 'yes') {
-      logInfo('用户取消重跑（工具不可用）');
-      return;
-    }
-  }
+  if (!await checkAndConfirmEnv(envRfr, dryRun, '是否继续重跑？')) return;
 
   let whisperAvailable = false;
   if (steps.includes('transcribe')) {
@@ -2192,11 +2169,19 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
     console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
 
+    // dry-run 模式
+    if (opts.dryRun) {
+      console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
+      console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
+      console.log(`  输出名称: ${c('cyan', opts.name || parsed.videoId)}`);
+      process.exit(0);
+    }
+
     // 构建文件路径: downloads/<platform>/<name>.mp4
     fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
     const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
     fs.mkdirSync(dlDir, { recursive: true });
-    const fileName = opts.name || parsed.videoId;
+    const fileName = safeFilename(opts.name || parsed.videoId);
     const proposedPath = path.join(dlDir, `${fileName}.mp4`);
 
     // 冲突处理（--force 时直接覆盖）
@@ -2299,9 +2284,20 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     }
     console.log(`\n  可执行步骤: ${c('green', steps.join(' → '))}`);
 
+    // dry-run 模式
+    if (opts.dryRun) {
+      console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
+      console.log(`  [本地文件] 将执行步骤: ${c('cyan', steps.join(' → '))}`);
+      console.log(`  输入文件: ${c('cyan', inputPath)}`);
+      if (opts.name) {
+        console.log(`  输出名称: ${c('cyan', opts.name)}`);
+      }
+      process.exit(0);
+    }
+
     // 确定输出文件名
     const sheetName = 'local';
-    const baseName = opts.name || path.parse(inputPath).name;
+    const baseName = safeFilename(opts.name || path.parse(inputPath).name);
     const stem = baseName;
 
     // 检查转码输出文件是否已有冲突

@@ -279,7 +279,13 @@ class TaskResult:
 # ─────────────────────────────── 工具函数 ───────────────────────────────────
 
 def safe_filename(name: str) -> str:
-    return re.sub(r'[\\/:*?"<>|]', '_', str(name)).strip()
+    safe = re.sub(r'[\\/:*?"<>|]', '_', str(name)).strip()
+    # 防止路径遍历
+    while '..' in safe:
+        safe = safe.replace('..', '_')
+    # 防止以 . 开头（Unix 隐藏文件）
+    safe = re.sub(r'^\.+', '', safe)
+    return safe or 'unknown'
 
 
 def get_video_id(row: pd.Series) -> tuple[str | None, str | None]:
@@ -446,7 +452,7 @@ def resolve_url_conflict(proposed_path):
     if not custom_name or not custom_name.strip():
         print("文件名不能为空，使用默认名称")
         return {"action": "proceed", "path": proposed_path}
-    new_path = parent / f"{custom_name}{ext}"
+    new_path = parent / f"{safe_filename(custom_name)}{ext}"
     return resolve_url_conflict(new_path)
 
 
@@ -717,8 +723,7 @@ def step_analyze(
                 sleep_sec = retry_delay * (2 ** (attempt - 1))
                 with _print_lock:
                     print(f"  [analyze] 第 {attempt} 次失败：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
-                import time as _time
-                _time.sleep(min(sleep_sec, 30))
+                time.sleep(min(sleep_sec, 30))
             else:
                 break
 
@@ -978,7 +983,6 @@ def step_transcribe(
             model_label = WHISPER_SERVICE_MODEL or WHISPER_MODEL or "(server default)"
             backend_label = f"服务({model_label})"
         print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
-        print(f"  [{stem}] 开始识别 [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     if WHISPER_BACKEND == "local":
         return _transcribe_local(audio_file, stem, max_retries, retry_delay)
@@ -1200,16 +1204,105 @@ def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[t
 
 # ─────────────────────────────── 报告生成 ───────────────────────────────────
 
+def compute_summary(results: list[TaskResult]) -> dict:
+    """统一计算 result 的 status 统计，避免重复遍历。"""
+    success = partial = failed = no_video = 0
+    for r in results:
+        s = r.overall_status
+        if s == "success":
+            success += 1
+        elif s == "partial":
+            partial += 1
+        elif s == "failed":
+            failed += 1
+        elif s == "no_video":
+            no_video += 1
+    return {"total": len(results), "success": success,
+            "partial": partial, "failed": failed, "no_video": no_video}
+
+
+def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) -> bool:
+    """环境检测 + 用户确认（统一逻辑，消除 run() 和 run_from_report() 的重复代码）。
+
+    - 非 dry_run：检测环境，有问题则列出并询问用户是否继续；用户取消返回 False
+    - dry_run：检测环境并打印详细状态，始终返回 True（干跑不执行）
+    返回 True = 继续执行，False = 用户取消
+    """
+    env = check_environment(steps)
+
+    if dry_run:
+        # 干跑模式：打印环境检测详情
+        print("\n  --- 环境检测 ---")
+        # yt-dlp
+        if "download" in steps:
+            if env["ytdlp"]:
+                print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
+            else:
+                print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
+        else:
+            print(f"  ⏭ yt-dlp: 未启用（步骤不含 download）")
+        # ffmpeg
+        if "transcode" in steps:
+            if env["ffmpeg"]:
+                print(f"  ✅ ffmpeg: 可用 ({FFMPEG})")
+            else:
+                print(f"  ❌ ffmpeg: 不可用 ({FFMPEG})")
+        else:
+            print(f"  ⏭ ffmpeg: 未启用（步骤不含 transcode）")
+        # ffprobe
+        if "transcode" in steps:
+            if env["ffprobe"]:
+                print(f"  ✅ ffprobe: 可用 ({FFPROBE})")
+            else:
+                print(f"  ❌ ffprobe: 不可用 ({FFPROBE})")
+        else:
+            print(f"  ⏭ ffprobe: 未启用（步骤不含 transcode）")
+        # whisper
+        if "transcribe" in steps:
+            backend_info = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
+            if env["whisper"]:
+                print(f"  ✅ whisper ({backend_info}): 可用")
+            else:
+                print(f"  ❌ whisper ({backend_info}): 不可用")
+        else:
+            print(f"  ⏭ whisper: 未启用（步骤不含 transcribe）")
+        # AI 分析
+        if "analyze" in steps:
+            ai_model = os.getenv("AI_MODEL", "")
+            if env["ai"]:
+                print(f"  ✅ AI分析 ({ai_model}): 配置完整")
+            else:
+                print(f"  ❌ AI分析: {env['issues'][-1] if env['issues'] else '配置不完整'}")
+        else:
+            print(f"  ⏭ AI分析: 未启用（步骤不含 analyze）")
+        return True
+
+    # 非 dry_run：预检并询问
+    if not env["all_ok"]:
+        print("\n" + "=" * 60)
+        print("  ⚠️  工具/服务预检：以下依赖不可用")
+        print("=" * 60)
+        for issue in env["issues"]:
+            print(f"  • {issue}")
+        print("\n  涉及的步骤将失败。")
+        try:
+            choice = input(f"\n  {confirm_msg} (输入 'yes' 继续，其他任意键取消): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "no"
+        if choice != "yes":
+            log.info("用户取消执行（工具不可用）")
+            return False
+
+    return True
+
+
 def generate_report(results: list[TaskResult], config: dict) -> Path:
     """生成执行报告 JSON 文件，返回报告路径"""
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_file = REPORTS_DIR / f"report_{timestamp}.json"
 
-    success_count = sum(1 for r in results if r.overall_status == "success")
-    partial_count = sum(1 for r in results if r.overall_status == "partial")
-    failed_count = sum(1 for r in results if r.overall_status == "failed")
-    no_video_count = sum(1 for r in results if r.overall_status == "no_video")
+    summary = compute_summary(results)
 
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -1246,10 +1339,11 @@ def generate_report(results: list[TaskResult], config: dict) -> Path:
 
 def print_report_summary(results: list[TaskResult]):
     """打印控制台摘要"""
-    success = sum(1 for r in results if r.overall_status == "success")
-    partial = sum(1 for r in results if r.overall_status == "partial")
-    failed = sum(1 for r in results if r.overall_status == "failed")
-    no_vid = sum(1 for r in results if r.overall_status == "no_video")
+    s = compute_summary(results)
+    success = s["success"]
+    partial = s["partial"]
+    failed = s["failed"]
+    no_vid = s["no_video"]
 
     print(f"\n{'='*60}")
     print(f"  执行摘要")
@@ -1601,75 +1695,15 @@ def run(
 
     log.info(f"任务数量: {len(tasks)}，并发数: {concurrency}，最大重试: {max_retries}")
 
-    # ── 工具/服务预检（非 dry-run 模式也做）──
-    env_check = check_environment(steps)
-    if not env_check["all_ok"]:
-        print("\n" + "=" * 60)
-        print("  ⚠️  工具/服务预检：以下依赖不可用")
-        print("=" * 60)
-        for issue in env_check["issues"]:
-            print(f"  • {issue}")
-        print("\n  涉及的步骤将失败。")
-        if not dry_run:
-            try:
-                choice = input("\n  是否继续执行？(输入 'yes' 继续，其他任意键取消): ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                choice = "no"
-            if choice != "yes":
-                log.info("用户取消执行（工具不可用）")
-                return
+    # ── 工具/服务预检 ──
+    if not _check_and_confirm_env(steps, dry_run, "是否继续执行？"):
+        return
 
     # ── 干跑模式 ──
     if dry_run:
         print("\n" + "=" * 60)
         print(f"  干跑模式 - 任务清单 ({len(tasks)} 条)")
         print("=" * 60)
-
-        # ── 环境检测 ──
-        env = check_environment(steps)
-        print("\n  --- 环境检测 ---")
-        # yt-dlp
-        if "download" in steps:
-            if env["ytdlp"]:
-                print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
-            else:
-                print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
-        else:
-            print(f"  ⏭ yt-dlp: 未启用（步骤不含 download）")
-        # ffmpeg
-        if "transcode" in steps:
-            if env["ffmpeg"]:
-                print(f"  ✅ ffmpeg: 可用 ({FFMPEG})")
-            else:
-                print(f"  ❌ ffmpeg: 不可用 ({FFMPEG})")
-        else:
-            print(f"  ⏭ ffmpeg: 未启用（步骤不含 transcode）")
-        # ffprobe
-        if "transcode" in steps:
-            if env["ffprobe"]:
-                print(f"  ✅ ffprobe: 可用 ({FFPROBE})")
-            else:
-                print(f"  ❌ ffprobe: 不可用 ({FFPROBE})")
-        else:
-            print(f"  ⏭ ffprobe: 未启用（步骤不含 transcode）")
-        # whisper
-        if "transcribe" in steps:
-            backend_info = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
-            if env["whisper"]:
-                print(f"  ✅ whisper ({backend_info}): 可用")
-            else:
-                print(f"  ❌ whisper ({backend_info}): 不可用")
-        else:
-            print(f"  ⏭ whisper: 未启用（步骤不含 transcribe）")
-        # AI 分析
-        if "analyze" in steps:
-            ai_model = os.getenv("AI_MODEL", "")
-            if env["ai"]:
-                print(f"  ✅ AI分析 ({ai_model}): 配置完整")
-            else:
-                print(f"  ❌ AI分析: {env['issues'][-1]}")
-        else:
-            print(f"  ⏭ AI分析: 未启用（步骤不含 analyze）")
 
         # ── 任务列表 ──
         print("\n  --- 任务步骤状态 ---")
@@ -1877,21 +1911,8 @@ def run_from_report(
         return
 
     # ── 工具/服务预检 ──
-    env_rfr = check_environment(steps)
-    if not env_rfr["all_ok"]:
-        print("\n" + "=" * 60)
-        print("  ⚠️  工具/服务预检：以下依赖不可用")
-        print("=" * 60)
-        for issue in env_rfr["issues"]:
-            print(f"  • {issue}")
-        print("\n  涉及的步骤将失败。")
-        try:
-            choice = input("\n  是否继续重跑？(输入 'yes' 继续，其他任意键取消): ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            choice = "no"
-        if choice != "yes":
-            log.info("用户取消重跑（工具不可用）")
-            return
+    if not _check_and_confirm_env(steps, dry_run, "是否继续重跑？"):
+        return
 
     whisper_available = _check_whisper_available() if "transcribe" in steps else False
 
@@ -2032,9 +2053,10 @@ def validate_input_file(file_path):
 
 
 def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, force, 
-                   transcode_timeout, transcribe_timeout, analyze_timeout, custom_name=None):
+                   transcode_timeout, transcribe_timeout, analyze_timeout, custom_name=None,
+                   whisper_available=True):
     """--input 模式的独立流水线"""
-    stem = custom_name or os.path.splitext(os.path.basename(str(input_path)))[0]
+    stem = safe_filename(custom_name) if custom_name else os.path.splitext(os.path.basename(str(input_path)))[0]
     result = TaskResult(
         sheet=sheet_name, id_val='-', title=stem, stem=stem,
         platform='local', video_url=None,
@@ -2114,7 +2136,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
         else:
             try:
                 analyze_ok, retries, err = step_analyze(
-                    result.transcribe.file, sheet_name, max_retries, retry_delay, analyze_timeout
+                    result.transcribe.file, max_retries, retry_delay, analyze_timeout
                 )
             except Exception as e:
                 analyze_ok, retries, err = False, max_retries, str(e)[:500]
@@ -2246,7 +2268,7 @@ if __name__ == "__main__":
                 if not custom_name:
                     print("未输入文件名，已取消。")
                     sys.exit(0)
-                dest = Path.cwd() / custom_name
+                dest = Path.cwd() / safe_filename(custom_name)
                 if dest.exists():
                     print(f'⚠️  文件 "{custom_name}" 也已存在，保留现有文件。')
                 else:
@@ -2293,11 +2315,18 @@ if __name__ == "__main__":
         print(f"  视频ID: {video_id}")
         print(f"  链接: {watch_url}")
 
+        # dry-run 模式
+        if args.dry_run:
+            print("\n── 开始执行 (dry-run) ──\n")
+            print(f"  将执行步骤: {' → '.join(steps)}")
+            print(f"  输出名称: {args.name if args.name else video_id}")
+            sys.exit(0)
+
         # 构建文件路径: downloads/<platform>/<name>.mp4
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
         dl_dir = DOWNLOADS_DIR / platform
         dl_dir.mkdir(parents=True, exist_ok=True)
-        file_name = args.name if args.name else video_id
+        file_name = safe_filename(args.name if args.name else video_id)
         proposed_path = dl_dir / f"{file_name}.mp4"
 
         # 冲突处理（--force 时直接覆盖）
@@ -2410,6 +2439,7 @@ if __name__ == "__main__":
             transcribe_timeout=args.transcribe_timeout,
             analyze_timeout=args.analyze_timeout,
             custom_name=args.name,
+            whisper_available=whisper_available,
         )
         
         # 输出结果
