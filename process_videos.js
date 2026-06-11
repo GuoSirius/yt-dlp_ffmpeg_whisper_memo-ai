@@ -664,15 +664,13 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
       reject(Object.assign(new Error(`Timeout after ${timeout}s`), { name: 'TimeoutError', code: 'ETIMEDOUT' }));
     }, timeout * 1000);
 
-    if (onProgress && child.stderr) {
-      const rl = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
-      rl.on('line', line => {
-        stderr += line + '\n';
-        try { onProgress(line); } catch {}
-      });
-      child.stderr.on('end', () => rl.close());
-      // 同时消费 stdout，防止缓冲区填满阻塞子进程
-      child.stdout.on('data', d => { stdout += d.toString(); });
+    if (onProgress) {
+      // 同时监听 stdout 和 stderr — yt-dlp --newline 的 [download] 进度输出在 stdout
+      const onLine = (buf, line) => { try { onProgress(line); } catch {} };
+      const rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+      rlOut.on('line', line => { stdout += line + '\n'; onLine('stdout', line); });
+      const rlErr = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
+      rlErr.on('line', line => { stderr += line + '\n'; onLine('stderr', line); });
     } else {
       child.stdout.on('data', d => { stdout += d.toString(); });
       child.stderr.on('data', d => { stderr += d.toString(); });
@@ -680,9 +678,6 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
 
     child.on('close', code => {
       clearTimeout(timer);
-      if (!onProgress) {
-        // Without onProgress, stderr was captured by the 'data' handler
-      }
       if (code === 0) resolve({ stdout, stderr });
       else reject(Object.assign(new Error(`Exit code ${code}`), { code, stderr }));
     });
@@ -788,13 +783,16 @@ function cleanupPartials(dlDir, stem) {
 
 // ============================== 下载 ==============================
 function parseYtdlpProgress(line) {
-  // Parse yt-dlp progress line like "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
-  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)\s+at\s+([\d.]+[KMG]iB\/s)\s+ETA\s+([\d:]+)/);
-  if (m) return `DL ${m[1]} of ${m[2]} @ ${m[3]} ETA ${m[4]}`;
-  // Also try: "[download] 100% of 50.00MiB"
-  const m2 = line.match(/\[download\]\s+([\d.]+%)\s+of\s+([\d.]+[KMG]iB)/);
-  if (m2) return `DL ${m2[1]} of ${m2[2]}`;
-  return null;
+  // Parse yt-dlp progress lines like:
+  //   "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
+  //   "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
+  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)/);
+  if (!m) return null;
+  const pct  = m[1];                // e.g. "12.3%"
+  const size = m[2];                // e.g. "50.00MiB"
+  const spd  = (line.match(/at\s+([\d.]+ ?[KMG]?i?B\/s)/) || [])[1] || '?';
+  const eta  = (line.match(/ETA\s+([\d:]+)/) || [])[1] || '?';
+  return `DL ${pct} of ${size} @ ${spd} ETA ${eta}`;
 }
 
 async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 600) {

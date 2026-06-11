@@ -640,23 +640,21 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600,
 
 
 def parse_ytdlp_progress(line: str) -> str | None:
-    """解析 yt-dlp 进度行。返回进度描述，非进度行返回 None。"""
-    # [download]  15.2% of ~50.00MiB at 2.50MiB/s ETA 00:17
-    m = re.search(r'\[download\]\s+([\d.]+%)\s+of', line)
-    if m:
-        pct = m.group(1)
-        parts = [pct]
-        speed_m = re.search(r'at\s+(\S+\s*\S*/s)', line)
-        if speed_m:
-            parts.append(speed_m.group(1))
-        eta_m = re.search(r'ETA\s+(\S+)', line)
-        if eta_m:
-            parts.append(f"ETA {eta_m.group(1)}")
-        return " ".join(parts) if parts else pct
-    if "[download] 100% of" in line or "has already been downloaded" in line:
-        return "100%"
-    if "[download] Destination:" in line:
-        return "写入文件..."
+    """解析 yt-dlp 进度行。返回进度描述，非进度行返回 None。
+    格式适配:
+      "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
+      "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
+    """
+    m = re.search(r'\[download\]\s+([\d.]+%)\s+of\s+~?([\d.]+[KMG]iB)', line)
+    if not m:
+        if "[download] Destination:" in line:
+            return "写入文件..."
+        return None
+    pct  = m.group(1)       # e.g. "12.3%"
+    size = m.group(2)       # e.g. "50.00MiB"
+    spd  = (re.search(r'at\s+([\d.]+ ?[KMG]?i?B/s)', line) or [None])[0] or "?"
+    eta  = (re.search(r'ETA\s+([\d:]+)',      line) or [None])[0] or "?"
+    return f"DL {pct} of {size} @ {spd} ETA {eta}"
     if "[ExtractAudio]" in line or "[Merger]" in line or "[ffmpeg]" in line:
         return "合并音视频..."
     if "Downloading webpage" in line.lower() or "[youtube]" in line:
