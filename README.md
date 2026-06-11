@@ -397,6 +397,87 @@ python process_videos.py --retry-failed reports/report_xxx.json --concurrency 2 
 > YouTube 反爬最强：需要 **代理** + **登录态 cookie** + **JS runtime 解 n-sig** 三者配合。
 > 脚本会自动给 yt-dlp 及其 node/ejs 子进程注入 `HTTPS_PROXY` 环境变量，确保所有流量走代理。
 
+### 各平台 URL 格式与视频 ID 提取
+
+脚本通过 `{平台}_URL_TPL` 生成下载链接，支持 yt-dlp 能识别的所有 URL 格式。
+下表列出各平台「标准页面 / 内嵌链接 / 短链接」格式及视频 ID 提取正则，方便从完整 URL 中解析视频 ID。
+
+#### YouTube
+
+| 格式类型 | URL 示例 | 视频 ID 提取正则 |
+|---|---|---|
+| 标准观看页 | `https://www.youtube.com/watch?v=VIDEO_ID` | `youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})` |
+| 短链接 | `https://youtu.be/VIDEO_ID` | `youtu\.be/([a-zA-Z0-9_-]{11})` |
+| Shorts | `https://www.youtube.com/shorts/VIDEO_ID` | `youtube\.com/shorts/([a-zA-Z0-9_-]{11})` |
+| 内嵌页 | `https://www.youtube.com/embed/VIDEO_ID` | `youtube\.com/embed/([a-zA-Z0-9_-]{11})` |
+| 直播 | `https://www.youtube.com/live/VIDEO_ID` | `youtube\.com/live/([a-zA-Z0-9_-]{11})` |
+
+- **视频 ID 格式**：11 位字符（大小写字母 + 数字 + `-` + `_`）
+- **统一提取正则**（覆盖所有格式）：
+  ```
+  (?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})
+  ```
+- **格式互转**：
+  - 标准 → 短链接：提取 `VIDEO_ID` → `https://youtu.be/VIDEO_ID`
+  - 标准 → 内嵌：提取 `VIDEO_ID` → `https://www.youtube.com/embed/VIDEO_ID`
+  - Shorts → 标准：提取 `VIDEO_ID` → `https://www.youtube.com/watch?v=VIDEO_ID`
+
+#### B站（bilibili）
+
+| 格式类型 | URL 示例 | 视频 ID 提取正则 |
+|---|---|---|
+| 标准页（BV 号） | `https://www.bilibili.com/video/BV1xx411c7mD` | `bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})` |
+| 标准页（av 号） | `https://www.bilibili.com/video/av170001` | `bilibili\.com\/video\/av(\d+)` |
+| 短链接 | `https://b23.tv/BV1xx411c7mD` | `b23\.tv\/(BV[a-zA-Z0-9]{10})` |
+| 内嵌页 | `https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&cid=CID` | `bvid=(BV[a-zA-Z0-9]{10})` |
+| 移动端 | `https://m.bilibili.com/video/BV1xx411c7mD` | `m\.bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})` |
+
+- **BV 号格式**：`BV` + 10 位字符（大小写敏感）
+- **统一提取正则**：
+  ```
+  bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})|bvid=(BV[a-zA-Z0-9]{10})
+  ```
+- **格式互转**：
+  - 标准 → 内嵌：提取 `BV_ID` 后需通过 B站 API 获取 `cid`
+    → `https://api.bilibili.com/x/player/pagelist?bvid=BV_ID` 获取 cid
+    → 内嵌 URL：`https://player.bilibili.com/player.html?bvid=BV_ID&cid=CID&page=1`
+  - BV 号 → av 号：需调用 API（`https://api.bilibili.com/x/web-interface/view?bvid=BV_ID` 返回 `aid`）
+
+#### 腾讯视频
+
+| 格式类型 | URL 示例 | 视频 ID 提取正则 |
+|---|---|---|
+| 标准页（x/page） | `https://v.qq.com/x/page/VIDEO_ID.html` | `v\.qq\.com\/x\/page\/([a-zA-Z0-9]+)\.html` |
+| 标准页（x/cover） | `https://v.qq.com/x/cover/COVER/VIDEO_ID.html` | `v\.qq\.com\/x\/cover\/[^\/]+\/([a-zA-Z0-9]+)\.html` |
+| 内嵌页 | `https://v.qq.com/txp/iframe/player.html?vid=VIDEO_ID` | `[?&]vid=([a-zA-Z0-9]+)` |
+| 移动端 | `https://m.v.qq.com/x/mv.xhtml?vid=VIDEO_ID` | `[?&]vid=([a-zA-Z0-9]+)` |
+
+- **视频 ID 格式**：字母 + 数字组合（如 `o0325y3hqh`，长度不固定）
+- **统一提取正则**：
+  ```
+  v\.qq\.com\/(?:x\/page\/|x\/cover\/[^\/]+\/)([a-zA-Z0-9]+)\.html|[?&]vid=([a-zA-Z0-9]+)
+  ```
+- **格式互转**：
+  - 标准 → 内嵌：提取 `VIDEO_ID` → `https://v.qq.com/txp/iframe/player.html?vid=VIDEO_ID`
+
+#### 优酷（Youku）
+
+| 格式类型 | URL 示例 | 视频 ID 提取正则 |
+|---|---|---|
+| 标准页（v_show） | `https://v.youku.com/v_show/id_VIDEO_ID.html` | `v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html` |
+| 标准页（video） | `https://v.youku.com/video/VIDEO_ID` | `v\.youku\.com\/video\/([a-zA-Z0-9=]+)` |
+| 标准页（www） | `https://www.youku.com/v_show/id_VIDEO_ID.html` | `www\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html` |
+
+- **视频 ID 格式**：旧格式 `X` + Base64 字符串（可能含 `=` 填充）；新格式长度不固定
+- **统一提取正则**：
+  ```
+  v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html|v\.youku\.com\/video\/([a-zA-Z0-9=]+)
+  ```
+- **格式互转**：
+  - 优酷内嵌格式较复杂，建议直接使用标准页链接（`{YOUKU_URL_TPL}`）
+
+> **脚本使用提示**：Excel 中只需填入视频 ID（如 `zzJmKPX8a3c`、`BV1pg411b7Ug`、`o0325y3hqh`、`XMzgxNzExNTY4MA==`），脚本自动替换 URL 模板中的 `{youtubeId}`、`{bilibiliBvid}` 等占位符生成下载链接。
+
 ### 常见下载错误
 
 | 错误 | 平台 | 原因 | 解决方案 |
