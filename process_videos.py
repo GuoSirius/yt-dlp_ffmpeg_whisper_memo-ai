@@ -71,10 +71,10 @@ def _env_path(key: str, default: str) -> Path:
     return p if p.is_absolute() else BASE_DIR / p
 
 EXCEL_FILE = _env_path("EXCEL_FILE", "data/export_2026-06-10_split.xlsx")
-DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "downloads")
-TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "transcoded")
+DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "output/downloads")
+TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "output/transcoded")
 COOKIES_DIR = _env_path("COOKIES_DIR", "cookies")
-REPORTS_DIR = _env_path("REPORTS_DIR", "reports")
+REPORTS_DIR = _env_path("REPORTS_DIR", "output/reports")
 
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
@@ -1707,6 +1707,7 @@ def run(
         print("\n" + "=" * 60)
         print(f"  干跑模式 - 任务清单 ({len(tasks)} 条)")
         print("=" * 60)
+        env = check_environment(steps)  # 获取工具状态用于每步标记
 
         # ── 任务列表 ──
         print("\n  --- 任务步骤状态 ---")
@@ -2172,7 +2173,7 @@ if __name__ == "__main__":
 示例:
   python process_videos.py --concurrency 3 --retry 3
   python process_videos.py --sheet "YouTube视频" --id 2143
-  python process_videos.py --retry-failed reports/report_20260610_141800.json
+  python process_videos.py --retry-failed output/reports/report_20260610_141800.json
   python process_videos.py --dry-run
         """,
     )
@@ -2215,7 +2216,7 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
         "--retry-failed",
-        help="从指定报告 JSON 重跑失败项（reports/report_xxx.json）",
+        help="从指定报告 JSON 重跑失败项（output/reports/report_xxx.json）",
     )
     parser.add_argument("--init", action="store_true", help="复制 .env.example 到当前目录并重命名为 .env")
     parser.add_argument(
@@ -2325,7 +2326,7 @@ if __name__ == "__main__":
             print(f"  输出名称: {args.name if args.name else video_id}")
             sys.exit(0)
 
-        # 构建文件路径: downloads/<platform>/<name>.mp4
+        # 构建文件路径: output/downloads/<platform>/<name>.mp4
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
         dl_dir = DOWNLOADS_DIR / platform
         dl_dir.mkdir(parents=True, exist_ok=True)

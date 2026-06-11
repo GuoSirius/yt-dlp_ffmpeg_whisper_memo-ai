@@ -43,10 +43,10 @@ function envPath(key, defaultValue) {
 }
 
 let EXCEL_FILE = envPath('EXCEL_FILE', 'data/export_2026-06-10_split.xlsx');
-const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'downloads');
-const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'transcoded');
+const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'output/downloads');
+const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'output/transcoded');
 const COOKIES_DIR = envPath('COOKIES_DIR', 'cookies');
-const REPORTS_DIR = envPath('REPORTS_DIR', 'reports');
+const REPORTS_DIR = envPath('REPORTS_DIR', 'output/reports');
 
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
@@ -2181,7 +2181,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       process.exit(0);
     }
 
-    // 构建文件路径: downloads/<platform>/<name>.mp4
+    // 构建文件路径: output/downloads/<platform>/<name>.mp4
     fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
     const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
     fs.mkdirSync(dlDir, { recursive: true });

@@ -7,6 +7,7 @@ __pycache__/
 node_modules/
 .husky/_/
 # cookies/
+output/
 downloads/
-reports/
 transcoded/
+reports/
