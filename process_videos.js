@@ -71,10 +71,10 @@ const COL_ID = process.env.COL_ID || 'extra.id';
 const COL_TITLE = process.env.COL_TITLE || 'title';
 const COL_CONTENT = process.env.COL_CONTENT || 'content';
 const COL_KEYWORDS = process.env.COL_KEYWORDS || 'keywords';
-const COL_TENCENTVID = process.env.COL_TENCENTVID || 'extra.tencent';
-const COL_BILIBILIBVID = process.env.COL_BILIBILIBVID || 'extra.bilibili';
-const COL_YOUTUBEID = process.env.COL_YOUTUBEID || 'extra.youtube';
-const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youku';
+const COL_TENCENTVID = process.env.COL_TENCENTVID || 'extra.tencentVid';
+const COL_BILIBILIBVID = process.env.COL_BILIBILIBVID || 'extra.bilibiliBvid';
+const COL_YOUTUBEID = process.env.COL_YOUTUBEID || 'extra.youtubeId';
+const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youkuId';
 
 // ============================== 平台配置 ==============================
 const PLATFORM_COL_MAP = {
@@ -739,7 +739,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   const apiKey = process.env.AI_API_KEY || '';
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
   const model = process.env.AI_MODEL || '';
-  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}';
+  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。如果内容为英文，则关键词全部是英文，如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
@@ -824,7 +824,11 @@ function cleanupPartials(dlDir, stem) {
 }
 
 // ============================== 下载 ==============================
-function parseYtdlpProgress(line) {
+function parseYtdlpProgress(line, state) {
+  // 检测下载阶段变更：[download] 或 [Merger] 或 [ExtractAudio]
+  const stage = parseYtdlpStage(line, state);
+  if (stage) return stage;
+
   // Parse yt-dlp progress lines like:
   //   "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
   //   "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
@@ -835,6 +839,49 @@ function parseYtdlpProgress(line) {
   const spd  = (line.match(/at\s+([\d.]+ ?[KMG]?i?B\/s)/) || [])[1] || '?';
   const eta  = (line.match(/ETA\s+([\d:]+)/) || [])[1] || '?';
   return `DL ${pct} of ${size} @ ${spd} ETA ${eta}`;
+}
+
+/**
+ * 解析 yt-dlp 阶段变更（视频/音频/合并）
+ * @param {string} line - yt-dlp 输出单行
+ * @param {{phase:string, destCount:number}} state - 下载状态（可变对象）
+ * @returns {string|null} 格式化阶段提示 或 null
+ */
+function parseYtdlpStage(line, state) {
+  // 检测新下载开始 (Destination:)
+  const destMatch = line.match(/\[download\]\s+Destination:/);
+  if (destMatch) {
+    state.destCount++;
+    // 第 1 次 = video, 第 2 次 = audio（yt-dlp bestvideo+bestaudio 固定顺序）
+    const phase = state.destCount === 1 ? 'video' : 'audio';
+    state.phase = phase;
+    return `${c('cyan', `📥 [${phase}]`)} 开始下载`;
+  }
+
+  // 检测下载完成：yt-dlp 100% 行可能带小数 (100.0%)
+  const doneMatch = line.match(/\[download\]\s+[\d.]+%\s+of/);
+  if (doneMatch && state.phase) {
+    const phase = state.phase;
+    return `${c('green', `📥 [${phase}]`)} 下载完成`;
+  }
+
+  // 检测合并开始
+  const mergeMatch = line.match(/\[(?:Merger|ffmpeg)\]\s*(?:Merging formats into|合并).*/);
+  if (mergeMatch) {
+    state.phase = 'merge';
+    return `${c('cyan', '🔗 [merge]')} 开始合并`;
+  }
+
+  return null;
+}
+
+/** 格式化耗时（精确到秒） */
+function fmtElapsed(ms) {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${min}m${s}s`;
 }
 
 async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 600) {
@@ -898,12 +945,14 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
 
   const env = { ...process.env, ...extraEnv };
 
+  const downloadStart = Date.now();
+  const dlState = { phase: '', destCount: 0 };
   let lastProgress = '';
   async function doDownload() {
     const { stdout, stderr } = await spawnWithTimeout(YTDLP, args, timeout, {
       env,
       onProgress: line => {
-        const prog = parseYtdlpProgress(line);
+        const prog = parseYtdlpProgress(line, dlState);
         if (prog && prog !== lastProgress) {
           lastProgress = prog;
           lockedPrint(`  [${stem}] ${prog}`);
@@ -921,10 +970,11 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
     return { file: null, retries: maxRetries, error: errMsg.slice(0, 500) };
   }
 
+  const elapsed = Date.now() - downloadStart;
   const downloaded = findDownloadedFile(dlDir, stem);
   if (downloaded) {
     const sizeMB = (fs.statSync(downloaded).size / 1024 / 1024).toFixed(1);
-    lockedPrint(styleDone(`[${stem}] 下载完成 -> ${path.basename(downloaded)} (${sizeMB} MB)`));
+    lockedPrint(styleDone(`[${stem}] 下载完成 -> ${path.basename(downloaded)} (${sizeMB} MB, ${fmtElapsed(elapsed)})`));
     return { file: downloaded, retries: 0, error: null };
   }
   lockedPrint(styleFail(`[${stem}] 下载后未找到文件`));
@@ -969,12 +1019,13 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
     lockedPrint(c('dim', `  时长: ${Math.floor(totalDur / 60)}:${(totalDur % 60).toFixed(0).padStart(2, '0')}`));
   }
 
+  const transcodeStart = Date.now();
+
   async function doTranscode() {
     const args = ['-y', '-i', srcFile, ...FFMPEG_TRANSCODE_ARGS, outFile];
     const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
     let lastProgress = '';
-    const startTime = Date.now();
 
     child.stderr.on('data', d => {
       stderr += d.toString();
@@ -1020,8 +1071,9 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 
   try {
     await retryCall(doTranscode, maxRetries, retryDelay, stem);
+    const elapsed = Date.now() - transcodeStart;
     const sizeMB = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
-    lockedPrint(styleDone(`[${stem}] 转码完成 (${sizeMB} MB)`));
+    lockedPrint(styleDone(`[${stem}] 转码完成 -> ${path.basename(outFile)} (${sizeMB} MB, ${fmtElapsed(elapsed)})`));
     return { file: outFile, retries: 0, error: null };
   } catch (e) {
     const errMsg = (e.stderr || e.message || '').slice(-2000);
@@ -1491,10 +1543,11 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       const txt = result.transcribe.file;
       if (txt) {
         try {
+          const aiStart = Date.now();
           const { text: kw, retries, error } = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout, result.stem);
           result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
           if (kw) {
-            lockedPrint(`  [${result.stem}] ${c('green', 'AI analysis done')} (${kw.length} chars)`);
+            lockedPrint(`  [${result.stem}] ${c('green', 'AI analysis done')} (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} chars)`);
           } else {
             lockedPrint(`  [${result.stem}] ${c('red', 'AI analysis failed')}: ${error}`);
           }
@@ -1762,10 +1815,11 @@ async function runInputTask(opts) {
     if (aiEnabled) {
       logStep(`[${usedStem}] 开始 AI 分析...`);
       try {
+        const aiStart = Date.now();
         const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout, usedStem);
         if (kw && typeof kw === 'string') {
           analyzeText = kw;
-          lockedPrint(styleDone(`[${usedStem}] AI 分析完成: ${kw.length} 字符`));
+          lockedPrint(styleDone(`[${usedStem}] AI 分析完成 (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} 字符)`));
           result.analyze = new StepResult('success', kw);
         } else {
           lockedPrint(styleFail(`[${usedStem}] AI 分析失败: ${(error || '').slice(0, 200)}`));
@@ -1904,12 +1958,13 @@ async function runContentTask(opts) {
     } else {
       logStep(`[${stem}] 开始 AI 分析...`);
       try {
+      const aiStart = Date.now();
         const { text: kw, retries, error } = await stepAnalyze(
           contentText, maxRetries, retryDelay, analyzeTimeout, stem
         );
         result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
         if (kw) {
-          lockedPrint(styleDone(`[${stem}] AI 分析完成 (${kw.length} 字符)`));
+          lockedPrint(styleDone(`[${stem}] AI 分析完成 (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} 字符)`));
         } else {
           lockedPrint(styleFail(`[${stem}] AI 分析失败: ${error}`));
         }
