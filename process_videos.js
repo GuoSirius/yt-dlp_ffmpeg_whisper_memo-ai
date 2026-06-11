@@ -1287,6 +1287,8 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   whisperAvailable, positionLabel = '', downloadTimeout = 600, transcodeTimeout = 600,
   transcribeTimeout = 600, analyzeTimeout = 300) {
 
+  const preContent = row.preContent || null;
+
   const { pkey, vid } = getVideoId(row);
   const stem = stemName(row, sheetName);
   const key = rowKey(row);
@@ -1301,7 +1303,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
 
   // ── download ──
   let dlFile = null;
-  if (steps.includes('download')) {
+  if (preContent) {
+    result.download = new StepResult('skipped', null, 'pre-content mode');
+  } else if (steps.includes('download')) {
     if (!pkey) {
       result.download = new StepResult('skipped');
       result.overall_status = 'no_video';
@@ -1332,7 +1336,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
 
   // ── transcode ──
   let tcFile = null;
-  if (steps.includes('transcode') && dlFile) {
+  if (preContent) {
+    result.transcode = new StepResult('skipped', null, 'pre-content mode');
+  } else if (steps.includes('transcode') && dlFile) {
     try {
       const { file, retries, error } = await stepTranscode(dlFile, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
       tcFile = file;
@@ -1357,7 +1363,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   }
 
   // ── transcribe ──
-  if (steps.includes('transcribe') && tcFile) {
+  if (preContent) {
+    result.transcribe = new StepResult('success', preContent);
+  } else if (steps.includes('transcribe') && tcFile) {
     if (!whisperAvailable) {
       result.transcribe = new StepResult('failed', null, `whisper unreachable (${WHISPER_SERVICE})`);
       result.overall_status = 'partial';
@@ -1731,6 +1739,123 @@ async function runInputTask(opts) {
 
 
 // ═══════════════════════════════════════════════════════════════════
+// 文本内容流水线（--content 模式）
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * --content 模式：纯文本 → AI 关键词提取
+ * 文本来源可以是文件路径或内联文本，
+ * --name 可指定输出文件名（不含扩展名）。
+ * 不指定时：文件路径取 stem，内联文本取前 32 字符。
+ */
+async function runContentTask(opts) {
+  const { content, name, steps, force,
+    retry: maxRetries, retryDelay, analyzeTimeout } = opts;
+
+  // ── 1. 读取/确定文本 ──
+  const contentPath = path.resolve(content);
+  let contentText = '';
+  let fromFile = false;
+  if (fs.existsSync(contentPath) && fs.statSync(contentPath).isFile()) {
+    contentText = fs.readFileSync(contentPath, 'utf-8').trim();
+    fromFile = true;
+    console.log(`  📖 从文件读取: ${contentPath} (${contentText.length} 字符)`);
+  } else {
+    contentText = content;
+  }
+
+  if (!contentText || !contentText.trim()) {
+    console.error(c('red', '错误: --content 文本内容为空'));
+    process.exit(1);
+  }
+
+  // ── 2. 确定输出文件名 ──
+  let stem = '';
+  if (name) {
+    stem = safeFilename(name);
+  } else if (fromFile) {
+    stem = safeFilename(path.parse(contentPath).name);
+  } else {
+    stem = safeFilename(contentText.replace(/\s+/g, ' ').slice(0, 32).trim());
+  }
+
+  if (steps.length === 0) steps = ['analyze'];
+
+  console.log(c('dim', '\n── 开始执行 (内容分析) ──\n'));
+  console.log(`  输出名称:  ${c('cyan', stem)}`);
+  console.log(`  内容长度:  ${c('cyan', contentText.length + ' 字符')}`);
+  console.log(`  执行步骤:  ${c('cyan', steps.join(' → '))}`);
+
+  if (opts.dryRun) {
+    console.log('');
+    process.exit(0);
+  }
+
+  const sheetName = 'content';
+
+  // ── 3. 构建 TaskResult ──
+  const result = new TaskResult(sheetName, stem, stem.slice(0, 50), 'local', null, stem);
+  result.download = new StepResult('skipped');
+  result.transcode = new StepResult('skipped');
+  result.transcribe = new StepResult('success', contentText);
+
+  // ── 4. AI 分析 ──
+  if (steps.includes('analyze')) {
+    const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
+    if (!aiEnabled) {
+      result.analyze = new StepResult('skipped');
+      console.log(`  [${stem}] AI 分析: ${c('yellow', '已禁用 (AI_ENABLED=false)')}`);
+    } else {
+      console.log(`  [${stem}] 开始 AI 分析...`);
+      try {
+        const { text: kw, retries, error } = await stepAnalyze(
+          contentText, maxRetries, retryDelay, analyzeTimeout
+        );
+        result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
+        if (kw) {
+          console.log(`  [${stem}] AI 分析完成 (${kw.length} 字符)`);
+        } else {
+          console.log(`  [${stem}] AI 分析失败: ${error}`);
+        }
+      } catch (e) {
+        result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
+      }
+    }
+  }
+
+  result.overall_status = (result.analyze && result.analyze.status === 'success') ? 'success' : 'partial';
+
+  // ── 5. 保存文本结果 ──
+  const an = result.analyze;
+  const analyzeText = an && an.file && an.status === 'success' ? an.file : '';
+  if (contentText || analyzeText) {
+    const outDir = path.join(REPORTS_DIR, sheetName, 'tasks');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outFile = path.join(outDir, `${stem}.txt`);
+    const lines = [
+      `来源: --content`,
+      `文件名: ${stem}`,
+      '', '='.repeat(60), '',
+      '【源内容】', '', contentText, '',
+    ];
+    if (analyzeText) {
+      lines.push('【AI 分析关键词】', '', analyzeText);
+    }
+    fs.writeFileSync(outFile, lines.join('\n'), 'utf-8');
+    console.log(`\n  报告已保存: ${outFile}`);
+  }
+
+  // ── 6. 生成标准报告 JSON ──
+  const config = { steps, max_retries: maxRetries, retry_delay: retryDelay, concurrency: 1, force: force || false };
+  generateReport([result], config, sheetName);
+  printReportSummary([result]);
+
+  console.log('');
+  return result;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
 // URL 直链流水线（--url 模式）
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1846,7 +1971,7 @@ async function runUrlTask(opts) {
 }
 
 async function run({
-  targetSheet, targetId, steps, maxRetries, retryDelay,
+  targetSheet, targetId, contentColumn, steps, maxRetries, retryDelay,
   concurrency, force, dryRun, retryFailed,
   downloadTimeout, transcodeTimeout, transcribeTimeout, analyzeTimeout,
   offset = 0, rowLimit = 0,
@@ -1879,6 +2004,15 @@ async function run({
     }
     precomputeStems(rows, sheetName);
     for (const row of rows) {
+      // ── content-column 模式：从指定列读取预置文本 ──
+      if (contentColumn) {
+        const text = String(row[contentColumn] || '').trim();
+        if (!text) {
+          logWarn(`[${sheetName}] row ${row[COL_ID] || '?'}: contentColumn "${contentColumn}" 为空，跳过`);
+          continue;
+        }
+        row.preContent = text;
+      }
       tasks.push({ row, sheetName });
     }
   }
@@ -1942,7 +2076,7 @@ async function run({
   await Promise.all(taskFns);
 
   // ── 批量写回 Excel ──
-  if (steps.includes('transcribe')) {
+  if (steps.includes('transcribe') || contentColumn) {
     const kwMap = new Map();
     for (const r of results) {
       if (r.analyze.status === 'success' && r.analyze.file) {
@@ -2188,8 +2322,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
     .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
     .option('--input <path>', '指定本地视频文件路径（跳过下载，直接转码→识别→分析）')
+    .option('--content <text|path>', '直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，直接做 AI 分析')
+    .option('--content-column <col>', 'Excel 模式：指定包含已爬取文本的列名，批量做 AI 分析')
     .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
-    .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input 配合使用）')
+    .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）');
 
   program.parse();
@@ -2252,6 +2388,12 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
   }
   const steps = opts.step?.length ? opts.step : ['download', 'transcode', 'transcribe', 'analyze'];
+  // --content-column 模式：默认只跑 AI 分析
+  if (opts.contentColumn && !opts.step?.length) {
+    steps.length = 0;
+    steps.push('analyze');
+    logInfo('--content-column 模式：默认 --step analyze');
+  }
   // ── --url 模式：直接处理单个视频链接 ──
   if (opts.url) {
     const parsed = parseUrl(opts.url);
@@ -2466,10 +2608,25 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
+  // ── --content 模式：纯文本 AI 分析 ──
+  if (opts.content) {
+    await runContentTask({
+      content: opts.content,
+      name: opts.name || null,
+      steps,
+      retry: opts.retry,
+      retryDelay: opts.retryDelay,
+      analyzeTimeout: opts.analyzeTimeout,
+      force: opts.force || false,
+      dryRun: opts.dryRun || false,
+    });
+    process.exit(0);
+  }
 
   run({
     targetSheet: opts.sheet || null,
     targetId: opts.id || null,
+    contentColumn: opts.contentColumn || null,
     steps,
     offset: opts.offset || 0,
     rowLimit: opts.limit || 0,
