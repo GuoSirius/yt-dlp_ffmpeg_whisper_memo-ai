@@ -12,6 +12,7 @@ commitlint.config.js
 .release-it.json
 
 # Project-specific data
+data/
 export_*.xlsx
 downloads/
 transcoded/

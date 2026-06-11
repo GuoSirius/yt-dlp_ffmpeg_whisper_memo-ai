@@ -27,6 +27,7 @@
   },
   "license": "MIT",
   "author": "",
+  "type": "module",
   "main": "process_videos.js",
   "bin": {
     "video-processor": "process_videos.js"
@@ -43,16 +44,16 @@
   },
   "scripts": {
     "start": "node process_videos.js",
-    "test": "node -c process_videos.js && node -e \"require('./process_videos')\" 2>&1 || node -c process_videos.js",
+    "test": "node -c process_videos.js",
     "lint:commit": "commitlint --edit",
     "release": "node scripts/release.js",
     "release:dry": "node scripts/release.js --dry-run",
     "prepare": "husky"
   },
   "dependencies": {
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "dotenv": "^17.4.2",
-    "p-limit": "^6.2.0",
+    "p-limit": "^7.3.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

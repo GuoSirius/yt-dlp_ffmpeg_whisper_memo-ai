@@ -1,7 +1,7 @@
 .env
 
 ~*
-export_2026-06-10_split.xlsx
+data/export_2026-06-10_split.xlsx
 
 __pycache__/
 node_modules/

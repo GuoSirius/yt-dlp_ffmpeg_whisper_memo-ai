@@ -70,7 +70,7 @@ def _env_path(key: str, default: str) -> Path:
     p = Path(val)
     return p if p.is_absolute() else BASE_DIR / p
 
-EXCEL_FILE = _env_path("EXCEL_FILE", "export_2026-06-10_split.xlsx")
+EXCEL_FILE = _env_path("EXCEL_FILE", "data/export_2026-06-10_split.xlsx")
 DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "downloads")
 TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "transcoded")
 COOKIES_DIR = _env_path("COOKIES_DIR", "cookies")
@@ -1795,14 +1795,35 @@ if __name__ == "__main__":
     # ── init 模式 ──
     if args.init:
         src = BASE_DIR / ".env.example"
-        dest = Path.cwd() / ".env"
         if not src.exists():
             print(f"错误: 找不到 {src}", file=sys.stderr)
             sys.exit(1)
+        import shutil as _shutil
+        dest = Path.cwd() / ".env"
         if dest.exists():
-            print(f".env 已存在于当前目录，跳过: {dest}")
+            print(f"\n⚠️  目标文件已存在: {dest}")
+            print("")
+            print("  [1] 覆盖 (overwrite)")
+            print("  [2] 保留现有 (keep existing)")
+            print("  [3] 自定义文件名 (custom name)")
+            choice = input("\n  请选择 [1/2/3] (默认: 2): ").strip() or "2"
+            if choice == "1":
+                _shutil.copy2(str(src), str(dest))
+                print(f"✅ .env 已覆盖: {dest}")
+            elif choice == "3":
+                custom_name = input("  请输入新文件名 (如 .env.prod): ").strip()
+                if not custom_name:
+                    print("未输入文件名，已取消。")
+                    sys.exit(0)
+                dest = Path.cwd() / custom_name
+                if dest.exists():
+                    print(f'⚠️  文件 "{custom_name}" 也已存在，保留现有文件。')
+                else:
+                    _shutil.copy2(str(src), str(dest))
+                    print(f"✅ .env 已创建为: {dest}")
+            else:
+                print("保留现有 .env 文件，未做修改。")
         else:
-            import shutil as _shutil
             _shutil.copy2(str(src), str(dest))
             print(f"✅ .env 已从 .env.example 创建: {dest}")
         sys.exit(0)

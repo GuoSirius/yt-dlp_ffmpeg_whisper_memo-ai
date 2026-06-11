@@ -10,26 +10,29 @@
  *   node process_videos.js --dry-run
  */
 
-'use strict';
-
 // ============================== 依赖 ==============================
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { spawn, execSync, execFile } from 'child_process';
+import readline from 'readline';
+import XLSX from 'xlsx';
+import pLimit from 'p-limit';
+import { fileURLToPath } from 'url';
+import { program } from 'commander';
+
 // --env-file 需在 dotenv 加载前解析
 let _dotenvPath = '.env';
 const _envFileIdx = process.argv.indexOf('--env-file');
 if (_envFileIdx !== -1 && _envFileIdx + 1 < process.argv.length) {
   _dotenvPath = process.argv[_envFileIdx + 1];
 }
-require('dotenv').config({ path: _dotenvPath });
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const url = require('url');
-const { spawn, execSync, execFile } = require('child_process');
-const readline = require('readline');
-const XLSX = require('xlsx');
-const pLimit = require('p-limit');
+dotenv.config({ path: _dotenvPath });
 
 // ============================== 路径配置 ==============================
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const BASE_DIR = path.resolve(__dirname);
 
 function envPath(key, defaultValue) {
@@ -38,7 +41,7 @@ function envPath(key, defaultValue) {
   return path.isAbsolute(val) ? p : path.resolve(BASE_DIR, val);
 }
 
-let EXCEL_FILE = envPath('EXCEL_FILE', 'export_2026-06-10_split.xlsx');
+let EXCEL_FILE = envPath('EXCEL_FILE', 'data/export_2026-06-10_split.xlsx');
 const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'downloads');
 const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'transcoded');
 const COOKIES_DIR = envPath('COOKIES_DIR', 'cookies');
@@ -1308,10 +1311,10 @@ async function run({
     }
     console.log('\n  涉及的步骤将失败。');
     if (!dryRun) {
-      const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       const answer = await new Promise(resolve => {
-        readline.question('\n  是否继续执行？(输入 yes 继续，其他任意键取消): ', ans => {
-          readline.close();
+        rl.question('\n  是否继续执行？(输入 yes 继续，其他任意键取消): ', ans => {
+          rl.close();
           resolve(ans.trim().toLowerCase());
         });
       });
@@ -1539,10 +1542,10 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
     console.log('='.repeat(60));
     for (const issue of envRfr.issues) console.log(`  • ${issue}`);
     console.log('\n  涉及的步骤将失败。');
-    const readline = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise(resolve => {
-      readline.question('\n  是否继续重跑？(输入 yes 继续，其他任意键取消): ', ans => {
-        readline.close();
+      rl.question('\n  是否继续重跑？(输入 yes 继续，其他任意键取消): ', ans => {
+        rl.close();
         resolve(ans.trim().toLowerCase());
       });
     });
@@ -1602,9 +1605,7 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
 }
 
 // ============================== CLI ==============================
-if (require.main === module) {
-  const { program } = require('commander');
-
+if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.js')) {
   program
     .name('process_videos')
     .description('视频下载、转码、文本识别、AI分析一体化流程')
@@ -1639,13 +1640,49 @@ if (require.main === module) {
   // ── init 模式 ──
   if (opts.init) {
     const src = path.resolve(__dirname, '.env.example');
-    const dest = path.resolve(process.cwd(), '.env');
     if (!fs.existsSync(src)) {
       console.error(`错误: 找不到 ${src}`);
       process.exit(1);
     }
+    let dest = path.resolve(process.cwd(), '.env');
     if (fs.existsSync(dest)) {
-      console.log(`.env 已存在于当前目录，跳过: ${dest}`);
+      console.log(`\n⚠️  目标文件已存在: ${dest}`);
+      console.log('');
+      console.log('  [1] 覆盖 (overwrite)');
+      console.log('  [2] 保留现有 (keep existing)');
+      console.log('  [3] 自定义文件名 (custom name)');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const choice = await new Promise(resolve => {
+        rl.question('\n  请选择 [1/2/3] (默认: 2): ', ans => {
+          rl.close();
+          resolve(ans.trim() || '2');
+        });
+      });
+      if (choice === '1') {
+        fs.copyFileSync(src, dest);
+        console.log(`✅ .env 已覆盖: ${dest}`);
+      } else if (choice === '3') {
+        const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const customName = await new Promise(resolve => {
+          rl2.question('  请输入新文件名 (如 .env.prod): ', ans => {
+            rl2.close();
+            resolve(ans.trim());
+          });
+        });
+        if (!customName) {
+          console.log('未输入文件名，已取消。');
+          process.exit(0);
+        }
+        dest = path.resolve(process.cwd(), customName);
+        if (fs.existsSync(dest)) {
+          console.log(`⚠️  文件 "${customName}" 也已存在，保留现有文件。`);
+        } else {
+          fs.copyFileSync(src, dest);
+          console.log(`✅ .env 已创建为: ${dest}`);
+        }
+      } else {
+        console.log('保留现有 .env 文件，未做修改。');
+      }
     } else {
       fs.copyFileSync(src, dest);
       console.log(`✅ .env 已从 .env.example 创建: ${dest}`);
