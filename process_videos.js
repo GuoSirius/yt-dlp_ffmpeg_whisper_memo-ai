@@ -87,14 +87,15 @@ const PLATFORM_COL_MAP = {
 // ============================== 工具函数 ==============================
 function c(color, text) {
   const colors = {
-    dim: '\x1b[2m',
-    yellow: '\x1b[33m',
-    cyan: '\x1b[36m',
-    green: '\x1b[32m',
-    red: '\x1b[31m',
-    blue: '\x1b[34m',
+    bold:    '\x1b[1m',
+    dim:     '\x1b[2m',
+    yellow:  '\x1b[33m',
+    cyan:    '\x1b[36m',
+    green:   '\x1b[32m',
+    red:     '\x1b[31m',
+    blue:    '\x1b[34m',
     magenta: '\x1b[35m',
-    reset: '\x1b[0m',
+    reset:   '\x1b[0m',
   };
   return (colors[color] || '') + text + colors.reset;
 }
@@ -173,13 +174,13 @@ const PLATFORM_CONFIG = buildPlatformConfig();
 
 // ============================== 日志 ==============================
 function logInfo(msg) {
-  console.log(`${timestamp()} [INFO] ${msg}`);
+  console.log(`${timestamp()} ${c('cyan', '[INFO]')} ${msg}`);
 }
 function logWarn(msg) {
-  console.log(`${timestamp()} [WARN] ${msg}`);
+  console.log(`${timestamp()} ${c('yellow', '[WARN]')} ${msg}`);
 }
 function logError(msg) {
-  console.log(`${timestamp()} [ERROR] ${msg}`);
+  console.log(`${timestamp()} ${c('red', '[ERROR]')} ${msg}`);
 }
 function timestamp() {
   return new Date().toTimeString().slice(0, 8);
@@ -209,7 +210,13 @@ class OverallProgress {
   }
   summaryLine() {
     const pct = this.total ? (this.completed / this.total * 100).toFixed(1) : '0.0';
-    return `[总进度 ${this.completed}/${this.total} (${pct}%)] 成功:${this.success} 失败:${this.failed} 部分:${this.partial} 无视频:${this.noVideo}`;
+    const parts = [];
+    parts.push(c('dim', `[总进度 ${this.completed}/${this.total} (${pct}%)]`));
+    parts.push(this.success > 0 ? c('green', `✅${this.success}`) : c('dim', '✅0'));
+    parts.push(this.failed > 0 ? c('red', `❌${this.failed}`) : c('dim', '❌0'));
+    parts.push(this.partial > 0 ? c('yellow', `⚠️${this.partial}`) : c('dim', '⚠️0'));
+    parts.push(this.noVideo > 0 ? c('cyan', `⏹️${this.noVideo}`) : c('dim', '⏹️0'));
+    return parts.join('  ');
   }
 }
 
@@ -711,7 +718,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     const progressInterval = setInterval(() => {
       if (!done) {
         const elapsed = ((Date.now() - analyzeStart) / 1000).toFixed(0);
-        lockedPrint(`  [${label}] AI analyzing... ${elapsed}s`);
+        lockedPrint(`  [${label}] ${c('green', 'AI analyzing...')} ${elapsed}s`);
       }
     }, 5000);
 
@@ -742,7 +749,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
       lastErr = String(e.message).slice(0, 500);
       if (attempt < maxAttempts - 1) {
         const delay = Math.min(retryDelay * Math.pow(2, attempt), 30);
-        lockedPrint(`  [${label}] AI attempt ${attempt + 1} failed: ${lastErr.slice(0, 100)}, retrying in ${delay}s...`);
+        lockedPrint(`  [${label}] AI attempt ${attempt + 1} ${c('red', 'failed')}: ${lastErr.slice(0, 100)}, retrying in ${delay}s...`);
         await sleep(delay * 1000);
       }
     }
@@ -796,13 +803,13 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   if (!force) {
     const existing = findDownloadedFile(dlDir, stem);
     if (existing) {
-      lockedPrint(`  [${stem}] exists ${path.basename(existing)}, skip download`);
+      lockedPrint(c('dim', `  [${stem}] exists ${path.basename(existing)}, skip download`));
       return { file: existing, retries: 0, error: null };
     }
   }
 
   const videoUrl = buildUrl(pkey, vid);
-  lockedPrint(`  [${stem}] start download (platform=${pkey})`);
+  lockedPrint(`  [${stem}] ${c('cyan', 'start download')} (platform=${pkey})`);
   lockedPrint(`  [${stem}] ${videoUrl}`);
 
   const cfg = PLATFORM_CONFIG[pkey];
@@ -863,7 +870,7 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
 
   const downloaded = findDownloadedFile(dlDir, stem);
   if (downloaded) {
-    lockedPrint(`  [${stem}] download done -> ${path.basename(downloaded)}`);
+    lockedPrint(`  [${stem}] ${c('green', 'download done')} -> ${path.basename(downloaded)}`);
     return { file: downloaded, retries: 0, error: null };
   }
   logError(`[${stem}] file not found after download`);
@@ -957,7 +964,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 
   try {
     await retryCall(doTranscode, maxRetries, retryDelay, stem);
-    lockedPrint(`  [${stem}] transcode done`);
+    lockedPrint(`  [${stem}] ${c('green', 'transcode done')}`);
     return { file: outFile, retries: 0, error: null };
   } catch (e) {
     logError(`[${stem}] ffmpeg transcode failed: ${(e.stderr || e.message).slice(-2000)}`);
@@ -979,10 +986,10 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 600) 
   const fileSizeMB = (fs.statSync(audioFile).size / (1024 * 1024)).toFixed(1);
   if (WHISPER_BACKEND === 'local') {
     const langLabel = WHISPER_LANGUAGE || 'auto';
-    lockedPrint(`  [${stem}] start transcribe [local(${WHISPER_MODEL}/${langLabel})] (${fileSizeMB}MB)...`);
+    lockedPrint(`  [${stem}] ${c('magenta', 'start transcribe')} [local(${WHISPER_MODEL}/${langLabel})] (${fileSizeMB}MB)...`);
   } else {
     const modelLabel = WHISPER_SERVICE_MODEL || WHISPER_MODEL || '(server default)';
-    lockedPrint(`  [${stem}] start transcribe [service(${modelLabel})] (${fileSizeMB}MB)...`);
+    lockedPrint(`  [${stem}] ${c('magenta', 'start transcribe')} [service(${modelLabel})] (${fileSizeMB}MB)...`);
   }
 
   if (WHISPER_BACKEND === 'local') {
@@ -1018,7 +1025,7 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(`  [${stem}] transcribe done (${elapsed}s, ${text.length} chars)`);
+    lockedPrint(`  [${stem}] ${c('green', 'transcribe done')} (${elapsed}s, ${text.length} chars)`);
     return { text, retries: 0, error: null };
   } catch (e) {
     logError(`[${stem}] local whisper transcribe failed: ${e.message}`);
@@ -1082,7 +1089,7 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(`  [${stem}] transcribe done (${elapsed}s, ${text.length} chars)`);
+    lockedPrint(`  [${stem}] ${c('green', 'transcribe done')} (${elapsed}s, ${text.length} chars)`);
     return { text, retries: 0, error: null };
   } catch (e) {
     logError(`[${stem}] whisper transcribe failed: ${e.message}`);
@@ -1314,8 +1321,13 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   const result = new TaskResult(sheetName, key, title, pkey, videoUrl, stem);
 
   const tag = positionLabel ? `${positionLabel} ` : '';
-  lockedPrint(`${tag}[${stem}] start (sheet=${sheetName}, platform=${pkey || 'N/A'}, title=${title.slice(0, 40)})`);
-  logInfo(`[${stem}] start (sheet=${sheetName}, platform=${pkey || 'N/A'})`);
+  lockedPrint('');
+  lockedPrint(c('dim', '─'.repeat(62)));
+  lockedPrint(c('bold', `  ▶ Task ${positionLabel || '?'}`)
+ + c('dim', `  [${stem}]  sheet=${sheetName}  platform=${pkey || 'N/A'}`));
+  if (title) lockedPrint(c('dim', `  title: ${title.slice(0, 50)}`));
+  lockedPrint(c('dim', '─'.repeat(62)));
+  logInfo(`[${stem}] start (sheet=${sheetName}, platform=${pkey || 'N/A'}, title=${title.slice(0, 40)})`);
 
   // ── download ──
   let dlFile = null;
@@ -1414,9 +1426,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
           const { text: kw, retries, error } = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout, result.stem);
           result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
           if (kw) {
-            lockedPrint(`  [${result.stem}] AI analysis done (${kw.length} chars)`);
+            lockedPrint(`  [${result.stem}] ${c('green', 'AI analysis done')} (${kw.length} chars)`);
           } else {
-            lockedPrint(`  [${result.stem}] AI analysis failed: ${error}`);
+            lockedPrint(`  [${result.stem}] ${c('red', 'AI analysis failed')}: ${error}`);
           }
         } catch (e) {
           result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
@@ -2084,6 +2096,8 @@ async function run({
       }
       results.push(result);
       overall.addResult(result.overall_status);
+      lockedPrint('');
+      lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);
       return result;
     })
@@ -2284,6 +2298,8 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
       }
       results.push(result);
       overall.addResult(result.overall_status);
+      lockedPrint('');
+      lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);
       return result;
     })
