@@ -56,9 +56,11 @@ function runSilent(cmd) {
   } catch { return ''; }
 }
 
-// 获取最新的 git tag（比 git describe 更可靠）
+// 获取最新的 git tag（比 git describe 更可靠，纯 JS 处理避免 Windows cmd 下 head/tail 不可用）
 function getLastTag() {
-  return runSilent('git tag --sort=-v:refname --merged HEAD | head -1');
+  const tags = runSilent('git tag --sort=-v:refname --merged HEAD');
+  if (!tags) return '';
+  return tags.split('\n').filter(Boolean)[0] || '';
 }
 
 function getVersion() {
@@ -187,7 +189,9 @@ function updateChangelog(version, date) {
     : '# Changelog\n\n';
 
   // 移除可能存在的同名版本旧条目（防止重复）
-  const re = new RegExp(`\\n## ${version.replace(/\./g, '\\.')} — .*?(?=\\n## |$)`, 's');
+  // 兼容条目在文件开头（无前置 \n）和在中间两种情况
+  const esc = version.replace(/\./g, '\\.');
+  const re = new RegExp(`(^|\\n)## ${esc} — .*?(?=\\n## |$)`, 's');
   existing = existing.replace(re, '');
 
   // 插入新条目到 header 之后
