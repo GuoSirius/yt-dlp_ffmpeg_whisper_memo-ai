@@ -283,6 +283,31 @@ class OverallProgress:
             return f"[{self.completed + 1}/{self.total}]"
 
 
+# ─────────────────────────────── 格式化辅助 ─────────────────────────────────
+
+def fmt_elapsed(seconds: float) -> str:
+    """格式化耗时为可读字符串"""
+    sec = round(seconds)
+    if sec < 60:
+        return f"{sec}s"
+    m = sec // 60
+    s = sec % 60
+    return f"{m}m{s}s"
+
+
+def fmt_duration(sec: float | None) -> str:
+    """格式化视频时长 M:SS 或 H:MM:SS"""
+    if not sec or sec <= 0:
+        return ""
+    m = int(sec // 60)
+    s = int(sec % 60)
+    if m < 60:
+        return f"{m}:{s:02d}"
+    h = m // 60
+    rm = m % 60
+    return f"{h}:{rm:02d}:{s:02d}"
+
+
 # ─────────────────────────────── 数据结构 ───────────────────────────────────
 
 @dataclass
@@ -718,7 +743,7 @@ def step_analyze(
     model = os.getenv("AI_MODEL", "")
     prompt_tpl = os.getenv(
         "AI_PROMPT_TPL",
-        "帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}"
+        "帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。重要规则：如果内容是英文，关键词必须全部是英文，绝对不能输出中文关键词；如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}"
     )
     ai_timeout = timeout
 
@@ -833,6 +858,8 @@ def step_download(
         print(f"  [{stem}] {c('cyan', '开始下载')} (平台={pkey})", flush=True)
         print(f"  [{stem}] {url}", flush=True)
 
+    download_start = time.monotonic()
+
     base_cmd = [sys.executable, "-m", "yt_dlp"] if YTDLP == "yt-dlp" else [YTDLP]
     cmd = base_cmd + [
         url,
@@ -900,8 +927,12 @@ def step_download(
 
     downloaded = find_downloaded_file(dl_dir, stem)
     if downloaded:
+        elapsed = time.monotonic() - download_start
+        size_mb = downloaded.stat().st_size / 1024 / 1024
+        dur = get_duration(downloaded)
+        dur_str = f", {fmt_duration(dur)}" if dur else ""
         with _print_lock:
-            print(f"  [{stem}] {c('green', '下载完成')} -> {downloaded.name}", flush=True)
+            print(f"  [{stem}] {c('green', '下载完成')} -> {downloaded.name} ({size_mb:.1f} MB, {fmt_elapsed(elapsed)}{dur_str})", flush=True)
     else:
         log.error(f"[{stem}] 下载后找不到文件")
         return None, retries_used, "下载后找不到文件"
@@ -936,6 +967,7 @@ def step_transcode(
 
     # 获取源文件时长用于百分比计算
     total_dur = get_duration(src_file)
+    transcode_start = time.monotonic()
 
     def _run():
         parser = make_ffmpeg_parser(total_dur)
@@ -951,8 +983,11 @@ def step_transcode(
         )
         if err:
             return None, retries_used, err
+        elapsed = time.monotonic() - transcode_start
+        size_mb = out_file.stat().st_size / 1024 / 1024
+        dur_str = f", {fmt_duration(total_dur)}" if total_dur else ""
         with _print_lock:
-            print(f"  [{stem}] {c('green', '转码完成')}", flush=True)
+            print(f"  [{stem}] {c('green', '转码完成')} -> {out_file.name} ({size_mb:.1f} MB, {fmt_elapsed(elapsed)}{dur_str})", flush=True)
         return result, 0, None
     except Exception as e:
         stderr_text = ""
@@ -1578,6 +1613,7 @@ def process_one_task(
             txt = result.transcribe.file  # 借用 file 字段存文本
             if txt:
                 try:
+                    ai_start = time.monotonic()
                     kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout, result.stem)
                 except Exception as e:
                     kw, retries, err = None, max_retries, str(e)[:500]
@@ -1588,7 +1624,7 @@ def process_one_task(
                     retries_used=retries,
                 )
                 if kw:
-                    print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{len(kw)} 字符）", flush=True)
+                    print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(kw)} 字符）", flush=True)
                 else:
                     print(f"  [{result.stem}] {c('red', 'AI 分析失败')}：{err}", flush=True)
             else:

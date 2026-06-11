@@ -739,7 +739,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   const apiKey = process.env.AI_API_KEY || '';
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
   const model = process.env.AI_MODEL || '';
-  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。如果内容为英文，则关键词全部是英文，如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}';
+  const promptTpl = process.env.AI_PROMPT_TPL || '帮我归纳总结一下提供内容的关键词，尽可能全面，无遗漏，无重复，无幻想，关键词之间用英文逗号分隔开。重要规则：如果内容是英文，关键词必须全部是英文，绝对不能输出中文关键词；如果内容是中文，则关键词以中文为主，可以附带一些英文关键词。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
@@ -884,6 +884,16 @@ function fmtElapsed(ms) {
   return `${min}m${s}s`;
 }
 
+function fmtDuration(sec) {
+  if (!sec || sec <= 0) return '';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  if (m < 60) return `${m}:${String(s).padStart(2, '0')}`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}:${String(rm).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 600) {
   const { pkey, vid } = getVideoId(row);
   const stem = stemName(row, sheetName);
@@ -974,7 +984,9 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   const downloaded = findDownloadedFile(dlDir, stem);
   if (downloaded) {
     const sizeMB = (fs.statSync(downloaded).size / 1024 / 1024).toFixed(1);
-    lockedPrint(styleDone(`[${stem}] 下载完成 -> ${path.basename(downloaded)} (${sizeMB} MB, ${fmtElapsed(elapsed)})`));
+    const dur = getDuration(downloaded);
+    const durStr = dur ? `, ${fmtDuration(dur)}` : '';
+    lockedPrint(styleDone(`[${stem}] 下载完成 -> ${path.basename(downloaded)} (${sizeMB} MB, ${fmtElapsed(elapsed)}${durStr})`));
     return { file: downloaded, retries: 0, error: null };
   }
   lockedPrint(styleFail(`[${stem}] 下载后未找到文件`));
@@ -1073,7 +1085,8 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
     await retryCall(doTranscode, maxRetries, retryDelay, stem);
     const elapsed = Date.now() - transcodeStart;
     const sizeMB = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
-    lockedPrint(styleDone(`[${stem}] 转码完成 -> ${path.basename(outFile)} (${sizeMB} MB, ${fmtElapsed(elapsed)})`));
+    const durStr = totalDur ? `, ${fmtDuration(totalDur)}` : '';
+    lockedPrint(styleDone(`[${stem}] 转码完成 -> ${path.basename(outFile)} (${sizeMB} MB, ${fmtElapsed(elapsed)}${durStr})`));
     return { file: outFile, retries: 0, error: null };
   } catch (e) {
     const errMsg = (e.stderr || e.message || '').slice(-2000);
@@ -1745,7 +1758,9 @@ async function runInputTask(opts) {
       tcFile = file;
       if (file && fs.existsSync(file)) {
         const size = (fs.statSync(file).size / 1024 / 1024).toFixed(1);
-        lockedPrint(styleDone(`[${usedStem}] 转码完成: ${path.basename(file)} (${size} MB)`));
+        const dur = getDuration(file);
+        const durStr = dur ? `, ${fmtDuration(dur)}` : '';
+        lockedPrint(styleDone(`[${usedStem}] 转码完成: ${path.basename(file)} (${size} MB${durStr})`));
         result.transcode = new StepResult('success', file);
       } else {
         lockedPrint(styleWarn(`[${usedStem}] 转码: ${file ? '已跳过 (文件已存在)' : '失败 — ' + (error || '')}`));
