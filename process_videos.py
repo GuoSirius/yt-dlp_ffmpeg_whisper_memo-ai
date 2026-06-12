@@ -1012,7 +1012,7 @@ def _check_whisper_available() -> bool:
     """检测 whisper 是否可用（按 WHISPER_BACKEND 判断）"""
     if WHISPER_BACKEND == "local":
         try:
-            subprocess.run(["whisper", "--help"], capture_output=True, timeout=5)
+            subprocess.run(["whisper", "--help"], capture_output=True, timeout=5, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
             return True
         except Exception:
             log.error("本地 whisper CLI 不可用，请确认: pip install openai-whisper")

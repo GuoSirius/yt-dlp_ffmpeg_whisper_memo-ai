@@ -642,7 +642,7 @@ function which(cmd) {
 async function checkWhisperAvailable() {
   if (WHISPER_BACKEND === 'local') {
     try {
-      execSync('whisper --help', { stdio: 'pipe', timeout: 5000 });
+      execSync('whisper --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
       return true;
     } catch {
       logError('本地 whisper CLI 不可用，请确认: pip install openai-whisper');
