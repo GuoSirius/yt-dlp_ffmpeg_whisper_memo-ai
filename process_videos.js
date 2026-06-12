@@ -60,21 +60,26 @@ const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE || 'ffprobe';
 // ── Whisper 共享参数（local 和 service 通用） ──
-const WHISPER_BACKEND = process.env.WHISPER_BACKEND || 'service';
-const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';       // 模型名: tiny/base/small/medium/large-v3
-const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';      // 语言: zh/en/"" (空=自动), 设 zh 避免繁体混入
+const WHISPER_BACKEND = process.env.WHISPER_BACKEND || 'local';
+const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';          // 模型名: tiny/base/small/medium/large-v3/turbo
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';         // 语言: 设 zh 避免繁体混入
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || '0.0';
 const WHISPER_TEMPERATURE_INC = process.env.WHISPER_TEMPERATURE_INC || '0.2';
+const WHISPER_OUTPUT_FORMAT = process.env.WHISPER_OUTPUT_FORMAT || 'txt'; // 输出格式: txt/vtt/srt/tsv/json/all
 
-// ── Whisper 服务模式参数 ──
+// ── Whisper 服务模式参数（独有） ──
 const WHISPER_SERVICE = process.env.WHISPER_SERVICE || 'http://localhost:9588';
-const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 模型文件路径（用于 /load）
-const WHISPER_RESPONSE_FORMAT = process.env.WHISPER_RESPONSE_FORMAT || 'json';
+const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 模型路径 (/load)，留空=使用服务端默认
 
-// ── Whisper 本地模式参数 ──
-const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型文件目录（--model_dir）
-const WHISPER_OUTPUT_FORMAT = process.env.WHISPER_OUTPUT_FORMAT || 'txt'; // 输出格式
-const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu 或 cuda
+// ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
+const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型下载目录
+const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
+const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || '5';         // beam 宽度 (温度=0 时生效, 越大越准)
+const WHISPER_BEST_OF = process.env.WHISPER_BEST_OF || '5';             // 候选数 (温度>0 时生效)
+const WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始提示词 (可提升专有名词识别)
+const WHISPER_CONDITION_ON_PREV = process.env.WHISPER_CONDITION_ON_PREV || 'True'; // 上下文提示 (长音频建议 False)
+const WHISPER_FP16 = process.env.WHISPER_FP16 || 'False';              // CPU 应设为 False
+const WHISPER_THREADS = process.env.WHISPER_THREADS || '0';            // 线程数 (0=自动)
 
 let _SERVICE_MODEL_LOADED = null;
 
@@ -1140,11 +1145,17 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
       audioFile,
       '--model', WHISPER_MODEL,
       '--device', WHISPER_DEVICE,
+      '--beam_size', WHISPER_BEAM_SIZE,
+      '--best_of', WHISPER_BEST_OF,
+      '--fp16', WHISPER_FP16,
+      '--condition_on_previous_text', WHISPER_CONDITION_ON_PREV,
     ];
     if (WHISPER_MODEL_DIR) args.push('--model_dir', WHISPER_MODEL_DIR);
     if (WHISPER_LANGUAGE) args.push('--language', WHISPER_LANGUAGE);
     args.push('--temperature', WHISPER_TEMPERATURE);
-    if (WHISPER_TEMPERATURE_INC) args.push('--temperature_increment', WHISPER_TEMPERATURE_INC);
+    if (WHISPER_TEMPERATURE_INC) args.push('--temperature_increment_on_fallback', WHISPER_TEMPERATURE_INC);
+    if (WHISPER_INITIAL_PROMPT) args.push('--initial_prompt', WHISPER_INITIAL_PROMPT);
+    if (WHISPER_THREADS && WHISPER_THREADS !== '0') args.push('--threads', WHISPER_THREADS);
     args.push('--output_format', WHISPER_OUTPUT_FORMAT, '--output_dir', outDir);
 
     const { stderr } = await spawnWithTimeout('whisper', args, timeout);
@@ -1198,7 +1209,7 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       form.append('file', fileBlob, path.basename(audioFile));
       form.append('temperature', WHISPER_TEMPERATURE);
       form.append('temperature_inc', WHISPER_TEMPERATURE_INC);
-      form.append('response_format', WHISPER_RESPONSE_FORMAT);
+      form.append('response_format', WHISPER_OUTPUT_FORMAT);
       if (WHISPER_LANGUAGE) form.append('language', WHISPER_LANGUAGE);
 
       const controller = new AbortController();

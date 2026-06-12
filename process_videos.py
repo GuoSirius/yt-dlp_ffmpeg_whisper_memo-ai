@@ -94,22 +94,27 @@ YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE", "ffprobe")
 # ── Whisper 共享参数（local 和 service 通用） ──
-WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "service")  # "service" 或 "local"
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: zh/en/"" (空=自动), 设 zh 避免繁体混入
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "local")  # "service" 或 "local"
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: 设 zh 避免繁体混入
 WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")  # 推理温度 (0.0~1.0)
 WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")  # 温度增量 (fallback 时升温步长)
+WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "txt")  # 输出格式: txt/vtt/srt/tsv/json/all
 
-# ── Whisper 服务模式参数 ──
+# ── Whisper 服务模式参数（独有） ──
 WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服务地址
-# 服务端模型路径（ggml 文件，用于 POST /load 切换模型；留空则使用服务器当前加载的模型）
+# 服务端模型路径（ggml 文件，用于 POST /load 切换模型；留空则使用服务端当前加载的模型）
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
-WHISPER_RESPONSE_FORMAT = os.getenv("WHISPER_RESPONSE_FORMAT", "json")  # 返回格式: json/text/srt/vtt
 
-# ── Whisper 本地模式参数 ──
-WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型文件目录（--model_dir）
-WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "txt")  # 输出格式: txt/vtt/srt/tsv/json
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
+# ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
+WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
+WHISPER_BEAM_SIZE = os.getenv("WHISPER_BEAM_SIZE", "5")  # beam 宽度 (温度=0 时生效, 越大越准)
+WHISPER_BEST_OF = os.getenv("WHISPER_BEST_OF", "5")  # 候选数 (温度>0 时生效)
+WHISPER_INITIAL_PROMPT = os.getenv("WHISPER_INITIAL_PROMPT", "")  # 初始提示词 (可提升专有名词识别)
+WHISPER_CONDITION_ON_PREV = os.getenv("WHISPER_CONDITION_ON_PREV", "True")  # 上下文提示 (长音频建议 False)
+WHISPER_FP16 = os.getenv("WHISPER_FP16", "False")  # CPU 应设为 False
+WHISPER_THREADS = os.getenv("WHISPER_THREADS", "0")  # 线程数 (0=自动)
 
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 
@@ -1117,6 +1122,10 @@ def _transcribe_local(
             "whisper", str(audio_file),
             "--model", WHISPER_MODEL,
             "--device", WHISPER_DEVICE,
+            "--beam_size", WHISPER_BEAM_SIZE,
+            "--best_of", WHISPER_BEST_OF,
+            "--fp16", WHISPER_FP16,
+            "--condition_on_previous_text", WHISPER_CONDITION_ON_PREV,
         ]
         if WHISPER_MODEL_DIR:
             cmd += ["--model_dir", WHISPER_MODEL_DIR]
@@ -1126,7 +1135,11 @@ def _transcribe_local(
             "--temperature", WHISPER_TEMPERATURE,
         ]
         if WHISPER_TEMPERATURE_INC:
-            cmd += ["--temperature_increment", WHISPER_TEMPERATURE_INC]
+            cmd += ["--temperature_increment_on_fallback", WHISPER_TEMPERATURE_INC]
+        if WHISPER_INITIAL_PROMPT:
+            cmd += ["--initial_prompt", WHISPER_INITIAL_PROMPT]
+        if WHISPER_THREADS and WHISPER_THREADS != "0":
+            cmd += ["--threads", WHISPER_THREADS]
         out_ext = "json" if WHISPER_OUTPUT_FORMAT == "json" else "txt"
         cmd += [
             "--output_format", WHISPER_OUTPUT_FORMAT,
@@ -1190,7 +1203,7 @@ def _transcribe_service(
             data = {
                 "temperature": WHISPER_TEMPERATURE,
                 "temperature_inc": WHISPER_TEMPERATURE_INC,
-                "response_format": WHISPER_RESPONSE_FORMAT,
+                "response_format": WHISPER_OUTPUT_FORMAT,
             }
             if WHISPER_LANGUAGE:
                 data["language"] = WHISPER_LANGUAGE
