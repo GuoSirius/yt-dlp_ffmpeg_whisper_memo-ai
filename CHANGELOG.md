@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.16] - 2026-06-12
+
+### Bug Fixes
+
+- npm 包缺少 console-ui.mjs 导致运行时模块找不到 (`24a8451`)
+
+
 ## [1.2.15] - 2026-06-12
 
 _No changes._
