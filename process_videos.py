@@ -792,6 +792,8 @@ def step_analyze(
 
 通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}"""
     )
+    # dotenv 不解析 \n \t 转义，需要手动替换（来自 .env 的字面量 \n 转为真正换行）
+    prompt_tpl = prompt_tpl.replace("\\n", "\n").replace("\\t", "\t")
     ai_timeout = timeout
 
     if not api_key or not base_url or not model:
