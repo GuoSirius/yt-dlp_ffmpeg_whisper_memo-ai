@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.13] - 2026-06-12
+
+### Documentation
+
+- update (`51b9146`)
+
+
 ## [1.2.12] - 2026-06-12
 
 ### Chores
