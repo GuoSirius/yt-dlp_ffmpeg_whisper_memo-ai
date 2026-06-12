@@ -61,18 +61,18 @@ const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE || 'ffprobe';
 // ── Whisper 共享参数（local 和 service 通用） ──
 const WHISPER_BACKEND = process.env.WHISPER_BACKEND || 'local';
-const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';          // 模型名: tiny/base/small/medium/large-v3/turbo
-const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';         // 语言: 设 zh 避免繁体混入
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || '0.0';
 const WHISPER_TEMPERATURE_INC = process.env.WHISPER_TEMPERATURE_INC || '0.2';
-const WHISPER_OUTPUT_FORMAT = process.env.WHISPER_OUTPUT_FORMAT || 'txt'; // 输出格式: txt/vtt/srt/tsv/json/all
+const WHISPER_OUTPUT_FORMAT = process.env.WHISPER_OUTPUT_FORMAT || 'json'; // 输出格式: txt/vtt/srt/tsv/json/all (服务端映射到 response_format)
 
 // ── Whisper 服务模式参数（独有） ──
 const WHISPER_SERVICE = process.env.WHISPER_SERVICE || 'http://localhost:9588';
 const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 模型路径 (/load)，留空=使用服务端默认
 
 // ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
-const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型下载目录
+const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';            // 模型名: tiny/base/small/medium/large-v3/turbo
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';           // 语言: 设 zh 避免繁体混入; 留空=自动检测
+const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || '5';         // beam 宽度 (温度=0 时生效, 越大越准)
 const WHISPER_BEST_OF = process.env.WHISPER_BEST_OF || '5';             // 候选数 (温度>0 时生效)
@@ -1111,9 +1111,15 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const fileSizeMB = (fs.statSync(audioFile).size / (1024 * 1024)).toFixed(1);
   const dur = getDuration(audioFile);
   const durStr = dur ? `, 时长 ${Math.floor(dur / 60)}:${(dur % 60).toFixed(0).padStart(2, '0')}` : '';
-  const modelLabel = WHISPER_MODEL;
-  const langLabel = WHISPER_LANGUAGE || 'auto';
   const modeLabel = WHISPER_BACKEND === 'local' ? 'local' : 'service';
+  let modelLabel, langLabel;
+  if (WHISPER_BACKEND === 'local') {
+    modelLabel = WHISPER_MODEL;
+    langLabel = WHISPER_LANGUAGE || 'auto';
+  } else {
+    modelLabel = WHISPER_SERVICE_MODEL ? path.basename(WHISPER_SERVICE_MODEL) : '(default)';
+    langLabel = 'auto';
+  }
   lockedPrint(styleStart(`[${stem}] 开始语音识别 [${modeLabel}/${modelLabel}/${langLabel}/T${WHISPER_TEMPERATURE}] (${fileSizeMB}MB${durStr})`));
 
   startSpinner(`[${stem}] 识别中`);
@@ -1210,7 +1216,6 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       form.append('temperature', WHISPER_TEMPERATURE);
       form.append('temperature_inc', WHISPER_TEMPERATURE_INC);
       form.append('response_format', WHISPER_OUTPUT_FORMAT);
-      if (WHISPER_LANGUAGE) form.append('language', WHISPER_LANGUAGE);
 
       const controller = new AbortController();
       let timer;

@@ -95,11 +95,9 @@ FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE", "ffprobe")
 # ── Whisper 共享参数（local 和 service 通用） ──
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "local")  # "service" 或 "local"
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: 设 zh 避免繁体混入
 WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")  # 推理温度 (0.0~1.0)
 WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")  # 温度增量 (fallback 时升温步长)
-WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "txt")  # 输出格式: txt/vtt/srt/tsv/json/all
+WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "json")  # 输出格式: txt/vtt/srt/tsv/json/all (服务端映射到 response_format)
 
 # ── Whisper 服务模式参数（独有） ──
 WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服务地址
@@ -107,7 +105,9 @@ WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服�
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
 
 # ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
-WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
+WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
 WHISPER_BEAM_SIZE = os.getenv("WHISPER_BEAM_SIZE", "5")  # beam 宽度 (温度=0 时生效, 越大越准)
 WHISPER_BEST_OF = os.getenv("WHISPER_BEST_OF", "5")  # 候选数 (温度>0 时生效)
@@ -1085,9 +1085,13 @@ def step_transcribe(
         return None, 0, msg
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
-    model_label = WHISPER_MODEL
-    lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
     mode_label = "local" if WHISPER_BACKEND == "local" else "service"
+    if WHISPER_BACKEND == "local":
+        model_label = WHISPER_MODEL
+        lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+    else:
+        model_label = Path(WHISPER_SERVICE_MODEL).name if WHISPER_SERVICE_MODEL else "(default)"
+        lang_label = "auto"
     with _print_lock:
         print(f"  [{stem}] {c('magenta', '开始识别')} [{mode_label}/{model_label}/{lang_label}/T{WHISPER_TEMPERATURE}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
@@ -1205,8 +1209,6 @@ def _transcribe_service(
                 "temperature_inc": WHISPER_TEMPERATURE_INC,
                 "response_format": WHISPER_OUTPUT_FORMAT,
             }
-            if WHISPER_LANGUAGE:
-                data["language"] = WHISPER_LANGUAGE
             resp = requests.post(
                 f"{WHISPER_SERVICE}/inference",
                 files={"file": (audio_file.name, f, "audio/wav")},
