@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.18] - 2026-06-12
+
+### Bug Fixes
+
+- whisper 预检在中文 Windows GBK 编码下 UnicodeEncodeError — execSync/subprocess 添加 PYTHONIOENCODING=utf-8 (`2e06a04`)
+
+### Documentation
+
+- update (`225b1ef`)
+
+
 ## [1.2.17] - 2026-06-12
 
 ### Bug Fixes
