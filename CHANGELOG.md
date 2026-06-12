@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.21] - 2026-06-12
+
+### Bug Fixes
+
+- dotenv 读取 \n 转义未解析导致 AI prompt 格式错乱 (`c05da81`)
+
+### Chores
+
+- update before release (`b74fb99`)
+
+
 ## [1.2.20] - 2026-06-12
 
 ### Features
