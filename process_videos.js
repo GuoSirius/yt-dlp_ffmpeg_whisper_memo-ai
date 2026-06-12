@@ -24,6 +24,13 @@ import { fileURLToPath } from 'url';
 import { program } from 'commander';
 import { select, input } from '@inquirer/prompts';
 
+// 控制台单行动态显示
+import {
+  updateLine, clearLine, fmtSize, fmtTime, fmtSpeed, textBar,
+  startSpinner, stopSpinner,
+  parseYtdlpLine, parseFfmpegProgress, resetFfmpegState,
+} from './console-ui.mjs';
+
 // --env-file 需在 dotenv 加载前解析
 let _dotenvPath = '.env';
 const _envFileIdx = process.argv.indexOf('--env-file');
@@ -701,10 +708,13 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
     });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill();
-      reject(Object.assign(new Error(`Timeout after ${timeout}s`), { name: 'TimeoutError', code: 'ETIMEDOUT' }));
-    }, timeout * 1000);
+    let timer;
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        child.kill();
+        reject(Object.assign(new Error(`Timeout after ${timeout}s`), { name: 'TimeoutError', code: 'ETIMEDOUT' }));
+      }, timeout * 1000);
+    }
 
     if (onProgress) {
       // 同时监听 stdout 和 stderr — yt-dlp --newline 的 [download] 进度输出在 stdout
@@ -719,12 +729,12 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
     }
 
     child.on('close', code => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (code === 0) resolve({ stdout, stderr });
       else reject(Object.assign(new Error(`Exit code ${code}`), { code, stderr }));
     });
     child.on('error', err => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       reject(err);
     });
   });
@@ -755,51 +765,50 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     temperature: aiTemperature,
   });
 
-  let lastErr = null;
-  const maxAttempts = maxRetries + 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let done = false;
-    const analyzeStart = Date.now();
-    const progressInterval = setInterval(() => {
-      if (!done) {
-        const elapsed = ((Date.now() - analyzeStart) / 1000).toFixed(0);
-        lockedPrint(`  [${label}] ${c('cyan', 'AI 分析中')}... ${elapsed}s`);
-      }
-    }, 5000);
-
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), aiTimeout * 1000);
-      const resp = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: payload,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      done = true;
-      clearInterval(progressInterval);
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
-      }
-      const body = await resp.json();
-      const content = body.choices?.[0]?.message?.content || '';
-      return { text: content.trim(), retries: attempt, error: null };
-    } catch (e) {
-      done = true;
-      clearInterval(progressInterval);
-      lastErr = String(e.message).slice(0, 500);
-      if (attempt < maxAttempts - 1) {
-        const delay = Math.min(retryDelay * Math.pow(2, attempt), 30);
-        lockedPrint(`  [${label}] ${styleWarn(`AI 分析第 ${attempt + 1} 次尝试失败`)}: ${lastErr.slice(0, 100)}, ${delay}s 后重试...`);
-        await sleep(delay * 1000);
-      }
-    }
+  startSpinner(`[${label}] AI 分析中`);
+  let result;
+  try {
+    const { text: aiText, retries, error } = await retryCall(
+      async () => {
+        const controller = new AbortController();
+        let timer;
+        if (aiTimeout > 0) {
+          timer = setTimeout(() => controller.abort(), aiTimeout * 1000);
+        }
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
+        }
+        const body = await resp.json();
+        const content = body.choices?.[0]?.message?.content || '';
+        return { text: content.trim(), retries: 0, error: null };
+      },
+      maxRetries,
+      retryDelay,
+      label
+    );
+    result = { text: aiText, retries, error };
+  } catch (e) {
+    result = { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+  } finally {
+    stopSpinner();
   }
-  return { text: null, retries: maxAttempts, error: `AI analysis failed after ${maxAttempts} retries: ${lastErr}` };
+
+  if (result.text) {
+    lockedPrint(styleDone(`[${label}] AI 分析完成 (${result.text.length} 字符)`));
+  } else {
+    lockedPrint(styleFail(`[${label}] AI 分析失败: ${result.error}`));
+  }
+  return result;
 }
 
 // ============================== 清理残留文件 ==============================
@@ -824,58 +833,6 @@ function cleanupPartials(dlDir, stem) {
 }
 
 // ============================== 下载 ==============================
-function parseYtdlpProgress(line, state) {
-  // 检测下载阶段变更：[download] 或 [Merger] 或 [ExtractAudio]
-  const stage = parseYtdlpStage(line, state);
-  if (stage) return stage;
-
-  // Parse yt-dlp progress lines like:
-  //   "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
-  //   "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
-  const m = line.match(/\[download\]\s+([\d.]+%)\s+of\s+~?\s*([\d.]+[KMG]iB)/);
-  if (!m) return null;
-  const pct  = m[1];                // e.g. "12.3%"
-  const size = m[2];                // e.g. "50.00MiB"
-  const spd  = (line.match(/at\s+([\d.]+ ?[KMG]?i?B\/s)/) || [])[1] || '?';
-  const eta  = (line.match(/ETA\s+([\d:]+)/) || [])[1] || '?';
-  return `DL ${pct} of ${size} @ ${spd} ETA ${eta}`;
-}
-
-/**
- * 解析 yt-dlp 阶段变更（视频/音频/合并）
- * @param {string} line - yt-dlp 输出单行
- * @param {{phase:string, destCount:number}} state - 下载状态（可变对象）
- * @returns {string|null} 格式化阶段提示 或 null
- */
-function parseYtdlpStage(line, state) {
-  // 检测新下载开始 (Destination:)
-  const destMatch = line.match(/\[download\]\s+Destination:/);
-  if (destMatch) {
-    state.destCount++;
-    // 第 1 次 = video, 第 2 次 = audio（yt-dlp bestvideo+bestaudio 固定顺序）
-    const phase = state.destCount === 1 ? 'video' : 'audio';
-    state.phase = phase;
-    return `${c('cyan', `📥 [${phase}]`)} 开始下载`;
-  }
-
-  // 检测下载完成：yt-dlp 100% 行可能带小数 (100.0%)
-  const doneMatch = line.match(/\[download\]\s+[\d.]+%\s+of/);
-  if (doneMatch && state.phase) {
-    const phase = state.phase;
-    return `${c('green', `📥 [${phase}]`)} 下载完成`;
-  }
-
-  // 检测合并开始
-  const mergeMatch = line.match(/\[(?:Merger|ffmpeg)\]\s*(?:Merging formats into|合并).*/);
-  if (mergeMatch) {
-    state.phase = 'merge';
-    return `${c('cyan', '🔗 [merge]')} 开始合并`;
-  }
-
-  return null;
-}
-
-/** 格式化耗时（精确到秒） */
 function fmtElapsed(ms) {
   const sec = Math.round(ms / 1000);
   if (sec < 60) return `${sec}s`;
@@ -894,7 +851,7 @@ function fmtDuration(sec) {
   return `${h}:${String(rm).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 600) {
+async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeout = 1800) {
   const { pkey, vid } = getVideoId(row);
   const stem = stemName(row, sheetName);
 
@@ -956,29 +913,43 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   const env = { ...process.env, ...extraEnv };
 
   const downloadStart = Date.now();
-  const dlState = { phase: '', destCount: 0 };
-  let lastProgress = '';
+  let lastPercent = -1;
   async function doDownload() {
     const { stdout, stderr } = await spawnWithTimeout(YTDLP, args, timeout, {
       env,
       onProgress: line => {
-        const prog = parseYtdlpProgress(line, dlState);
-        if (prog && prog !== lastProgress) {
-          lastProgress = prog;
-          lockedPrint(`  [${stem}] ${prog}`);
+        const parsed = parseYtdlpLine(line);
+        if (!parsed) return;
+        if (parsed.type === 'dest') {
+          updateLine(`  [${stem}] ↓ 下载 ${parsed.ext}...`);
+        } else if (parsed.type === 'merge') {
+          updateLine(`  [${stem}] ↔ 合并中...`);
+        } else if (parsed.type === 'progress') {
+          const pct = Math.round(parsed.percent);
+          if (pct === lastPercent) return; // skip duplicate updates
+          lastPercent = pct;
+          const bar = textBar(parsed.percent, 20);
+          const sizeStr = `${parsed.downloaded}${parsed.downloadedUnit}`;
+          const speedStr = parsed.speed > 0 ? `${parsed.speed}${parsed.speedUnit}/s` : '---';
+          const etaStr = parsed.eta || '--:--';
+          updateLine(`  [${stem}] ${bar} ${parsed.percent}% | ${sizeStr} @ ${speedStr} | ETA ${etaStr}`);
         }
       },
     });
-    // spawnWithTimeout already rejects on non-zero exit code, no need for stderr check
   }
 
   try {
     await retryCall(doDownload, maxRetries, retryDelay, stem);
   } catch (e) {
+    clearLine();
+    process.stderr.write('\n');
     const errMsg = (e.stderr || e.message || '').slice(-2000);
     lockedPrint(styleFail(`[${stem}] 下载失败: ${errMsg.slice(0, 200)}`));
     return { file: null, retries: maxRetries, error: errMsg.slice(0, 500) };
   }
+
+  clearLine();
+  process.stderr.write('\n');
 
   const elapsed = Date.now() - downloadStart;
   const downloaded = findDownloadedFile(dlDir, stem);
@@ -1007,7 +978,7 @@ function getDuration(filepath) {
   }
 }
 
-async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, timeout = 600) {
+async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, timeout = 1200) {
   const tcDir = path.join(TRANSCODED_DIR, sheetName);
   fs.mkdirSync(tcDir, { recursive: true });
   const stem = path.parse(srcFile).name;
@@ -1032,50 +1003,50 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
   }
 
   const transcodeStart = Date.now();
+  resetFfmpegState();
 
   async function doTranscode() {
-    const args = ['-y', '-i', srcFile, ...FFMPEG_TRANSCODE_ARGS, outFile];
+    const args = [
+      '-y', '-i', srcFile,
+      '-progress', 'pipe:1', '-nostats',
+      ...FFMPEG_TRANSCODE_ARGS, outFile,
+    ];
     const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
-    let lastProgress = '';
+    let lastPct = -1;
 
-    child.stderr.on('data', d => {
-      stderr += d.toString();
-      // Parse ffmpeg progress
-      const match = stderr.match(/time=(\d+):(\d+):(\d+\.?\d*)/g);
-      if (match) {
-        const last = match[match.length - 1];
-        const m = last.match(/time=(\d+):(\d+):(\d+\.?\d*)/);
-        if (m) {
-          const elapsed = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
-          let progress;
-          if (totalDur && totalDur > 0) {
-            const pct = Math.min(100, (elapsed / totalDur * 100)).toFixed(1);
-            progress = `${pct}% (${Math.floor(elapsed)}s/${Math.floor(totalDur)}s)`;
-          } else {
-            progress = `${elapsed.toFixed(1)}s`;
-          }
-          if (progress !== lastProgress) {
-            lockedPrint(`  [${stem}] ${c('cyan', '转码中')} ${progress}`);
-            lastProgress = progress;
-          }
-        }
+    // Parse stdout for progress ( pipe:1 sends progress to stdout)
+    const rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+    rlOut.on('line', line => {
+      const prog = parseFfmpegProgress(line, totalDur);
+      if (prog && prog.percent !== lastPct) {
+        lastPct = prog.percent;
+        const bar = textBar(prog.percent, 20);
+        const elapsedStr = fmtTime(prog.elapsed);
+        const sizeStr = prog.totalSize > 0 ? fmtSize(prog.totalSize) : '';
+        const speedStr = prog.speed > 0 ? `${prog.speed.toFixed(1)}x` : '';
+        updateLine(`  [${stem}] ${bar} ${prog.percent}% | ${elapsedStr} ${sizeStr} ${speedStr}`);
       }
     });
 
+    child.stderr.on('data', d => { stderr += d.toString(); });
+
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(Object.assign(new Error(`Transcode timeout after ${timeout}s`), { name: 'TimeoutError' }));
-      }, timeout * 1000);
+      let timer;
+      if (timeout > 0) {
+        timer = setTimeout(() => {
+          child.kill();
+          reject(Object.assign(new Error(`Transcode timeout after ${timeout}s`), { name: 'TimeoutError' }));
+        }, timeout * 1000);
+      }
 
       child.on('close', code => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         if (code === 0) resolve();
         else reject(Object.assign(new Error(`ffmpeg exit code ${code}`), { stderr }));
       });
       child.on('error', err => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(err);
       });
     });
@@ -1083,12 +1054,16 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 
   try {
     await retryCall(doTranscode, maxRetries, retryDelay, stem);
+    clearLine();
+    process.stderr.write('\n');
     const elapsed = Date.now() - transcodeStart;
     const sizeMB = (fs.statSync(outFile).size / 1024 / 1024).toFixed(1);
     const durStr = totalDur ? `, ${fmtDuration(totalDur)}` : '';
     lockedPrint(styleDone(`[${stem}] 转码完成 -> ${path.basename(outFile)} (${sizeMB} MB, ${fmtElapsed(elapsed)}${durStr})`));
     return { file: outFile, retries: 0, error: null };
   } catch (e) {
+    clearLine();
+    process.stderr.write('\n');
     const errMsg = (e.stderr || e.message || '').slice(-2000);
     lockedPrint(styleFail(`[${stem}] 转码失败: ${errMsg.slice(0, 200)}`));
     return { file: null, retries: maxRetries, error: errMsg.slice(0, 500) };
@@ -1096,7 +1071,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 }
 
 // ============================== 识别 ==============================
-async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 1200) {
+async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const stem = path.parse(audioFile).name;
 
   const whisperOk = await checkWhisperAvailable();
@@ -1117,15 +1092,28 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 1200)
     lockedPrint(styleStart(`[${stem}] 开始语音识别 [service(${modelLabel})] (${fileSizeMB}MB${durStr})`));
   }
 
-  if (WHISPER_BACKEND === 'local') {
-    return transcribeLocal(audioFile, stem, maxRetries, retryDelay);
-  } else {
-    return transcribeService(audioFile, stem, maxRetries, retryDelay, timeout);
+  startSpinner(`[${stem}] 识别中`);
+  let result;
+  try {
+    if (WHISPER_BACKEND === 'local') {
+      result = await transcribeLocal(audioFile, stem, maxRetries, retryDelay);
+    } else {
+      result = await transcribeService(audioFile, stem, maxRetries, retryDelay, timeout);
+    }
+  } finally {
+    stopSpinner();
   }
+
+  if (result.text) {
+    const elapsed = result.retries > 0 ? '' : '';
+    lockedPrint(styleDone(`[${stem}] 识别完成 (${result.text.length} 字符)`));
+  } else {
+    lockedPrint(styleFail(`[${stem}] 识别失败: ${result.error}`));
+  }
+  return result;
 }
 
-async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout = 1200) {
-  const startTime = Date.now();
+async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
   const outDir = path.dirname(audioFile);
 
   async function doTranscribe() {
@@ -1148,26 +1136,14 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
 
   try {
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(styleDone(`[${stem}] 识别完成 (${elapsed}s, ${text.length} 字符)`));
     return { text, retries: 0, error: null };
   } catch (e) {
-    lockedPrint(styleFail(`[${stem}] 识别失败: ${e.message}`));
     return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
   }
 }
 
-async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeout = 1200) {
-  const startTime = Date.now();
-  let done = false;
-  const progressInterval = setInterval(() => {
-    if (!done) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-      lockedPrint(`  [${stem}] ${c('magenta', '识别中')}... ${elapsed}s`);
-    }
-  }, 5000);
-
+async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
   async function doTranscribe() {
     try {
       // Switch model if needed
@@ -1193,7 +1169,10 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
       form.append('response_format', WHISPER_RESPONSE_FORMAT);
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout * 1000);
+      let timer;
+      if (timeout > 0) {
+        timer = setTimeout(() => controller.abort(), timeout * 1000);
+      }
       const resp = await fetch(`${WHISPER_SERVICE}/inference`, {
         method: 'POST',
         body: form,
@@ -1212,16 +1191,10 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
 
   try {
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
     if (error) return { text: null, retries: retriesUsed, error };
-    lockedPrint(styleDone(`[${stem}] 识别完成 (${elapsed}s, ${text.length} 字符)`));
     return { text, retries: 0, error: null };
   } catch (e) {
-    lockedPrint(styleFail(`[${stem}] 识别失败: ${e.message}`));
     return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
-  } finally {
-    done = true;
-    clearInterval(progressInterval);
   }
 }
 
@@ -1440,8 +1413,8 @@ async function checkAndConfirmEnv(envCheck, dryRun, confirmMsg) {
 
 // ============================== 单任务处理 ==============================
 async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, force,
-  whisperAvailable, positionLabel = '', downloadTimeout = 600, transcodeTimeout = 600,
-  transcribeTimeout = 1200, analyzeTimeout = 300) {
+  whisperAvailable, positionLabel = '', downloadTimeout = 1800, transcodeTimeout = 1200,
+  transcribeTimeout = 0, analyzeTimeout = 300) {
 
   const preContent = row.preContent || null;
 
@@ -2481,10 +2454,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--concurrency <n>', '并发数，默认 1', v => parseInt(v, 10), 1)
     .option('--retry <n>', '每步失败最大重试次数，默认 0', v => parseInt(v, 10), 0)
     .option('--retry-delay <n>', '重试间隔基数（秒），默认 5', v => parseFloat(v), 5.0)
-    .option('--download-timeout <n>', '下载超时（秒），默认 600', v => parseInt(v, 10), 600)
-    .option('--transcode-timeout <n>', '转码超时（秒），默认 600', v => parseInt(v, 10), 600)
-    .option('--transcribe-timeout <n>', '识别超时（秒），默认 1200', v => parseInt(v, 10), 1200)
-    .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', v => parseInt(v, 10), 300)
+    .option('--download-timeout <n>', '下载超时（秒），默认 1800（30分钟），设为 0 则不限制', v => parseInt(v, 10), 1800)
+    .option('--transcode-timeout <n>', '转码超时（秒），默认 1200（20分钟），设为 0 则不限制', v => parseInt(v, 10), 1200)
+    .option('--transcribe-timeout <n>', '识别超时（秒），默认 0（不限制），设为 >0 则启用超时', v => parseInt(v, 10), 0)
+    .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300（5分钟），设为 0 则不限制', v => parseInt(v, 10), 300)
     .option('--dry-run', '干跑模式，只列任务不执行')
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')

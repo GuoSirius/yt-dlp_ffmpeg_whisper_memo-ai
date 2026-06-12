@@ -300,14 +300,14 @@ node process_videos.js --retry-failed reports/YouTube视频/report_20260610_1430
 每个步骤都有独立超时，超时后自动 kill 子进程、标记失败并继续执行后续任务：
 
 ```bash
-# 自定义超时（单位秒）
+# 自定义超时（单位秒，设为 0 表示不限制）
 node process_videos.js \
-    --download-timeout 900 \    # 下载 15 分钟
-    --transcode-timeout 600 \   # 转码 10 分钟
-    --transcribe-timeout 1200 \ # 识别 20 分钟
+    --download-timeout 1800 \   # 下载 30 分钟
+    --transcode-timeout 1200 \  # 转码 20 分钟
+    --transcribe-timeout 0 \    # 识别 不限制
     --analyze-timeout 300       # AI 分析 5 分钟
 
-# 默认值：下载 600s / 转码 600s / 识别 1200s / AI 分析 300s
+# 默认值：下载 1800s / 转码 1200s / 识别 0(不限制) / AI 分析 300s
 ```
 
 - 超时属于**可重试错误**，会触发指数退避重试（`--retry` 控制次数）
@@ -447,10 +447,10 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | `--concurrency <n>` | int | 1 | 并发数，建议 2~3 |
 | `--retry <n>` | int | 0 | 每步失败最大重试次数 |
 | `--retry-delay <n>` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
-| `--download-timeout <n>` | int | 600 | 单个下载任务最长执行时间（秒） |
-| `--transcode-timeout <n>` | int | 600 | 单个转码任务最长执行时间（秒） |
-| `--transcribe-timeout <n>` | int | 1200 | 单个识别任务最长执行时间（秒） |
-| `--analyze-timeout <n>` | int | 300 | 单个 AI 分析任务最长执行时间（秒） |
+| `--download-timeout <n>` | int | 1800 | 单个下载任务最长执行时间（秒），0=不限制 |
+| `--transcode-timeout <n>` | int | 1200 | 单个转码任务最长执行时间（秒），0=不限制 |
+| `--transcribe-timeout <n>` | int | 0 | 单个识别任务最长执行时间（秒），0=不限制 |
+| `--analyze-timeout <n>` | int | 300 | 单个 AI 分析任务最长执行时间（秒），0=不限制 |
 | `--dry-run` | flag | off | 干跑模式，只列任务不执行 |
 | `--retry-failed <path>` | path | — | 从报告 JSON 重跑失败项（如 `reports/YouTube视频/report_xxx.json`） |
 | `--init` | flag | off | 复制 .env.example 到当前目录并重命名为 .env |

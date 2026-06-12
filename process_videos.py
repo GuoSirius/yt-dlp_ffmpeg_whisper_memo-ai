@@ -58,6 +58,13 @@ import requests
 import pandas as pd
 from openpyxl import load_workbook
 
+# ── 控制台单行动态显示 ──
+from console_ui import (
+    update_line, clear_line, text_bar, Spinner,
+    parse_ytdlp_line, parse_ffmpeg_progress, reset_ffmpeg_state,
+    fmt_size, fmt_time, fmt_speed,
+)
+
 # --env-file 需在 load_dotenv 之前解析
 _env_file = ".env"
 if "--env-file" in sys.argv:
@@ -622,10 +629,8 @@ def retry_call(fn, *args, max_retries: int = 3, base_delay: float = 5.0,
 
 def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600, extra_env: dict[str, str] | None = None):
     """
-    执行命令并实时输出进度。
-    同步读取 stdout（已合并 stderr），免除线程竞态。
-    parser_fn 接收每一行，返回进度字符串或 None。
-    extra_env 会合并到当前环境变量中（优先于默认值）。
+    执行命令并实时输出进度（单行动态刷新）。
+    parser_fn 接收每一行，返回进度字符串（使用 ANSI escape 单行刷新）。
     返回 (完整输出, returncode)。
     """
     env = os.environ.copy()
@@ -642,52 +647,50 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600,
 
     output_lines: list[str] = []
     last_progress = ""
-    last_print_time = 0.0
     start = time.monotonic()
 
     for line in proc.stdout:
         output_lines.append(line)
         progress = parser_fn(line)
         if progress:
-            now = time.monotonic()
-            # 进度变化或距上次打印超过 2s 时输出
-            if progress != last_progress or now - last_print_time > 2:
-                print(f"  [{label}] {progress}", flush=True)
-                last_progress = progress
-                last_print_time = now
+            # 单行动态刷新，不换行
+            update_line(f"  [{label}] {progress}")
+            last_progress = progress
 
         # 同步超时检测：每读一行检查一次
-        if time.monotonic() - start > timeout:
+        if timeout > 0 and time.monotonic() - start > timeout:
             proc.kill()
             proc.wait()
+            clear_line()
+            sys.stderr.write('\n')
             raise subprocess.TimeoutExpired(cmd, timeout, output="".join(output_lines))
 
     proc.wait()
+    # 进度完成，清除当前行并换行
+    clear_line()
+    sys.stderr.write('\n')
     return "".join(output_lines), proc.returncode
 
 
 def parse_ytdlp_progress(line: str) -> str | None:
-    """解析 yt-dlp 进度行。返回进度描述，非进度行返回 None。
-    格式适配:
-      "[download]  12.3% of ~50.00MiB at  2.5MiB/s ETA 00:15"
-      "[download]   0.0% of   61.66MiB at  Unknown B/s ETA Unknown"
+    """解析 yt-dlp 进度行，返回单行进度字符串（含进度条）。
+    使用 console_ui.parse_ytdlp_line 做结构化解析，再用 text_bar 格式化。
     """
-    m = re.search(r'\[download\]\s+([\d.]+%)\s+of\s+~?\s*([\d.]+[KMG]iB)', line)
-    if not m:
-        if "[download] Destination:" in line:
-            return "写入文件..."
-        if "[ExtractAudio]" in line or "[Merger]" in line or "[ffmpeg]" in line:
-            return "合并音视频..."
-        if "downloading webpage" in line.lower() or "[youtube]" in line:
-            return "解析页面..."
+    parsed = parse_ytdlp_line(line)
+    if not parsed:
         return None
-    pct  = m.group(1)       # e.g. "12.3%"
-    size = m.group(2)       # e.g. "50.00MiB"
-    spd_m = re.search(r'at\s+([\d.]+ ?[KMG]?i?B/s)', line)
-    spd = spd_m.group(1) if spd_m else "?"
-    eta_m = re.search(r'ETA\s+([\d:]+)', line)
-    eta = eta_m.group(1) if eta_m else "?"
-    return f"DL {pct} of {size} @ {spd} ETA {eta}"
+    if parsed['type'] == 'dest':
+        return f"↓ 下载 {parsed['ext']}..."
+    if parsed['type'] == 'merge':
+        return "↔ 合并中..."
+    if parsed['type'] == 'progress':
+        pct = parsed['percent']
+        bar = text_bar(pct, 18)
+        size_str = f"{parsed['downloaded']}{parsed['downloaded_unit']}"
+        speed_str = f"{parsed['speed']}{parsed['speed_unit']}/s" if parsed['speed'] > 0 else '---'
+        eta_str = parsed['eta'] or '--:--'
+        return f"{bar} {pct}% | {size_str} @ {speed_str} | ETA {eta_str}"
+    return None
 
 
 def get_duration(filepath: Path) -> float | None:
@@ -707,22 +710,19 @@ def get_duration(filepath: Path) -> float | None:
 
 
 def make_ffmpeg_parser(total_duration: float | None) -> callable:
-    """根据总时长创建 ffmpeg 进度解析器。"""
+    """根据总时长创建 ffmpeg 进度解析器（使用 -progress pipe:1 格式）"""
     def _parse(line: str) -> str | None:
-        m = re.search(r"time=(\d+):(\d+):(\d+\.?\d*)", line)
-        if m:
-            h, mm, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
-            elapsed = h * 3600 + mm * 60 + s
-            if total_duration and total_duration > 0:
-                pct = min(100, elapsed / total_duration * 100)
-                return f"{pct:.1f}% ({int(elapsed)}s/{int(total_duration)}s)"
-            else:
-                return f"{elapsed:.1f}s"
-        # ffmpeg 转码完成时 silence 等最后一行
-        if "size=" in line and "time=" in line:
-            # 这是最后的状态行
-            pass
-        return None
+        prog = parse_ffmpeg_progress(line, total_duration or 0)
+        if not prog:
+            return None
+        bar = text_bar(prog['percent'], 18)
+        elapsed_str = f"{int(prog['elapsed'] // 60):02d}:{int(prog['elapsed'] % 60):02d}"
+        parts = [f"{bar} {prog['percent']}% | {elapsed_str}"]
+        if prog.get('total_size', 0) > 0:
+            parts.append(fmt_size(prog['total_size']))
+        if prog.get('speed', 0) > 0:
+            parts.append(f"{prog['speed']:.1f}x")
+        return " ".join(parts)
     return _parse
 
 
@@ -774,41 +774,34 @@ def step_analyze(
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     last_err = None
-    for attempt in range(1, max_retries + 2):  # 首次 + max_retries 次重试
-        done = [False]
-        analyze_start = time.monotonic()
-
-        def _progress_reporter():
-            """每隔 5 秒打印已用时间"""
-            while not done[0]:
-                time.sleep(5)
-                if not done[0]:
-                    elapsed = time.monotonic() - analyze_start
-                    with _print_lock:
-                        print(f"  [{label}] {c('green', 'AI 分析中')}... {elapsed:.0f}s", flush=True)
-
-        reporter = Thread(target=_progress_reporter, daemon=True)
-        reporter.start()
-
-        try:
-            with urllib.request.urlopen(req, timeout=ai_timeout) as resp:
-                body = _json.loads(resp.read().decode("utf-8"))
-            done[0] = True
-            reporter.join(timeout=1)
-            content = body["choices"][0]["message"]["content"]
-            return content.strip(), (attempt - 1), None
-        except Exception as e:
-            done[0] = True
-            reporter.join(timeout=1)
-            err_str = str(e)[:500]
-            last_err = err_str
-            if attempt <= max_retries + 1:
-                sleep_sec = retry_delay * (2 ** (attempt - 1))
+    spinner = Spinner()
+    spinner.start(f"[{label}] AI 分析中")
+    try:
+        for attempt in range(1, max_retries + 2):  # 首次 + max_retries 次重试
+            try:
+                with urllib.request.urlopen(req, timeout=ai_timeout if ai_timeout > 0 else None) as resp:
+                    body = _json.loads(resp.read().decode("utf-8"))
+                content = body["choices"][0]["message"]["content"]
+                result = content.strip(), (attempt - 1), None
+                spinner.stop()
                 with _print_lock:
-                    print(f"  [{label}] AI 第 {attempt} 次{c('red', '失败')}：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
-                time.sleep(min(sleep_sec, 30))
-            else:
-                break
+                    print(f"  [{label}] {c('green', 'AI 分析完成')} ({len(result[0])} 字符)", flush=True)
+                return result
+            except Exception as e:
+                err_str = str(e)[:500]
+                last_err = err_str
+                if attempt <= max_retries:  # 还有重试机会
+                    sleep_sec = retry_delay * (2 ** (attempt - 1))
+                    with _print_lock:
+                        print(f"  [{label}] AI 第 {attempt} 次{c('red', '失败')}：{err_str[:100]}，{sleep_sec:.0f}s 后重试...", flush=True)
+                    # 重试前重启 spinner
+                    spinner.stop()
+                    time.sleep(min(sleep_sec, 30))
+                    spinner.start(f"[{label}] AI 分析中")
+                else:
+                    break
+    finally:
+        spinner.stop()
 
     return None, max_retries + 1, f"AI 分析失败（重试 {max_retries+1} 次）：{last_err}"
 
@@ -829,7 +822,7 @@ def _cleanup_partial_files(dl_dir: Path, stem: str) -> None:
 def step_download(
     row: pd.Series, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
-    timeout: int = 600,
+    timeout: int = 1800,
 ) -> tuple[Path | None, int, str | None]:
     """下载视频。返回 (文件路径, 重试次数, 错误信息)"""
     pkey, vid = get_video_id(row)
@@ -942,7 +935,7 @@ def step_download(
 def step_transcode(
     src_file: Path, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
-    timeout: int = 600,
+    timeout: int = 1200,
     out_stem: str | None = None,
 ) -> tuple[Path | None, int, str | None]:
     """转码。返回 (转码文件路径, 重试次数, 错误信息)"""
@@ -968,10 +961,11 @@ def step_transcode(
     # 获取源文件时长用于百分比计算
     total_dur = get_duration(src_file)
     transcode_start = time.monotonic()
+    reset_ffmpeg_state()
 
     def _run():
         parser = make_ffmpeg_parser(total_dur)
-        cmd = [FFMPEG, "-y", "-i", str(src_file)] + FFMPEG_TRANSCODE_ARGS + [str(out_file)]
+        cmd = [FFMPEG, "-y", "-i", str(src_file), "-progress", "pipe:1", "-nostats"] + FFMPEG_TRANSCODE_ARGS + [str(out_file)]
         stderr_text, rc = run_with_progress(cmd, stem, parser, timeout=timeout)
         if rc != 0:
             raise subprocess.CalledProcessError(rc, cmd, stderr=stderr_text)
@@ -1062,7 +1056,7 @@ def check_environment(steps: list[str]) -> dict:
 def step_transcribe(
     audio_file: Path,
     max_retries: int, retry_delay: float,
-    timeout: int = 1200,
+    timeout: int = 0,
 ) -> tuple[str | None, int, str | None]:
     """调用 whisper 识别（支持 service 和 local 两种后端）。返回 (文本, 重试次数, 错误信息)"""
     stem = audio_file.stem
@@ -1084,10 +1078,22 @@ def step_transcribe(
             backend_label = f"服务({model_label})"
         print(f"  [{stem}] {c('magenta', '开始识别')} [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
-    if WHISPER_BACKEND == "local":
-        return _transcribe_local(audio_file, stem, max_retries, retry_delay)
+    spinner = Spinner()
+    spinner.start(f"[{stem}] 识别中")
+    try:
+        if WHISPER_BACKEND == "local":
+            text, retries, err = _transcribe_local(audio_file, stem, max_retries, retry_delay)
+        else:
+            text, retries, err = _transcribe_service(audio_file, stem, max_retries, retry_delay, timeout)
+    finally:
+        spinner.stop()
+
+    if text:
+        with _print_lock:
+            print(f"  [{stem}] {c('green', '识别完成')} ({len(text)} 字符)", flush=True)
     else:
-        return _transcribe_service(audio_file, stem, max_retries, retry_delay, timeout)
+        log.error(f"[{stem}] 识别失败: {err}")
+    return text, retries, err
 
 
 def _transcribe_local(
@@ -1095,7 +1101,6 @@ def _transcribe_local(
     max_retries: int, retry_delay: float,
 ) -> tuple[str | None, int, str | None]:
     """本地 whisper CLI 识别"""
-    start_time = time.time()
     out_dir = audio_file.parent
 
     def _run():
@@ -1110,7 +1115,10 @@ def _transcribe_local(
             "--output_format", "txt",
             "--output_dir", str(out_dir),
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        kwargs = dict(capture_output=True, text=True)
+        if timeout > 0:
+            kwargs["timeout"] = timeout
+        proc = subprocess.run(cmd, **kwargs)
         if proc.returncode != 0:
             stderr_tail = (proc.stderr or "")[-500:]
             raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}: {stderr_tail}")
@@ -1124,11 +1132,8 @@ def _transcribe_local(
         text, retries_used, err = retry_call(
             _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
         )
-        elapsed = time.time() - start_time
         if err:
             return None, retries_used, err
-        with _print_lock:
-            print(f"  [{stem}] {c('green', '识别完成')} ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
         return text, 0, None
     except Exception as e:
         log.error(f"[{stem}] 本地 whisper 识别失败: {e}")
@@ -1138,69 +1143,48 @@ def _transcribe_local(
 def _transcribe_service(
     audio_file: Path, stem: str,
     max_retries: int, retry_delay: float,
-    timeout: int = 1200,
+    timeout: int = 0,
 ) -> tuple[str | None, int, str | None]:
-    """远程 whisper.cpp server 识别"""
+    """远程 whisper.cpp server 识别（无内建进度显示，由调用方 Spinner 负责）"""
     global _SERVICE_MODEL_LOADED
-    start_time = time.time()
-    done = [False]  # 用列表实现闭包内可变
-
-    def _progress_reporter():
-        """每隔 5 秒打印已用时间"""
-        while not done[0]:
-            time.sleep(5)
-            if not done[0]:
-                elapsed = time.time() - start_time
-                with _print_lock:
-                    print(f"  [{stem}] 识别中... {elapsed:.0f}s", flush=True)
-
-    reporter = Thread(target=_progress_reporter, daemon=True)
 
     def _run():
-        reporter.start()
-        try:
-            # ── 按需切换模型（/load） ──
-            if WHISPER_SERVICE_MODEL and WHISPER_SERVICE_MODEL != _SERVICE_MODEL_LOADED:
-                with _print_lock:
-                    print(f"  [{stem}] 切换模型: {WHISPER_SERVICE_MODEL}", flush=True)
-                resp = requests.post(
-                    f"{WHISPER_SERVICE}/load",
-                    files={"model": (None, WHISPER_SERVICE_MODEL)},
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                _SERVICE_MODEL_LOADED = WHISPER_SERVICE_MODEL
-
-            # ── 语音识别（/inference） ──
-            with open(audio_file, "rb") as f:
-                resp = requests.post(
-                    f"{WHISPER_SERVICE}/inference",
-                    files={"file": (audio_file.name, f, "audio/wav")},
-                    data={"temperature": WHISPER_TEMPERATURE, "temperature_inc": WHISPER_TEMPERATURE_INC, "response_format": WHISPER_RESPONSE_FORMAT},
-                    timeout=timeout,
-                )
+        # ── 按需切换模型（/load） ──
+        if WHISPER_SERVICE_MODEL and WHISPER_SERVICE_MODEL != _SERVICE_MODEL_LOADED:
+            with _print_lock:
+                print(f"  [{stem}] 切换模型: {WHISPER_SERVICE_MODEL}", flush=True)
+            resp = requests.post(
+                f"{WHISPER_SERVICE}/load",
+                files={"model": (None, WHISPER_SERVICE_MODEL)},
+                timeout=30,
+            )
             resp.raise_for_status()
-            data = resp.json()
-            text = data.get("text", "").strip()
-            if not text:
-                raise ValueError("whisper 返回空文本")
-            return text
-        finally:
-            done[0] = True
+            _SERVICE_MODEL_LOADED = WHISPER_SERVICE_MODEL
+
+        # ── 语音识别（/inference） ──
+        with open(audio_file, "rb") as f:
+            resp = requests.post(
+                f"{WHISPER_SERVICE}/inference",
+                files={"file": (audio_file.name, f, "audio/wav")},
+                data={"temperature": WHISPER_TEMPERATURE, "temperature_inc": WHISPER_TEMPERATURE_INC, "response_format": WHISPER_RESPONSE_FORMAT},
+                timeout=timeout if timeout > 0 else None,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data.get("text", "").strip()
+        if not text:
+            raise ValueError("whisper 返回空文本")
+        return text
 
     try:
         text, retries_used, err = retry_call(
             _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
         )
-        elapsed = time.time() - start_time
         if err:
             return None, retries_used, err
-        with _print_lock:
-            print(f"  [{stem}] {c('green', '识别完成')} ({elapsed:.0f}s, {len(text)} 字符)", flush=True)
         return text, 0, None
     except Exception as e:
-        done[0] = True
-        log.error(f"[{stem}] whisper 识别失败: {e}")
+        log.error(f"[{stem}] 服务 whisper 识别失败: {e}")
         return None, max_retries, str(e)[:500]
 
 
@@ -1488,9 +1472,9 @@ def process_one_task(
     max_retries: int, retry_delay: float, force: bool,
     whisper_available: bool,
     position_label: str = "",
-    download_timeout: int = 600,
-    transcode_timeout: int = 600,
-    transcribe_timeout: int = 1200,
+    download_timeout: int = 1800,
+    transcode_timeout: int = 1200,
+    transcribe_timeout: int = 0,
     analyze_timeout: int = 300,
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
@@ -1784,9 +1768,9 @@ def run(
     force: bool,
     dry_run: bool,
     retry_failed: str | None,
-    download_timeout: int = 600,
-    transcode_timeout: int = 600,
-    transcribe_timeout: int = 1200,
+    download_timeout: int = 1800,
+    transcode_timeout: int = 1200,
+    transcribe_timeout: int = 0,
     analyze_timeout: int = 300,
     offset: int = 0,
     limit: int = 0,
@@ -1991,9 +1975,9 @@ def run_from_report(
     report_path: str, steps: list[str],
     max_retries: int, retry_delay: float,
     concurrency: int, force: bool, dry_run: bool,
-    download_timeout: int = 600,
-    transcode_timeout: int = 600,
-    transcribe_timeout: int = 1200,
+    download_timeout: int = 1800,
+    transcode_timeout: int = 1200,
+    transcribe_timeout: int = 0,
     analyze_timeout: int = 300,
 ):
     """从报告加载失败项，重新执行"""
@@ -2496,20 +2480,20 @@ if __name__ == "__main__":
         help="重试间隔基数（秒），指数退避，默认 5s",
     )
     parser.add_argument(
-        "--download-timeout", type=int, default=600,
-        help="单个下载任务的最长执行时间（秒），默认 600s（10 分钟）",
+        "--download-timeout", type=int, default=1800,
+        help="单个下载任务的最长执行时间（秒），默认 1800s（30 分钟），设为 0 则不限制",
     )
     parser.add_argument(
-        "--transcode-timeout", type=int, default=600,
-        help="单个转码任务的最长执行时间（秒），默认 600s（10 分钟）",
+        "--transcode-timeout", type=int, default=1200,
+        help="单个转码任务的最长执行时间（秒），默认 1200s（20 分钟），设为 0 则不限制",
     )
     parser.add_argument(
-        "--transcribe-timeout", type=int, default=1200,
-        help="单个识别任务的最长执行时间（秒），默认 1200s（20 分钟）",
+        "--transcribe-timeout", type=int, default=0,
+        help="单个识别任务的最长执行时间（秒），默认 0（不限制超时）",
     )
     parser.add_argument(
         "--analyze-timeout", type=int, default=300,
-        help="单个 AI 分析任务的最长执行时间（秒），默认 300s（5 分钟）",
+        help="单个 AI 分析任务的最长执行时间（秒），默认 300s（5 分钟），设为 0 则不限制",
     )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
