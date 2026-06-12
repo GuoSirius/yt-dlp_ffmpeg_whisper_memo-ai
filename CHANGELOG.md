@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.22] - 2026-06-12
+
+### Bug Fixes
+
+- ai分析失败后整体状态未更新为partial的bug (`ab1f9bd`)
+
+
 ## [1.2.21] - 2026-06-12
 
 ### Bug Fixes
