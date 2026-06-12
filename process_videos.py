@@ -112,7 +112,7 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
 WHISPER_BEAM_SIZE = os.getenv("WHISPER_BEAM_SIZE", "5")  # beam 宽度 (温度=0 时生效, 越大越准)
 WHISPER_BEST_OF = os.getenv("WHISPER_BEST_OF", "5")  # 候选数 (温度>0 时生效)
 WHISPER_INITIAL_PROMPT = os.getenv("WHISPER_INITIAL_PROMPT", "")  # 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
-WHISPER_CONDITION_ON_PREV = os.getenv("WHISPER_CONDITION_ON_PREV", "True")  # True=传入前段文本保持连贯(适合短音频), False=每段独立解码(适合长音频)
+WHISPER_CONDITION_ON_PREV = os.getenv("WHISPER_CONDITION_ON_PREV", "False")  # 推荐 False: 每段独立解码, 避免长视频错误累积; True=前段文本传入(仅适合短音频)
 WHISPER_FP16 = os.getenv("WHISPER_FP16", "False")  # CPU 应设为 False
 WHISPER_THREADS = os.getenv("WHISPER_THREADS", "0")  # 线程数 (0=自动)
 

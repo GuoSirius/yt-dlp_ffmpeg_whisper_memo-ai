@@ -159,11 +159,11 @@ API 端点：
 | `WHISPER_BEAM_SIZE` | `5` | Beam search 宽度（越大越准但越慢，建议 5） |
 | `WHISPER_BEST_OF` | `5` | 候选采样数（非零时启用温度采样） |
 | `WHISPER_INITIAL_PROMPT` | 空 | 首段音频提示词，空格/逗号分隔关键词，提升专有名词识别率 |
-| `WHISPER_CONDITION_ON_PREV` | `True` | `True`=前段文本传入当前段（连贯性好，适合短音频）；`False`=每段独立解码（容错性高，适合长音频/嘈杂环境） |
+| `WHISPER_CONDITION_ON_PREV` | `False` | 推荐 `False`：每段独立解码，避免长视频错误累积；`True`=前段文本传入当前段（仅适合短音频<30分钟） |
 | `WHISPER_FP16` | `False` | FP16 推理（需 CUDA/GPU，CPU 上无效） |
 | `WHISPER_THREADS` | `0` | CPU 线程数（0=自动检测） |
 
-> **选择建议**：日常批量处理 → `CONDITION_ON_PREV=True`（连贯性好）；最终发布质量 → `False`（每段独立，容错性高）。专有名词多的场景可配合 `INITIAL_PROMPT` 提升准确率，详细示例见 `.env.example`。
+> **选择建议**：默认 `False`（每段独立，避免长视频错误累积）；短音频(<30min)单人连贯语音可设 `True` 提升连贯性。专有名词多的场景可配合 `INITIAL_PROMPT` 提升准确率，详细示例见 `.env.example`。
 
 ### 目录结构
 
