@@ -581,6 +581,9 @@ function isRetryable(err) {
   // Timeout / connection errors are retryable
   if (err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET' || err.code === 'ECONNREFUSED') return true;
   if (err.name === 'TimeoutError' || err.message?.includes('timeout')) return true;
+  // HTTP 5xx server errors are retryable (AI API transient failures)
+  const http5xx = err.message?.match(/^HTTP\s+5\d{2}/);
+  if (http5xx) return true;
   return false;
 }
 
@@ -768,7 +771,9 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   startSpinner(`[${label}] AI 分析中`);
   let result;
   try {
-    const { text: aiText, retries, error } = await retryCall(
+    // retryCall 返回 { result: fnReturn, retriesUsed, error }
+    // fn 返回 { text, retries, error } — 需要先解包再提取 text
+    const ret = await retryCall(
       async () => {
         const controller = new AbortController();
         let timer;
@@ -786,7 +791,8 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
         });
         clearTimeout(timer);
         if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
+          const errBody = await resp.text().catch(() => '');
+          throw new Error(`HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
         }
         const body = await resp.json();
         const content = body.choices?.[0]?.message?.content || '';
@@ -796,9 +802,17 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
       retryDelay,
       label
     );
-    result = { text: aiText, retries, error };
+    // 解包 retryCall 的嵌套结构
+    const fnResult = ret.result;
+    const aiText = (fnResult && fnResult.text) ? String(fnResult.text) : '';
+    if (aiText) {
+      result = { text: aiText, retries: ret.retriesUsed, error: null };
+    } else {
+      result = { text: null, retries: ret.retriesUsed, error: 'AI returned empty content, possible API error or invalid response format' };
+    }
   } catch (e) {
-    result = { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+    const errMsg = (e && e.message) ? String(e.message) : (e ? String(e) : 'unknown error');
+    result = { text: null, retries: maxRetries, error: errMsg.slice(0, 500) };
   } finally {
     stopSpinner();
   }

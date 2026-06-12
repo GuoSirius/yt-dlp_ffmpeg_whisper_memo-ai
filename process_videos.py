@@ -770,8 +770,6 @@ def step_analyze(
     import json as _json
 
     url = base_url.rstrip("/") + "/chat/completions"
-    data = _json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     last_err = None
     spinner = Spinner()
@@ -779,10 +777,17 @@ def step_analyze(
     try:
         for attempt in range(1, max_retries + 2):  # 首次 + max_retries 次重试
             try:
+                # 每次尝试重新创建 request（避免复用已消费的 data 流）
+                data = _json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=ai_timeout if ai_timeout > 0 else None) as resp:
-                    body = _json.loads(resp.read().decode("utf-8"))
-                content = body["choices"][0]["message"]["content"]
-                result = content.strip(), (attempt - 1), None
+                    resp_body = resp.read().decode("utf-8")
+                    status = resp.status
+                if status != 200:
+                    raise Exception(f"HTTP {status}: {resp_body[:300]}")
+                body = _json.loads(resp_body)
+                content = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                result = content.strip(), attempt - 1, None
                 spinner.stop()
                 with _print_lock:
                     print(f"  [{label}] {c('green', 'AI 分析完成')} ({len(result[0])} 字符)", flush=True)
