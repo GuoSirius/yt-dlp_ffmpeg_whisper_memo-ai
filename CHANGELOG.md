@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.20] - 2026-06-12
+
+### Features
+
+- add whisper INITIAL_PROMPT bio term list, add AI semantic correction step before keyword extraction (`a7ecd44`)
+- unify AI analysis completion log format — add elapsed time to match download/transcode/transcribe (`d6cacca`)
+- add elapsed time to whisper completion log, improve AI analysis error details (log URL, include cause) (`7971449`)
+- add whisper local progress display — show segment timestamps during transcription (`6c8fc2c`)
+
+### Chores
+
+- update before release (`bb38a58`)
+
+
 ## [1.2.19] - 2026-06-12
 
 ### Refactoring
