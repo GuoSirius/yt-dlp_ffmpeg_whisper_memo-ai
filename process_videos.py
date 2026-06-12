@@ -93,17 +93,24 @@ REPORTS_DIR = _env_path("REPORTS_DIR", "output/reports")
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE", "ffprobe")
+# ── Whisper 共享参数（local 和 service 通用） ──
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "service")  # "service" 或 "local"
-WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 仅 backend=service 时使用
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # 模型名: tiny/base/small/medium/large
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 空=多语言自动检测
-# 仅 backend=service 且 whisper.cpp server 时: 模型文件路径（如 models/ggml-base.bin）
-# 留空则跳过 /load（使用服务器当前已加载的模型）
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: zh/en/"" (空=自动), 设 zh 避免繁体混入
+WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")  # 推理温度 (0.0~1.0)
+WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")  # 温度增量 (fallback 时升温步长)
+
+# ── Whisper 服务模式参数 ──
+WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服务地址
+# 服务端模型路径（ggml 文件，用于 POST /load 切换模型；留空则使用服务器当前加载的模型）
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
-WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")
-WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")
-WHISPER_RESPONSE_FORMAT = os.getenv("WHISPER_RESPONSE_FORMAT", "json")
+WHISPER_RESPONSE_FORMAT = os.getenv("WHISPER_RESPONSE_FORMAT", "json")  # 返回格式: json/text/srt/vtt
+
+# ── Whisper 本地模式参数 ──
+WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型文件目录（--model_dir）
+WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "txt")  # 输出格式: txt/vtt/srt/tsv/json
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu 或 cuda
+
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
@@ -1073,15 +1080,11 @@ def step_transcribe(
         return None, 0, msg
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
+    model_label = WHISPER_MODEL
+    lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+    mode_label = "local" if WHISPER_BACKEND == "local" else "service"
     with _print_lock:
-        if WHISPER_BACKEND == "local":
-            lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
-            mode_label = f"{WHISPER_MODEL}/{lang_label}"
-            backend_label = f"本地({mode_label})"
-        else:
-            model_label = WHISPER_SERVICE_MODEL or WHISPER_MODEL or "(server default)"
-            backend_label = f"服务({model_label})"
-        print(f"  [{stem}] {c('magenta', '开始识别')} [{backend_label}] (文件 {file_size_mb:.1f}MB)...", flush=True)
+        print(f"  [{stem}] {c('magenta', '开始识别')} [{mode_label}/{model_label}/{lang_label}/T{WHISPER_TEMPERATURE}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     spinner = Spinner()
     spinner.start(f"[{stem}] 识别中")
@@ -1104,6 +1107,7 @@ def step_transcribe(
 def _transcribe_local(
     audio_file: Path, stem: str,
     max_retries: int, retry_delay: float,
+    timeout: int = 0,
 ) -> tuple[str | None, int, str | None]:
     """本地 whisper CLI 识别"""
     out_dir = audio_file.parent
@@ -1114,10 +1118,18 @@ def _transcribe_local(
             "--model", WHISPER_MODEL,
             "--device", WHISPER_DEVICE,
         ]
+        if WHISPER_MODEL_DIR:
+            cmd += ["--model_dir", WHISPER_MODEL_DIR]
         if WHISPER_LANGUAGE:
             cmd += ["--language", WHISPER_LANGUAGE]
         cmd += [
-            "--output_format", "txt",
+            "--temperature", WHISPER_TEMPERATURE,
+        ]
+        if WHISPER_TEMPERATURE_INC:
+            cmd += ["--temperature_increment", WHISPER_TEMPERATURE_INC]
+        out_ext = "json" if WHISPER_OUTPUT_FORMAT == "json" else "txt"
+        cmd += [
+            "--output_format", WHISPER_OUTPUT_FORMAT,
             "--output_dir", str(out_dir),
         ]
         kwargs = dict(capture_output=True, text=True)
@@ -1127,11 +1139,18 @@ def _transcribe_local(
         if proc.returncode != 0:
             stderr_tail = (proc.stderr or "")[-500:]
             raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}: {stderr_tail}")
-        # whisper 输出文件: {stem}.txt
-        out_txt = out_dir / f"{stem}.txt"
-        if not out_txt.exists():
+        # whisper 输出文件: {stem}.{ext}
+        out_file = out_dir / f"{stem}.{out_ext}"
+        if not out_file.exists():
             raise RuntimeError("whisper 输出文件未生成")
-        return out_txt.read_text(encoding="utf-8").strip()
+        raw = out_file.read_text(encoding="utf-8").strip()
+        if WHISPER_OUTPUT_FORMAT == "json":
+            import json
+            try:
+                return json.loads(raw).get("text", "")
+            except json.JSONDecodeError:
+                return raw  # 解析失败回退原文
+        return raw
 
     try:
         text, retries_used, err = retry_call(
@@ -1168,10 +1187,17 @@ def _transcribe_service(
 
         # ── 语音识别（/inference） ──
         with open(audio_file, "rb") as f:
+            data = {
+                "temperature": WHISPER_TEMPERATURE,
+                "temperature_inc": WHISPER_TEMPERATURE_INC,
+                "response_format": WHISPER_RESPONSE_FORMAT,
+            }
+            if WHISPER_LANGUAGE:
+                data["language"] = WHISPER_LANGUAGE
             resp = requests.post(
                 f"{WHISPER_SERVICE}/inference",
                 files={"file": (audio_file.name, f, "audio/wav")},
-                data={"temperature": WHISPER_TEMPERATURE, "temperature_inc": WHISPER_TEMPERATURE_INC, "response_format": WHISPER_RESPONSE_FORMAT},
+                data=data,
                 timeout=timeout if timeout > 0 else None,
             )
         resp.raise_for_status()
