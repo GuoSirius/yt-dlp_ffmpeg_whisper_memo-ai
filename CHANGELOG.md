@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.19] - 2026-06-12
+
+### Refactoring
+
+- change whisper condition_on_prev default from true to false (`08cc425`)
+
+### Documentation
+
+- update (`df764e4`)
+
+
 ## [1.2.18] - 2026-06-12
 
 ### Bug Fixes
