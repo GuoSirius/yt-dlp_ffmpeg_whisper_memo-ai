@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.14] - 2026-06-12
+
+### Features
+
+- 新增控制台进度显示模块 + 优化转码参数 + 调整超时默认值 (`34d08e4`)
+
+### Bug Fixes
+
+- ai 分析失败时错误信息显示为 null (`7d941d8`)
+
+### Documentation
+
+- update (`6315f3a`)
+
+
 ## [1.2.13] - 2026-06-12
 
 ### Documentation
