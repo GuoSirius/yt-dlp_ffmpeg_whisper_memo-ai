@@ -64,7 +64,7 @@ const WHISPER_RESPONSE_FORMAT = process.env.WHISPER_RESPONSE_FORMAT || 'json';
 let _SERVICE_MODEL_LOADED = null;
 
 const TRANSCODE_EXT = process.env.TRANSCODE_EXT || '.wav';
-const FFMPEG_TRANSCODE_ARGS = (process.env.TRANSCODE_ARGS || '-ar 16000 -ac 1 -c:a pcm_s16le').split(/\s+/).filter(Boolean);
+const FFMPEG_TRANSCODE_ARGS = (process.env.TRANSCODE_ARGS || '-vn -map_metadata -1 -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:LRA=11:linear=true,aresample=resampler=soxr:osr=16000:osf=s16:dither_method=shibata -ac 1 -c:a pcm_s16le').split(/ +/).filter(Boolean);
 
 // ============================== Excel 字段映射 ==============================
 const COL_ID = process.env.COL_ID || 'extra.id';

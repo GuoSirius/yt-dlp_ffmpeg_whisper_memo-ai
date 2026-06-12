@@ -100,7 +100,7 @@ WHISPER_RESPONSE_FORMAT = os.getenv("WHISPER_RESPONSE_FORMAT", "json")
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
-FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-ar 16000 -ac 1 -c:a pcm_s16le").split()
+FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-vn -map_metadata -1 -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:LRA=11:linear=true,aresample=resampler=soxr:osr=16000:osf=s16:dither_method=shibata -ac 1 -c:a pcm_s16le").split()
 
 # ─────────────────────────────── Excel 字段映射 ─────────────────────────────
 
