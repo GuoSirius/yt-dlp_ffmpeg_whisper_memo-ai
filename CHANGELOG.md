@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.12] - 2026-06-12
+
+### Chores
+
+- optimize ai prompt (`85a400a`)
+
+
 ## [1.2.11] - 2026-06-12
 
 ### Features
