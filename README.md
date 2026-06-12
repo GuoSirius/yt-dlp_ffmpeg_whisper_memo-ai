@@ -158,7 +158,7 @@ API 端点：
 | `WHISPER_MODEL_DIR` | 空 | 模型缓存目录，空=`~/.cache/whisper`（或 `$XDG_CACHE_HOME/whisper`） |
 | `WHISPER_BEAM_SIZE` | `5` | Beam search 宽度（越大越准但越慢，建议 5） |
 | `WHISPER_BEST_OF` | `5` | 候选采样数（非零时启用温度采样） |
-| `WHISPER_INITIAL_PROMPT` | 空 | 首段音频提示词，空格/逗号分隔关键词，提升专有名词识别率 |
+| `WHISPER_INITIAL_PROMPT` | 生物医学 90+ 术语 | 首段音频提示词，已预填细胞/免疫/分子/蛋白/实验技术等高频术语，空格分隔 |
 | `WHISPER_CONDITION_ON_PREV` | `False` | 推荐 `False`：每段独立解码，避免长视频错误累积；`True`=前段文本传入当前段（仅适合短音频<30分钟） |
 | `WHISPER_FP16` | `False` | FP16 推理（需 CUDA/GPU，CPU 上无效） |
 | `WHISPER_THREADS` | `0` | CPU 线程数（0=自动检测） |
@@ -542,19 +542,19 @@ AI_BASE_URL=https://apihub.agnes-ai.com/v1
 AI_MODEL=agnes-2.0-flash
 
 # 提示词模板（{content} 会被识别文本替换）
-AI_PROMPT_TPL=帮我归纳总结一下Keywords，尽可能全一点，这是内容：{content}
+# 采用两步法：先语义修正 Whisper 同音/形近/术语错误，再提取关键词
+AI_PROMPT_TPL=你是多语言内容分析专家...这是内容：{content}
 
 # 请求超时（秒，通过 --analyze-timeout 参数设置）
-# 不再使用 AI_TIMEOUT 环境变量（已统一为 --analyze-timeout 参数）
 ```
 
 ### 工作原理
 
 1. whisper 识别完成 → 得到文本（存入 `content` 列）
-2. 将文本替换 `{content}` 占位符 → 发送到 AI API
-3. AI 返回关键词归纳 → 写入 `keywords` 列
+2. AI 先对识别文本做**语义修正**（修正 Whisper 常见的同音错字、专业术语误判、形近字混淆）
+3. 再对修正后的文本提取搜索关键词 → 写入 `keywords` 列
 
-> **提示词模板可自由定制**：只需保留 `{content}` 占位符，提示词内容可改为翻译、摘要、分类等任意任务。
+> **提示词模板可自由定制**：只需保留 `{content}` 占位符，提示词内容可改为翻译、摘要、分类等任意任务。完整模板见 `.env.example`。
 
 ### 单独运行
 
