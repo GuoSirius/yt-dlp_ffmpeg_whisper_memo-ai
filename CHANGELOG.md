@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.11] - 2026-06-12
+
+### Features
+
+- 优化 ffmpeg 转码参数 + 补充 Whisper 模型对比文档 (`d777654`)
+
+### Documentation
+
+- update (`cf1c30d`)
+
+
 ## [1.2.10] - 2026-06-11
 
 ### Features
