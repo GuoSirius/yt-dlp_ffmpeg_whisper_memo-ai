@@ -97,11 +97,8 @@ cp .env.example .env
 | 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge） |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
-| 服务 | `WHISPER_BACKEND` | `local` 或 `service` |
-| 服务 | `WHISPER_MODEL` | 模型名 (tiny/base/small/medium/large)，仅 backend=local |
-| 服务 | `WHISPER_DEVICE` | 本地模式设备 (cpu/cuda) |
-| 服务 | `WHISPER_LANGUAGE` | 语言代码 (仅 backend=local)，空=多语言自动检测（默认） |
-| 服务 | `WHISPER_SERVICE_MODEL` | 模型文件路径 (仅 backend=service)，如 models/ggml-base.bin |
+| 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）或 `service`（whisper.cpp server） |
+| 识别 | `WHISPER_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 服务(2) / 本地(10) 三组，共 16 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 | AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
 | AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
@@ -123,26 +120,50 @@ cp .env.example .env
 
 ### Whisper 语音识别
 
-支持两种后端，通过 `WHISPER_BACKEND` 切换：
+支持两种后端，通过 `WHISPER_BACKEND` 切换。所有 Whisper 相关环境变量分三组管理：
 
-**远程服务模式**（默认，whisper.cpp server）：
-需要本地或远程运行 whisper.cpp server，监听 `http://localhost:9588`：
-- `POST /inference` ← 上传 wav 文件，返回识别文本（参数: file/temperature/temperature_inc/response_format）
-- `POST /load` ← 切换模型（参数: model=模型文件路径），如 `models/ggml-base.bin`
-- 语言需在 whisper.cpp server 启动参数或管理后台设置，不支持通过 API 指定
-- 通过 `WHISPER_SERVICE_MODEL` 指定模型文件路径（留空则使用服务当前已加载的模型）
-- 脚本首次识别时会自动 `/load`，同一模型只加载一次（缓存）
+**🔷 共享变量（两种后端均生效）**
 
-**本地 CLI 模式**：
-需要在本地安装 `openai-whisper`：`pip install openai-whisper`
-```bash
-# .env 配置
-WHISPER_BACKEND=local
-WHISPER_MODEL=base          # tiny / base / small / medium / large
-WHISPER_DEVICE=cpu          # cpu 或 cuda
-WHISPER_LANGUAGE=zh          # 空=多语言自动检测（默认），需要指定时填 zh/en/ja 等
-```
-脚本会直接调用 `whisper` CLI，无需额外服务进程。
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WHISPER_BACKEND` | `local` | 后端选择：`local` 或 `service` |
+| `WHISPER_TEMPERATURE` | `0.0` | 采样温度（0.0=贪婪解码，推荐中文识别） |
+| `WHISPER_TEMPERATURE_INC` | `0.2` | 温度递减步长（fallback 时温度递增步长） |
+| `WHISPER_OUTPUT_FORMAT` | `json` | 输出格式：`json` / `txt` / `srt` / `vtt` / `tsv` |
+
+**🔶 服务模式独有**（`WHISPER_BACKEND=service`）
+
+需要本地或远程运行 whisper.cpp server，监听 `http://127.0.0.1:9588`。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WHISPER_SERVICE` | `http://127.0.0.1:9588` | whisper.cpp server 地址 |
+| `WHISPER_SERVICE_MODEL` | （模型文件路径） | 模型文件路径，如 `models/ggml-base.bin`；留空=使用当前已加载模型 |
+
+API 端点：
+- `POST /inference` ← 上传 wav 文件，返回识别文本（参数: file / temperature / temperature_inc / response_format）
+- `POST /load` ← 切换模型（参数: model=模型文件路径），脚本首次识别时自动调用，同一模型只加载一次（缓存）
+
+> 注意：本地模式和服务模式不能混用。`WHISPER_MODEL` / `WHISPER_LANGUAGE` 等本地变量在服务模式下不生效，反之亦然。
+
+**🔸 本地模式独有**（`WHISPER_BACKEND=local`）
+
+需安装 `openai-whisper`：`pip install openai-whisper`，脚本直接调用 `whisper` CLI。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WHISPER_MODEL` | `medium` | 模型大小：tiny / base / small / medium / large-v3 / turbo |
+| `WHISPER_LANGUAGE` | `zh` | 语言代码（zh/en/ja 等），空=多语言自动检测 |
+| `WHISPER_DEVICE` | `cpu` | 推理设备：cpu / cuda |
+| `WHISPER_MODEL_DIR` | 空 | 模型缓存目录，空=`~/.cache/whisper`（或 `$XDG_CACHE_HOME/whisper`） |
+| `WHISPER_BEAM_SIZE` | `5` | Beam search 宽度（越大越准但越慢，建议 5） |
+| `WHISPER_BEST_OF` | `5` | 候选采样数（非零时启用温度采样） |
+| `WHISPER_INITIAL_PROMPT` | 空 | 首段音频提示词，空格/逗号分隔关键词，提升专有名词识别率 |
+| `WHISPER_CONDITION_ON_PREV` | `True` | `True`=前段文本传入当前段（连贯性好，适合短音频）；`False`=每段独立解码（容错性高，适合长音频/嘈杂环境） |
+| `WHISPER_FP16` | `False` | FP16 推理（需 CUDA/GPU，CPU 上无效） |
+| `WHISPER_THREADS` | `0` | CPU 线程数（0=自动检测） |
+
+> **选择建议**：日常批量处理 → `CONDITION_ON_PREV=True`（连贯性好）；最终发布质量 → `False`（每段独立，容错性高）。专有名词多的场景可配合 `INITIAL_PROMPT` 提升准确率，详细示例见 `.env.example`。
 
 ### 目录结构
 
