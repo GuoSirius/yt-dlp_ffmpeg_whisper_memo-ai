@@ -761,6 +761,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   if (!text || !text.trim()) {
     return { text: null, retries: 0, error: 'content empty, skip AI analysis' };
   }
+  const aiStart = Date.now();
 
   const apiKey = process.env.AI_API_KEY || '';
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
@@ -834,7 +835,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   }
 
   if (result.text) {
-    lockedPrint(styleDone(`[${label}] AI 分析完成 (${result.text.length} 字符)`));
+    lockedPrint(styleDone(`[${label}] AI 分析完成 (${fmtElapsed(Date.now() - aiStart)}, ${result.text.length} 字符)`));
   } else {
     lockedPrint(styleFail(`[${label}] AI 分析失败: ${result.error}`));
   }

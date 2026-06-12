@@ -750,6 +750,7 @@ def step_analyze(
     if not text or not text.strip():
         return None, 0, "识别文本为空，跳过 AI 分析"
 
+    ai_start = time.time()
     api_key = os.getenv("AI_API_KEY", "")
     base_url = os.getenv("AI_BASE_URL", "")
     model = os.getenv("AI_MODEL", "")
@@ -804,7 +805,10 @@ def step_analyze(
                 result = content.strip(), attempt - 1, None
                 spinner.stop()
                 with _print_lock:
-                    print(f"  [{label}] {c('green', 'AI 分析完成')} ({len(result[0])} 字符)", flush=True)
+                    elapsed = time.monotonic() - ai_start
+                    m, s = divmod(int(elapsed), 60)
+                    elapsed_str = f"{m}m{s:02d}s" if m > 0 else f"{s}s"
+                    print(f"  [{label}] {c('green', 'AI 分析完成')} ({elapsed_str}, {len(result[0])} 字符)", flush=True)
                 return result
             except Exception as e:
                 err_str = str(e)[:500]
