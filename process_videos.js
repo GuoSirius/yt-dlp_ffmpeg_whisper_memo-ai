@@ -37,7 +37,7 @@ const _envFileIdx = process.argv.indexOf('--env-file');
 if (_envFileIdx !== -1 && _envFileIdx + 1 < process.argv.length) {
   _dotenvPath = process.argv[_envFileIdx + 1];
 }
-dotenv.config({ path: _dotenvPath });
+dotenv.config({ path: _dotenvPath, override: true });
 
 // ============================== 路径配置 ==============================
 const __filename = fileURLToPath(import.meta.url);

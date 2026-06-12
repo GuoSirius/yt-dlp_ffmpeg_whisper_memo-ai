@@ -71,7 +71,7 @@ if "--env-file" in sys.argv:
     _idx = sys.argv.index("--env-file")
     if _idx + 1 < len(sys.argv):
         _env_file = sys.argv[_idx + 1]
-load_dotenv(dotenv_path=_env_file)
+load_dotenv(dotenv_path=_env_file, override=True)
 
 # ─────────────────────────────── 路径配置 ───────────────────────────────────
 
