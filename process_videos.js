@@ -781,6 +781,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     temperature: aiTemperature,
   });
 
+  lockedPrint(`  [${label}] AI 请求 URL: ${apiUrl}`);
   startSpinner(`[${label}] AI 分析中`);
   let result;
   try {
@@ -825,7 +826,9 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     }
   } catch (e) {
     const errMsg = (e && e.message) ? String(e.message) : (e ? String(e) : 'unknown error');
-    result = { text: null, retries: maxRetries, error: errMsg.slice(0, 500) };
+    const causeMsg = (e && e.cause && e.cause.message) ? ` (cause: ${e.cause.message})` : '';
+    const urlHint = apiUrl ? ` [url: ${apiUrl}]` : '';
+    result = { text: null, retries: maxRetries, error: `${errMsg}${causeMsg}${urlHint}`.slice(0, 500) };
   } finally {
     stopSpinner();
   }
@@ -1100,6 +1103,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 // ============================== 识别 ==============================
 async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const stem = path.parse(audioFile).name;
+  const transcribeStart = Date.now();
 
   const whisperOk = await checkWhisperAvailable();
   if (!whisperOk) {
@@ -1134,9 +1138,9 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
     stopSpinner();
   }
 
+  const transcribeElapsed = Date.now() - transcribeStart;
   if (result.text) {
-    const elapsed = result.retries > 0 ? '' : '';
-    lockedPrint(styleDone(`[${stem}] 识别完成 (${result.text.length} 字符)`));
+    lockedPrint(styleDone(`[${stem}] 识别完成 (${fmtElapsed(transcribeElapsed)}, ${result.text.length} 字符)`));
   } else {
     lockedPrint(styleFail(`[${stem}] 识别失败: ${result.error}`));
   }

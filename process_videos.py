@@ -782,6 +782,8 @@ def step_analyze(
     import json as _json
 
     url = base_url.rstrip("/") + "/chat/completions"
+    with _print_lock:
+        print(f"  [{label}] AI 请求 URL: {url}", flush=True)
 
     last_err = None
     spinner = Spinner()
@@ -820,7 +822,7 @@ def step_analyze(
     finally:
         spinner.stop()
 
-    return None, max_retries + 1, f"AI 分析失败（重试 {max_retries+1} 次）：{last_err}"
+    return None, max_retries + 1, f"AI 分析失败（重试 {max_retries+1} 次）：{last_err} [url: {url}]"
 
 
 
@@ -1096,6 +1098,7 @@ def step_transcribe(
         print(f"  [{stem}] {c('magenta', '开始识别')} [{mode_label}/{model_label}/{lang_label}/T{WHISPER_TEMPERATURE}] (文件 {file_size_mb:.1f}MB)...", flush=True)
 
     spinner = Spinner()
+    transcribe_start = time.time()
     spinner.start(f"[{stem}] 识别中")
     try:
         if WHISPER_BACKEND == "local":
@@ -1106,8 +1109,11 @@ def step_transcribe(
         spinner.stop()
 
     if text:
+        elapsed = time.time() - transcribe_start
+        m, s = divmod(int(elapsed), 60)
+        elapsed_str = f"{m}m{s:02d}s" if m > 0 else f"{s}s"
         with _print_lock:
-            print(f"  [{stem}] {c('green', '识别完成')} ({len(text)} 字符)", flush=True)
+            print(f"  [{stem}] {c('green', '识别完成')} ({elapsed_str}, {len(text)} 字符)", flush=True)
     else:
         log.error(f"[{stem}] 识别失败: {err}")
     return text, retries, err
