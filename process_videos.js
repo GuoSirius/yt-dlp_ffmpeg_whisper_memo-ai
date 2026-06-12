@@ -76,8 +76,8 @@ const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模�
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || '5';         // beam 宽度 (温度=0 时生效, 越大越准)
 const WHISPER_BEST_OF = process.env.WHISPER_BEST_OF || '5';             // 候选数 (温度>0 时生效)
-const WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始提示词 (可提升专有名词识别)
-const WHISPER_CONDITION_ON_PREV = process.env.WHISPER_CONDITION_ON_PREV || 'True'; // 上下文提示 (长音频建议 False)
+const WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
+const WHISPER_CONDITION_ON_PREV = process.env.WHISPER_CONDITION_ON_PREV || 'True'; // True=传入前段文本保持连贯(适合短音频), False=每段独立解码(适合长音频)
 const WHISPER_FP16 = process.env.WHISPER_FP16 || 'False';              // CPU 应设为 False
 const WHISPER_THREADS = process.env.WHISPER_THREADS || '0';            // 线程数 (0=自动)
 
