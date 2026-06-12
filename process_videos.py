@@ -1737,7 +1737,14 @@ def process_one_task(
     elif "analyze" in steps and result.transcribe.status != "success":
         result.analyze = StepResult("skipped", error="transcribe 未成功，跳过 AI 分析")
 
-    if result.overall_status == "pending":
+    # ── 统一判定整体状态（和本地文件模式一致）──
+    if result.transcode.status == "failed":
+        result.overall_status = "failed"
+    elif result.transcribe.status == "failed" and "transcribe" in steps:
+        result.overall_status = "partial"
+    elif result.analyze.status == "failed":
+        result.overall_status = "partial"
+    elif result.overall_status == "pending":
         result.overall_status = "success"
 
     return result

@@ -829,7 +829,18 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     }
   } catch (e) {
     const errMsg = (e && e.message) ? String(e.message) : (e ? String(e) : 'unknown error');
-    const causeMsg = (e && e.cause && e.cause.message) ? ` (cause: ${e.cause.message})` : '';
+    // fetch failed 时真正原因在 e.cause.code (ENOTFOUND/ECONNREFUSED/ETIMEDOUT etc.)
+    const cause = e && e.cause;
+    const causeParts = [];
+    if (cause) {
+      if (cause.code) causeParts.push(`code=${cause.code}`);
+      if (cause.errno) causeParts.push(`errno=${cause.errno}`);
+      if (cause.syscall) causeParts.push(`syscall=${cause.syscall}`);
+      if (cause.hostname) causeParts.push(`hostname=${cause.hostname}`);
+      if (cause.port) causeParts.push(`port=${cause.port}`);
+      if (cause.message && cause.message !== errMsg) causeParts.push(`msg=${cause.message}`);
+    }
+    const causeMsg = causeParts.length > 0 ? ` (cause: ${causeParts.join(', ')})` : '';
     const urlHint = apiUrl ? ` [url: ${apiUrl}]` : '';
     result = { text: null, retries: maxRetries, error: `${errMsg}${causeMsg}${urlHint}`.slice(0, 500) };
   } finally {
@@ -1614,7 +1625,14 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
     result.analyze = new StepResult('skipped', null, 'transcribe not successful, skip AI analysis');
   }
 
-  if (result.overall_status === 'pending') {
+  // ── 统一判定整体状态（和本地文件模式一致）──
+  if (result.transcode.status === 'failed') {
+    result.overall_status = 'failed';
+  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe')) {
+    result.overall_status = 'partial';
+  } else if (result.analyze.status === 'failed') {
+    result.overall_status = 'partial';
+  } else if (result.overall_status === 'pending') {
     result.overall_status = 'success';
   }
 
