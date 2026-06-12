@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.17] - 2026-06-12
+
+### Bug Fixes
+
+- 添加 dotenv override 参数，确保 .env 配置覆盖系统环境变量 (`4084fd9`)
+
+### Refactoring
+
+- whisper env var 分组精简 — MODEL/LANGUAGE 移回 local，OUTPUT_FORMAT 默认 json (`029aaab`)
+- 最终化 Whisper 环境变量分组，按共享/服务/本地三组精简 (`c9e9c66`)
+- 重构 Whisper 环境变量，最大化 local/service 共享，统一识别参数 (`deff67d`)
+
+### Documentation
+
+- update (`53c0af6`)
+- 更新 README Whisper 章节 — 反映共享/服务/本地三组变量结构，补充 INITIAL_PROMPT/CONDITION_ON_PREV 说明 (`f8925fc`)
+- 完善 CONDITION_ON_PREV/INITIAL_PROMPT 注释, 修复 Python /load 调用, 同步 .env 文档 (`7b2c8be`)
+
+
 ## [1.2.16] - 2026-06-12
 
 ### Bug Fixes
