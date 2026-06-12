@@ -34,6 +34,7 @@
   },
   "files": [
     "process_videos.js",
+    "console-ui.mjs",
     ".env.example",
     "README.md",
     "CHANGELOG.md",
