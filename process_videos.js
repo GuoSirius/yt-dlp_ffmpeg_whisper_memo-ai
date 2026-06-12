@@ -1096,7 +1096,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
 }
 
 // ============================== 识别 ==============================
-async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 600) {
+async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 1200) {
   const stem = path.parse(audioFile).name;
 
   const whisperOk = await checkWhisperAvailable();
@@ -1124,7 +1124,7 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 600) 
   }
 }
 
-async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout = 600) {
+async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout = 1200) {
   const startTime = Date.now();
   const outDir = path.dirname(audioFile);
 
@@ -1158,7 +1158,7 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
   }
 }
 
-async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeout = 600) {
+async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeout = 1200) {
   const startTime = Date.now();
   let done = false;
   const progressInterval = setInterval(() => {
@@ -1441,7 +1441,7 @@ async function checkAndConfirmEnv(envCheck, dryRun, confirmMsg) {
 // ============================== 单任务处理 ==============================
 async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, force,
   whisperAvailable, positionLabel = '', downloadTimeout = 600, transcodeTimeout = 600,
-  transcribeTimeout = 600, analyzeTimeout = 300) {
+  transcribeTimeout = 1200, analyzeTimeout = 300) {
 
   const preContent = row.preContent || null;
 
@@ -2483,7 +2483,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--retry-delay <n>', '重试间隔基数（秒），默认 5', v => parseFloat(v), 5.0)
     .option('--download-timeout <n>', '下载超时（秒），默认 600', v => parseInt(v, 10), 600)
     .option('--transcode-timeout <n>', '转码超时（秒），默认 600', v => parseInt(v, 10), 600)
-    .option('--transcribe-timeout <n>', '识别超时（秒），默认 600', v => parseInt(v, 10), 600)
+    .option('--transcribe-timeout <n>', '识别超时（秒），默认 1200', v => parseInt(v, 10), 1200)
     .option('--analyze-timeout <n>', 'AI 分析超时（秒），默认 300', v => parseInt(v, 10), 300)
     .option('--dry-run', '干跑模式，只列任务不执行')
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）')

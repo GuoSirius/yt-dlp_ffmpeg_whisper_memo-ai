@@ -942,7 +942,7 @@ def step_download(
 def step_transcode(
     src_file: Path, sheet_name: str,
     max_retries: int, retry_delay: float, force: bool,
-    timeout: int = 300,
+    timeout: int = 600,
     out_stem: str | None = None,
 ) -> tuple[Path | None, int, str | None]:
     """转码。返回 (转码文件路径, 重试次数, 错误信息)"""
@@ -1062,7 +1062,7 @@ def check_environment(steps: list[str]) -> dict:
 def step_transcribe(
     audio_file: Path,
     max_retries: int, retry_delay: float,
-    timeout: int = 600,
+    timeout: int = 1200,
 ) -> tuple[str | None, int, str | None]:
     """调用 whisper 识别（支持 service 和 local 两种后端）。返回 (文本, 重试次数, 错误信息)"""
     stem = audio_file.stem
@@ -1138,7 +1138,7 @@ def _transcribe_local(
 def _transcribe_service(
     audio_file: Path, stem: str,
     max_retries: int, retry_delay: float,
-    timeout: int = 600,
+    timeout: int = 1200,
 ) -> tuple[str | None, int, str | None]:
     """远程 whisper.cpp server 识别"""
     global _SERVICE_MODEL_LOADED
@@ -1490,7 +1490,7 @@ def process_one_task(
     position_label: str = "",
     download_timeout: int = 600,
     transcode_timeout: int = 600,
-    transcribe_timeout: int = 600,
+    transcribe_timeout: int = 1200,
     analyze_timeout: int = 300,
 ) -> TaskResult:
     """处理单个视频的全流程（在独立线程中执行）"""
@@ -1786,7 +1786,7 @@ def run(
     retry_failed: str | None,
     download_timeout: int = 600,
     transcode_timeout: int = 600,
-    transcribe_timeout: int = 600,
+    transcribe_timeout: int = 1200,
     analyze_timeout: int = 300,
     offset: int = 0,
     limit: int = 0,
@@ -1993,7 +1993,7 @@ def run_from_report(
     concurrency: int, force: bool, dry_run: bool,
     download_timeout: int = 600,
     transcode_timeout: int = 600,
-    transcribe_timeout: int = 600,
+    transcribe_timeout: int = 1200,
     analyze_timeout: int = 300,
 ):
     """从报告加载失败项，重新执行"""
@@ -2501,15 +2501,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--transcode-timeout", type=int, default=600,
-        help="单个转码任务的最长执行时间（秒），默认 300s（5 分钟）",
+        help="单个转码任务的最长执行时间（秒），默认 600s（10 分钟）",
     )
     parser.add_argument(
-        "--transcribe-timeout", type=int, default=600,
-        help="单个识别任务的最长执行时间（秒），默认 600s（10 分钟）",
+        "--transcribe-timeout", type=int, default=1200,
+        help="单个识别任务的最长执行时间（秒），默认 1200s（20 分钟）",
     )
     parser.add_argument(
         "--analyze-timeout", type=int, default=300,
-        help="单个 AI 分析任务的最长执行时间（秒），默认 120s（2 分钟）",
+        help="单个 AI 分析任务的最长执行时间（秒），默认 300s（5 分钟）",
     )
     parser.add_argument("--dry-run", action="store_true", help="干跑模式，仅列出任务不执行")
     parser.add_argument(
