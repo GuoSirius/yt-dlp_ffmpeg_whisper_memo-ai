@@ -1149,13 +1149,40 @@ def _transcribe_local(
             "--output_format", WHISPER_OUTPUT_FORMAT,
             "--output_dir", str(out_dir),
         ]
-        kwargs = dict(capture_output=True, text=True)
+
+        # Show segment progress from stderr (whisper outputs "[00:00.000 --> 00:30.000] ...")
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            env=env,
+        )
+        import re
+        last_ts = ""
+        for line in proc.stderr:
+            line_s = line.strip()
+            if not line_s:
+                continue
+            m = re.match(r"^\[[\d:.]+\s*-->\s*([\d:.]+)\]", line_s)
+            if m:
+                ts = m.group(1)
+                if ts != last_ts:
+                    sys.stderr.write(f"\r[{stem}] 识别中... {ts}")
+                    sys.stderr.flush()
+                    last_ts = ts
         if timeout > 0:
-            kwargs["timeout"] = timeout
-        proc = subprocess.run(cmd, **kwargs)
+            proc.wait(timeout=timeout)
+        else:
+            proc.wait()
+        if last_ts:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
         if proc.returncode != 0:
-            stderr_tail = (proc.stderr or "")[-500:]
-            raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}: {stderr_tail}")
+            raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}")
         # whisper 输出文件: {stem}.{ext}
         out_file = out_dir / f"{stem}.{out_ext}"
         if not out_file.exists():

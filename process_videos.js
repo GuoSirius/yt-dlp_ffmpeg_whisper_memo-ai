@@ -1164,7 +1164,15 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     if (WHISPER_THREADS && WHISPER_THREADS !== '0') args.push('--threads', WHISPER_THREADS);
     args.push('--output_format', WHISPER_OUTPUT_FORMAT, '--output_dir', outDir);
 
-    const { stderr } = await spawnWithTimeout('whisper', args, timeout);
+    const { stderr } = await spawnWithTimeout('whisper', args, timeout, {
+      onProgress: (_src, line) => {
+        if (line.trim()) {
+          // whisper progress: "[00:00.000 --> 00:30.000]  text..." → show end timestamp
+          const m = line.match(/^\[[\d:.]+\s*-->\s*([\d:.]+)\]/);
+          if (m) updateLine(`[${stem}] 识别中... ${m[1]}`);
+        }
+      }
+    });
     // whisper writes output to {stem}.{ext}
     const outExt = WHISPER_OUTPUT_FORMAT === 'json' ? 'json' : 'txt';
     const outFile = path.join(outDir, `${stem}.${outExt}`);
