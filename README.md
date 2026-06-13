@@ -98,11 +98,11 @@ cp .env.example .env
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）或 `service`（whisper.cpp server） |
-| 识别 | `WHISPER_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 服务(2) / 本地(10) 三组，共 16 个变量 |
+| 识别 | `WHISPER_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 服务(2) / 本地(12) 三组，共 18 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 | AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
 | AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
-| AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符 |
+| AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符。支持文件路径（try-file-first），CLI 覆盖：`--ai-prompt <text|path>`（CLI > .env > 内置默认） |
 | AI 分析 | `AI_TEMPERATURE` | AI 推理温度 (0.0~2.0) |
 
 ### .env 配置项变更权限
@@ -158,12 +158,13 @@ API 端点：
 | `WHISPER_MODEL_DIR` | 空 | 模型缓存目录，空=`~/.cache/whisper`（或 `$XDG_CACHE_HOME/whisper`） |
 | `WHISPER_BEAM_SIZE` | `5` | Beam search 宽度（越大越准但越慢，建议 5） |
 | `WHISPER_BEST_OF` | `5` | 候选采样数（非零时启用温度采样） |
-| `WHISPER_INITIAL_PROMPT` | 生物医学 90+ 术语 | 首段音频提示词，已预填细胞/免疫/分子/蛋白/实验技术等高频术语，空格分隔 |
+| `WHISPER_INITIAL_PROMPT` | 生物医学 90+ 术语 | 首段音频提示词，已预填细胞/免疫/分子/蛋白/实验技术等高频术语，空格分隔。支持文件路径（try-file-first）：值指向存在的文件则读取内容。CLI 覆盖：`--whisper-initial-prompt <text|path>`（CLI > .env > 内置默认） |
 | `WHISPER_CONDITION_ON_PREV` | `False` | 推荐 `False`：每段独立解码，避免长视频错误累积；`True`=前段文本传入当前段（仅适合短音频<30分钟） |
 | `WHISPER_FP16` | `False` | FP16 推理（需 CUDA/GPU，CPU 上无效） |
 | `WHISPER_THREADS` | `0` | CPU 线程数（0=自动检测） |
+| `WHISPER_EXTRA_ARGS` | 空 | 额外 whisper CLI 参数（shell 字符串，如 `--beam_size 5 --verbose`），追加到命令末尾。同名参数自动去重（extra 覆盖已有）。CLI 覆盖：`--whisper-extra-args`（CLI > .env） |
 
-> **选择建议**：默认 `False`（每段独立，避免长视频错误累积）；短音频(<30min)单人连贯语音可设 `True` 提升连贯性。专有名词多的场景可配合 `INITIAL_PROMPT` 提升准确率，详细示例见 `.env.example`。
+> **选择建议**：默认 `False`（每段独立，避免长视频错误累积）；短音频(<30min)单人连贯语音可设 `True` 提升连贯性。专有名词多的场景可配合 `INITIAL_PROMPT` 提升准确率，详细示例见 `.env.example`。需要微调 whisper 行为时可通过 `WHISPER_EXTRA_ARGS` 传入额外 CLI 参数（如 `--beam_size 10 --verbose`），同名参数自动去重。
 
 ### 目录结构
 
@@ -482,6 +483,9 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | `--content-column <col>` | str | — | Excel 模式：指定包含已有文本的列名，批量做 AI 分析（自动设 --step analyze） |
 | `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用） |
 | `--env-file <path>` | path | .env | 指定要加载的 .env 文件路径 |
+| `--whisper-initial-prompt <text\|path>` | str | .env | Whisper 初始提示词（文本或文件路径，CLI 优先级最高） |
+| `--ai-prompt <text\|path>` | str | .env | AI 分析提示词模板（文本或文件路径，CLI 优先级最高） |
+| `--whisper-extra-args <args>` | str | .env | Whisper 额外参数（shell 字符串，如 `"--beam_size 5"`，最高优先级且自动去重） |
 
 ---
 
@@ -543,6 +547,8 @@ AI_MODEL=agnes-2.0-flash
 
 # 提示词模板（{content} 会被识别文本替换）
 # 采用两步法：先语义修正 Whisper 同音/形近/术语错误，再提取关键词
+# 支持文件路径：值指向存在的文件则读取内容（try-file-first 策略）
+# CLI 覆盖：--ai-prompt <text|path> 优先级最高（CLI > .env > 内置默认）
 AI_PROMPT_TPL=你是多语言内容分析专家...这是内容：{content}
 
 # 请求超时（秒，通过 --analyze-timeout 参数设置）
@@ -554,7 +560,7 @@ AI_PROMPT_TPL=你是多语言内容分析专家...这是内容：{content}
 2. AI 先对识别文本做**语义修正**（修正 Whisper 常见的同音错字、专业术语误判、形近字混淆）
 3. 再对修正后的文本提取搜索关键词 → 写入 `keywords` 列
 
-> **提示词模板可自由定制**：只需保留 `{content}` 占位符，提示词内容可改为翻译、摘要、分类等任意任务。完整模板见 `.env.example`。
+> **提示词模板可自由定制**：只需保留 `{content}` 占位符，提示词内容可改为翻译、摘要、分类等任意任务。完整模板见 `.env.example`。值支持文件路径（指向存在的文件则自动读取内容），也可通过 `--ai-prompt` CLI 参数临时覆盖（优先级：CLI > .env > 内置默认）。
 
 ### 单独运行
 
@@ -572,6 +578,26 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 ### 禁用 AI 分析
 
 设置 `AI_ENABLED=false`，识别完成后跳过 AI 分析步骤。
+
+### 提示词优先级
+
+`WHISPER_INITIAL_PROMPT` 和 `AI_PROMPT_TPL` 均支持三种输入方式：
+
+| 方式 | 示例 | 说明 |
+|------|------|------|
+| 内联文本 | `WHISPER_INITIAL_PROMPT=细胞 冻存` | 直接写入值 |
+| 文件路径 | `AI_PROMPT_TPL=./prompts/my-prompt.txt` | 值指向存在的文件时自动读取内容 |
+| CLI 覆盖 | `--ai-prompt ./prompts/custom.txt` | 优先级最高，临试覆盖不修改 .env |
+
+优先级：**CLI 参数 > .env 环境变量 > 内置默认值**
+
+```bash
+# 用自定义 prompt 文件跑全量
+video-pipeline --ai-prompt ./prompts/keyword-extract.txt --sheet "普诺赛中文站"
+
+# 临时覆盖 whisper 初始提示词 + 额外参数
+video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-args "--beam_size 10 --verbose" --id 427
+```
 
 ---
 
