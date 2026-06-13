@@ -70,8 +70,9 @@ const WHISPER_SERVICE = process.env.WHISPER_SERVICE || 'http://localhost:9588';
 const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 模型路径 (/load)，留空=使用服务端默认
 
 // ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
+const WHISPER_TASK = process.env.WHISPER_TASK || 'transcribe';            // 任务类型: transcribe/translate
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';            // 模型名: tiny/base/small/medium/large-v3/turbo
-const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || 'zh';           // 语言: 设 zh 避免繁体混入; 留空=自动检测
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || '';           // 语言: 设 zh 避免繁体混入; 留空=自动检测
 const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || '5';         // beam 宽度 (温度=0 时生效, 越大越准)
@@ -1250,6 +1251,7 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
   async function doTranscribe() {
     const args = [
       audioFile,
+      '--task', WHISPER_TASK,
       '--model', WHISPER_MODEL,
       '--device', WHISPER_DEVICE,
       '--beam_size', WHISPER_BEAM_SIZE,

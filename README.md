@@ -152,6 +152,7 @@ API 端点：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `WHISPER_TASK` | `transcribe` | 任务类型: transcribe / translate |
 | `WHISPER_MODEL` | `medium` | 模型大小：tiny / base / small / medium / large-v3 / turbo |
 | `WHISPER_LANGUAGE` | `zh` | 语言代码（zh/en/ja 等），空=多语言自动检测 |
 | `WHISPER_DEVICE` | `cpu` | 推理设备：cpu / cuda |
@@ -657,9 +658,9 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根（可通过 `DOWNLOADS_DIR` / `TRANSCODED_DIR` / `REPORTS_DIR` 环境变量覆盖）。
 
-> `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）  
-> `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencent`、`youku`）  
-> `{stem}` = 去重后的安全文件名（不含扩展名）  
+> `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）
+> `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencent`、`youku`）
+> `{stem}` = 去重后的安全文件名（不含扩展名）
 
 ### ① Excel 批量模式（默认）
 

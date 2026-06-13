@@ -104,7 +104,8 @@ WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服�
 # 服务端模型路径（ggml 文件，用于 POST /load 切换模型；留空则使用服务端当前加载的模型）
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
 
-# ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
+# ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──         //
+WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")  # 任务类型: transcribe/translate
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
 WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
@@ -1242,6 +1243,7 @@ def _transcribe_local(
     def _run():
         cmd = [
             "whisper", str(audio_file),
+            "--task", WHISPER_TASK,
             "--model", WHISPER_MODEL,
             "--device", WHISPER_DEVICE,
             "--beam_size", WHISPER_BEAM_SIZE,
