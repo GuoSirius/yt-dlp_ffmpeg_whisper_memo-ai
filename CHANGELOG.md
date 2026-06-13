@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3] - 2026-06-13
+
+### Chores
+
+- optimize prompts (`6b70c95`)
+
+
 ## [1.3.2] - 2026-06-13
 
 ### Features
