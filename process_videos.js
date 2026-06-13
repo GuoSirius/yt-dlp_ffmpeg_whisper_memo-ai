@@ -50,10 +50,10 @@ function envPath(key, defaultValue) {
   return path.isAbsolute(val) ? p : path.resolve(BASE_DIR, val);
 }
 
-let EXCEL_FILE = envPath('EXCEL_FILE', 'data/export_2026-06-10_split.xlsx');
+let EXCEL_FILE = envPath('EXCEL_FILE', 'data/examples/website_split.xlsx');
 const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'output/downloads');
 const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'output/transcoded');
-const COOKIES_DIR = envPath('COOKIES_DIR', 'cookies');
+const COOKIES_DIR = envPath('COOKIES_DIR', 'data/cookies');
 const REPORTS_DIR = envPath('REPORTS_DIR', 'output/reports');
 
 const YTDLP = process.env.YTDLP || 'yt-dlp';
@@ -195,31 +195,31 @@ function mergeWhisperArgs(baseArgs, extraArgs) {
 function c(color, text) {
   const codes = {
     // styles
-    bold:      '\x1b[1m',
-    dim:       '\x1b[2m',
+    bold: '\x1b[1m',
+    dim: '\x1b[2m',
     underline: '\x1b[4m',
     // foreground
-    black:   '\x1b[30m',
-    red:     '\x1b[31m',
-    green:   '\x1b[32m',
-    yellow:  '\x1b[33m',
-    blue:    '\x1b[34m',
+    black: '\x1b[30m',
+    red: '\x1b[31m',
+    green: '\x1b[32m',
+    yellow: '\x1b[33m',
+    blue: '\x1b[34m',
     magenta: '\x1b[35m',
-    cyan:    '\x1b[36m',
-    white:   '\x1b[37m',
-    gray:    '\x1b[90m',
+    cyan: '\x1b[36m',
+    white: '\x1b[37m',
+    gray: '\x1b[90m',
     // background
-    bgBlack:   '\x1b[40m',
-    bgRed:     '\x1b[41m',
-    bgGreen:   '\x1b[42m',
-    bgYellow:  '\x1b[43m',
-    bgBlue:    '\x1b[44m',
+    bgBlack: '\x1b[40m',
+    bgRed: '\x1b[41m',
+    bgGreen: '\x1b[42m',
+    bgYellow: '\x1b[43m',
+    bgBlue: '\x1b[44m',
     bgMagenta: '\x1b[45m',
-    bgCyan:    '\x1b[46m',
-    bgWhite:   '\x1b[47m',
-    bgGray:    '\x1b[100m',
+    bgCyan: '\x1b[46m',
+    bgWhite: '\x1b[47m',
+    bgGray: '\x1b[100m',
     // reset
-    reset:   '\x1b[0m',
+    reset: '\x1b[0m',
   };
   if (Array.isArray(color)) {
     return color.map(cl => codes[cl] || '').join('') + text + codes.reset;
@@ -228,12 +228,12 @@ function c(color, text) {
 }
 
 // 日志样式辅助
-function styleStart(msg)  { return c(['bold', 'cyan'], `► ${msg}`); }
-function styleDone(msg)   { return c(['bold', 'green'], `✔ ${msg}`); }
-function styleFail(msg)   { return c(['bold', 'red'], `✘ ${msg}`); }
-function styleWarn(msg)   { return c(['bold', 'yellow'], `⚠ ${msg}`); }
-function styleSkip(msg)   { return c(['dim', 'yellow'], `⏭ ${msg}`); }
-function styleInfo(msg)   { return c('cyan', `  ${msg}`); }
+function styleStart(msg) { return c(['bold', 'cyan'], `► ${msg}`); }
+function styleDone(msg) { return c(['bold', 'green'], `✔ ${msg}`); }
+function styleFail(msg) { return c(['bold', 'red'], `✘ ${msg}`); }
+function styleWarn(msg) { return c(['bold', 'yellow'], `⚠ ${msg}`); }
+function styleSkip(msg) { return c(['dim', 'yellow'], `⏭ ${msg}`); }
+function styleInfo(msg) { return c('cyan', `  ${msg}`); }
 function styleCount(n, label) { return c('bold', n) + ' ' + label; }
 function styleSection(title) { return '\n' + c(['bold', 'blue'], `═══ ${title} ═══`); }
 function styleProgress(cur, total) { return c('cyan', `[${cur}/${total}]`); }
@@ -817,7 +817,7 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
 
     if (onProgress) {
       // 同时监听 stdout 和 stderr — yt-dlp --newline 的 [download] 进度输出在 stdout
-      const onLine = (buf, line) => { try { onProgress(line); } catch {} };
+      const onLine = (buf, line) => { try { onProgress(line); } catch { } };
       const rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
       rlOut.on('line', line => { stdout += line + '\n'; onLine('stdout', line); });
       const rlErr = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
@@ -852,7 +852,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   // CLI > .env > 内置默认；resolvePromptValue 自动处理文件路径和 \n 转义
   const promptTpl = _cliAiPrompt
     || resolvePromptValue(process.env.AI_PROMPT_TPL)
-    || '你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正】语音识别（Whisper）可能产生以下错误，请在理解上下文后修正明显错误（只修正、不改变原文语义、不添加新内容）：\n- 同音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"\n- 专业术语误判：如"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"\n- 形近字混淆：如"印记"误为"印迹"、"缓冲液"误为"缓冲夜"\n修正后的文本仅内部使用，最终只输出关键词列表。\n\n【第二步：提取关键词】\n请遵循以下规则：\n\n【语言判定】\n- 先统计内容的中文字符数和英文字母数\n- 中文占比 > 60% → 按纯中文处理\n- 英文占比 > 60% → 按纯英文处理\n- 两者都不满足 → 按中英混合处理\n\n【纯中文内容】\n- 提取全部有价值的关键词，不限定数量，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的有实际搜索价值的短语\n- 避免单字和泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 提取全部有价值的关键词，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的有实际搜索价值的短语\n- 避免单字和泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 提取全部有价值的关键词，不限定数量\n- 中文关键词必须是中文，英文关键词必须是英文，互不翻译\n- 中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔\n\n通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}';
+    || '你是生物医药多语言内容分析与ASR纠错专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正与术语消歧】语音识别（Whisper）在处理专业内容时极易出错。请在理解上下文的基础上，激活生物医药专业词典进行以下修正（仅内部推理使用，不改变原文语义，不添加新内容）：\n- 同音/近音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"、"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"、"质粒"误为"智力"、"表达量"误为"表大量"。\n- 形近字混淆：如"印迹"误为"印记"、"缓冲液"误为"缓冲夜"、"核酸"误为"核算"、"测序"误为"侧序"。\n- 英文缩写与发音误判：如将"PCR"误识为中文或乱码，将"CRISPR"误识为"克里斯普"，需根据上下文还原为标准英文缩写。\n边界约束：仅修正确实存在明显错误的词汇，保持原文行文逻辑不变。\n\n【第二步：提取关键词】\n请遵循以下规则：\n\n【语言判定】\n- 先统计内容的中文字符数和英文字母数\n- 中文占比 > 60% → 按纯中文处理\n- 英文占比 > 60% → 按纯英文处理\n- 两者都不满足 → 按中英混合处理\n\n【纯中文内容】\n- 提取全部有价值的关键词，不限定数量，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的有实际搜索价值的专有名词或技术短语\n- 避免单字和泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 提取全部有价值的关键词，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的专业术语、基因/蛋白名称或实验方法等\n- 避免单字和泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 提取全部有价值的关键词，不限定数量\n- 语种隔离原则：中文关键词必须是中文，英文关键词必须是英文，互不翻译且严禁中英混杂\n- 排序原则：中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔\n\n通用规则：全面覆盖内容主题，确保关键词具有检索价值，不遗漏不重复，不要凭空编造内容中没有的概念。最终只输出以英文逗号分隔的关键词列表，不要包含任何解释性文字。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
@@ -954,10 +954,10 @@ function cleanupPartials(dlDir, stem) {
         if (!stat.isFile()) continue;
       } catch { continue; }
       if (f === `${stem}.part` || f === `${stem}.ytdl` || patterns.some(p => p.test(f))) {
-        try { fs.unlinkSync(fullPath); lockedPrint(`  [${stem}] cleaned partial: ${f}`); } catch {}
+        try { fs.unlinkSync(fullPath); lockedPrint(`  [${stem}] cleaned partial: ${f}`); } catch { }
       }
     }
-  } catch {}
+  } catch { }
 }
 
 // ============================== 下载 ==============================
@@ -1593,7 +1593,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   lockedPrint('');
   lockedPrint(c('dim', '─'.repeat(62)));
   lockedPrint(c('bold', `  ▶ Task ${positionLabel || '?'}`)
- + c('dim', `  [${stem}]  sheet=${sheetName}  platform=${pkey || 'N/A'}`));
+    + c('dim', `  [${stem}]  sheet=${sheetName}  platform=${pkey || 'N/A'}`));
   if (title) lockedPrint(c('dim', `  title: ${title.slice(0, 50)}`));
   lockedPrint(c('dim', '─'.repeat(62)));
   logInfo(`[${stem}] start (sheet=${sheetName}, platform=${pkey || 'N/A'}, title=${title.slice(0, 40)})`);
@@ -2116,7 +2116,7 @@ async function runContentTask(opts) {
     } else {
       logStep(`[${stem}] 开始 AI 分析...`);
       try {
-      const aiStart = Date.now();
+        const aiStart = Date.now();
         const { text: kw, retries, error } = await stepAnalyze(
           contentText, maxRetries, retryDelay, analyzeTimeout, stem
         );
@@ -2596,8 +2596,10 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
     writeAllContentsToExcel(results, kwMap.size ? kwMap : null);
   }
 
-  const config = { retry_from: reportPath, steps, max_retries: maxRetries,
-    retry_delay: retryDelay, concurrency, force };
+  const config = {
+    retry_from: reportPath, steps, max_retries: maxRetries,
+    retry_delay: retryDelay, concurrency, force
+  };
   const reportPaths = generateReport(results, config);
   printReportSummary(results);
   logInfo(`all done! reports: ${Array.isArray(reportPaths) ? reportPaths.join(', ') : reportPaths}`);

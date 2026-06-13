@@ -84,10 +84,10 @@ def _env_path(key: str, default: str) -> Path:
     p = Path(val)
     return p if p.is_absolute() else BASE_DIR / p
 
-EXCEL_FILE = _env_path("EXCEL_FILE", "data/export_2026-06-10_split.xlsx")
+EXCEL_FILE = _env_path("EXCEL_FILE", "data/examples/website_split.xlsx")
 DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "output/downloads")
 TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "output/transcoded")
-COOKIES_DIR = _env_path("COOKIES_DIR", "cookies")
+COOKIES_DIR = _env_path("COOKIES_DIR", "data/cookies")
 REPORTS_DIR = _env_path("REPORTS_DIR", "output/reports")
 
 YTDLP = os.getenv("YTDLP", "yt-dlp")
@@ -107,7 +107,7 @@ WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
 # ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──         //
 WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")  # 任务类型: transcribe/translate
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "zh")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
 WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
 WHISPER_BEAM_SIZE = os.getenv("WHISPER_BEAM_SIZE", "5")  # beam 宽度 (温度=0 时生效, 越大越准)
@@ -831,13 +831,13 @@ def step_analyze(
     prompt_tpl = (
         _cli_ai_prompt
         or _resolve_prompt_value(os.getenv("AI_PROMPT_TPL"))
-        or """你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。
+        or """你是生物医药多语言内容分析与ASR纠错专家。对以下视频转录文本提取搜索关键词。
 
-【第一步：语义修正】语音识别（Whisper）可能产生以下错误，请在理解上下文后修正明显错误（只修正、不改变原文语义、不添加新内容）：
-- 同音错字：如「冻存」误为「洞存」、「储存」误为「铸存」、「传代」误为「传带」、「复苏」误为「复舒」
-- 专业术语误判：如「抗体」误为「康体」、「细胞株」误为「细胞珠」、「培养基」误为「培养鸡」
-- 形近字混淆：如「印记」误为「印迹」、「缓冲液」误为「缓冲夜」
-修正后的文本仅内部使用，最终只输出关键词列表。
+【第一步：语义修正与术语消歧】语音识别（Whisper）在处理专业内容时极易出错。请在理解上下文的基础上，激活生物医药专业词典进行以下修正（仅内部推理使用，不改变原文语义，不添加新内容）：
+- 同音/近音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"、"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"、"质粒"误为"智力"、"表达量"误为"表大量"。
+- 形近字混淆：如"印迹"误为"印记"、"缓冲液"误为"缓冲夜"、"核酸"误为"核算"、"测序"误为"侧序"。
+- 英文缩写与发音误判：如将"PCR"误识为中文或乱码，将"CRISPR"误识为"克里斯普"，需根据上下文还原为标准英文缩写。
+边界约束：仅修正确实存在明显错误的词汇，保持原文行文逻辑不变。
 
 【第二步：提取关键词】
 请遵循以下规则：
@@ -851,21 +851,21 @@ def step_analyze(
 【纯中文内容】
 - 提取全部有价值的关键词，不限定数量，用英文逗号分隔
 - 关键词必须全部是中文，绝对不能翻译成英文
-- 优先提取 2-8 字的有实际搜索价值的短语
-- 避免单字和泛词（如「的」「是」「这个」「一个」等）
+- 优先提取 2-8 字的有实际搜索价值的专有名词或技术短语
+- 避免单字和泛词（如"的""是""这个""一个"等）
 
 【纯英文内容】
 - 提取全部有价值的关键词，用英文逗号分隔
 - 关键词必须全部是英文，绝对不能翻译成中文
-- 优先提取 2-8 词的有实际搜索价值的短语
-- 避免单字和泛词（如「the」「this」「is」「a」等）
+- 优先提取 2-8 词的专业术语、基因/蛋白名称或实验方法等
+- 避免单字和泛词（如"the""this""is""a"等）
 
 【中英混合内容】
 - 提取全部有价值的关键词，不限定数量
-- 中文关键词必须是中文，英文关键词必须是英文，互不翻译
-- 中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔
+- 语种隔离原则：中文关键词必须是中文，英文关键词必须是英文，互不翻译且严禁中英混杂
+- 排序原则：中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔
 
-通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}"""
+通用规则：全面覆盖内容主题，确保关键词具有检索价值，不遗漏不重复，不要凭空编造内容中没有的概念。最终只输出以英文逗号分隔的关键词列表，不要包含任何解释性文字。这是内容：{content}"""
     )
     ai_timeout = timeout
 
