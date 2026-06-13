@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1] - 2026-06-13
+
+### Documentation
+
+- 修正注释位置并同步README新功能文档 (`b2dbaf7`)
+
+
 ## [1.3.0] - 2026-06-13
 
 ### Features
