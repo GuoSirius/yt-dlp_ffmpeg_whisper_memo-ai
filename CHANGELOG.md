@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2] - 2026-06-13
+
+### Features
+
+- add WHISPER_TSK env (`3db8bd4`)
+
+
 ## [1.3.1] - 2026-06-13
 
 ### Documentation
