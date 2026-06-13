@@ -111,12 +111,84 @@ WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录，�
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
 WHISPER_BEAM_SIZE = os.getenv("WHISPER_BEAM_SIZE", "5")  # beam 宽度 (温度=0 时生效, 越大越准)
 WHISPER_BEST_OF = os.getenv("WHISPER_BEST_OF", "5")  # 候选数 (温度>0 时生效)
-WHISPER_INITIAL_PROMPT = os.getenv("WHISPER_INITIAL_PROMPT", "")  # 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
+WHISPER_INITIAL_PROMPT: str = os.getenv("WHISPER_INITIAL_PROMPT", "")  # 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
 WHISPER_CONDITION_ON_PREV = os.getenv("WHISPER_CONDITION_ON_PREV", "False")  # 推荐 False: 每段独立解码, 避免长视频错误累积; True=前段文本传入(仅适合短音频)
 WHISPER_FP16 = os.getenv("WHISPER_FP16", "False")  # CPU 应设为 False
 WHISPER_THREADS = os.getenv("WHISPER_THREADS", "0")  # 线程数 (0=自动)
 
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
+
+# ── CLI 覆盖占位（CLI 解析后由 apply_cli_overrides 填充）──
+_cli_ai_prompt: str | None = None  # --ai-prompt
+_resolved_whisper_extra_args: list[str] = []  # 解析后的参数数组
+
+
+def _resolve_prompt_value(val: str | None) -> str:
+    """解析提示词值：自动检测是文件路径还是内联文本。
+    如果值对应的文件存在，读取文件内容；否则当文本直接返回。
+    读取后自动将字面量 \\n \\t 转义为真正的换行/制表符。
+    """
+    if not val:
+        return ""
+    p = Path(val)
+    if not p.is_absolute():
+        p = BASE_DIR / p
+    if p.is_file():
+        content = p.read_text(encoding="utf-8").strip()
+        return content.replace("\\n", "\n").replace("\\t", "\t")
+    return val.replace("\\n", "\n").replace("\\t", "\t")
+
+
+def _parse_extra_args(raw: str | None) -> list[str]:
+    """解析 shell 字符串为参数数组。例如 '--beam_size 5' → ['--beam_size', '5']"""
+    if not raw or not raw.strip():
+        return []
+    return raw.strip().split()
+
+
+def _merge_whisper_args(base_args: list[str], extra_args: list[str]) -> list[str]:
+    """合并 whisper 参数：基础参数 + 额外参数去重。
+    额外参数优先级最高，如果基础参数中存在同名 key（--xxx），则移除基础参数中的该 key-value 对。
+    """
+    if not extra_args:
+        return base_args
+    extra_keys = {a for a in extra_args if a.startswith("--")}
+    merged: list[str] = []
+    i = 0
+    while i < len(base_args):
+        arg = base_args[i]
+        if arg.startswith("--") and arg in extra_keys:
+            # 跳过冲突的 key 及其 value
+            if i + 1 < len(base_args) and not base_args[i + 1].startswith("-"):
+                i += 2
+            else:
+                i += 1
+            continue
+        merged.append(arg)
+        i += 1
+    return merged + extra_args
+
+
+def apply_cli_overrides(args: argparse.Namespace) -> None:
+    """应用 CLI 覆盖：CLI > .env > 内置默认（在 parser.parse_args() 后调用）"""
+    global WHISPER_INITIAL_PROMPT, _cli_ai_prompt, _resolved_whisper_extra_args
+
+    # whisper-initial-prompt: CLI > .env > 内置默认
+    if args.whisper_initial_prompt is not None:
+        WHISPER_INITIAL_PROMPT = _resolve_prompt_value(args.whisper_initial_prompt)
+    else:
+        WHISPER_INITIAL_PROMPT = _resolve_prompt_value(WHISPER_INITIAL_PROMPT)
+
+    # ai-prompt: CLI > .env > 内置默认（存入全局供 step_analyze 使用）
+    if args.ai_prompt is not None:
+        _cli_ai_prompt = _resolve_prompt_value(args.ai_prompt)
+
+    # whisper-extra-args: CLI > .env
+    raw_extra = args.whisper_extra_args or os.getenv("WHISPER_EXTRA_ARGS", "")
+    _resolved_whisper_extra_args = _parse_extra_args(raw_extra)
+    if _resolved_whisper_extra_args:
+        with _print_lock:
+            print(f"  whisper extra args: {' '.join(_resolved_whisper_extra_args)}", flush=True)
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
 FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-vn -map_metadata -1 -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:LRA=11:linear=true,aresample=resampler=soxr:osr=16000:osf=s16:dither_method=shibata -ac 1 -c:a pcm_s16le").split()
@@ -754,9 +826,11 @@ def step_analyze(
     api_key = os.getenv("AI_API_KEY", "")
     base_url = os.getenv("AI_BASE_URL", "")
     model = os.getenv("AI_MODEL", "")
-    prompt_tpl = os.getenv(
-        "AI_PROMPT_TPL",
-        """你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。
+    # CLI > .env > 内置默认；_resolve_prompt_value 自动处理文件路径和 \n 转义
+    prompt_tpl = (
+        _cli_ai_prompt
+        or _resolve_prompt_value(os.getenv("AI_PROMPT_TPL"))
+        or """你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。
 
 【第一步：语义修正】语音识别（Whisper）可能产生以下错误，请在理解上下文后修正明显错误（只修正、不改变原文语义、不添加新内容）：
 - 同音错字：如「冻存」误为「洞存」、「储存」误为「铸存」、「传代」误为「传带」、「复苏」误为「复舒」
@@ -792,8 +866,6 @@ def step_analyze(
 
 通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}"""
     )
-    # dotenv 不解析 \n \t 转义，需要手动替换（来自 .env 的字面量 \n 转为真正换行）
-    prompt_tpl = prompt_tpl.replace("\\n", "\n").replace("\\t", "\t")
     ai_timeout = timeout
 
     if not api_key or not base_url or not model:
@@ -1195,6 +1267,9 @@ def _transcribe_local(
             "--output_format", WHISPER_OUTPUT_FORMAT,
             "--output_dir", str(out_dir),
         ]
+
+        # 合并 WHISPER_EXTRA_ARGS（CLI > .env），去重后追加
+        cmd = _merge_whisper_args(cmd, _resolved_whisper_extra_args)
 
         # Show segment progress from stderr (whisper outputs "[00:00.000 --> 00:30.000] ...")
         env = os.environ.copy()
@@ -2651,7 +2726,22 @@ if __name__ == "__main__":
         "--content",
         help="直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，直接做 AI 分析",
     )
+    parser.add_argument(
+        "--whisper-initial-prompt",
+        help="Whisper 初始提示词（文本或文件路径，CLI 优先级最高）",
+    )
+    parser.add_argument(
+        "--ai-prompt",
+        help="AI 分析提示词模板（文本或文件路径，CLI 优先级最高）",
+    )
+    parser.add_argument(
+        "--whisper-extra-args",
+        help='Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）',
+    )
     args = parser.parse_args()
+
+    # ── CLI 覆盖：提示词文件/文本归一化 + whisper extra args ──
+    apply_cli_overrides(args)
 
     # ── init 模式 ──
     if args.init:

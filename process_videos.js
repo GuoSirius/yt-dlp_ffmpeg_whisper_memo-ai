@@ -76,12 +76,45 @@ const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模�
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
 const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || '5';         // beam 宽度 (温度=0 时生效, 越大越准)
 const WHISPER_BEST_OF = process.env.WHISPER_BEST_OF || '5';             // 候选数 (温度>0 时生效)
-const WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
+let WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始提示词: 给首段音频提供词汇上下文, 提升专有名词识别; 示例见 .env.example
+// WHISPER_INITIAL_PROMPT 在 CLI 解析后通过 applyCliOverrides() 用 resolvePromptValue 归一化
 const WHISPER_CONDITION_ON_PREV = process.env.WHISPER_CONDITION_ON_PREV || 'False'; // 推荐 False: 每段独立解码, 避免长视频错误累积; True=前段文本传入(仅适合短音频)
 const WHISPER_FP16 = process.env.WHISPER_FP16 || 'False';              // CPU 应设为 False
 const WHISPER_THREADS = process.env.WHISPER_THREADS || '0';            // 线程数 (0=自动)
 
 let _SERVICE_MODEL_LOADED = null;
+
+// ── CLI 覆盖占位（CLI 解析后由 applyCliOverrides 填充）──
+let _cliWhisperInitialPrompt = null;  // --whisper-initial-prompt
+let _cliAiPrompt = null;              // --ai-prompt
+let _cliWhisperExtraArgs = null;      // --whisper-extra-args (shell string)
+let _resolvedWhisperExtraArgs = [];   // 解析后的参数数组
+
+/**
+ * 应用 CLI 覆盖：CLI > .env > 内置默认
+ * 在 program.parse() 后调用
+ */
+function applyCliOverrides(cliOpts) {
+  // whisper-initial-prompt: CLI > .env > 内置默认
+  if (cliOpts.whisperInitialPrompt !== undefined) {
+    WHISPER_INITIAL_PROMPT = resolvePromptValue(cliOpts.whisperInitialPrompt);
+  } else {
+    // .env 值也需要 resolvePromptValue 处理（可能指向文件）
+    WHISPER_INITIAL_PROMPT = resolvePromptValue(WHISPER_INITIAL_PROMPT);
+  }
+
+  // ai-prompt: CLI > .env > 内置默认（存入全局供 stepAnalyze 使用）
+  if (cliOpts.aiPrompt !== undefined) {
+    _cliAiPrompt = resolvePromptValue(cliOpts.aiPrompt);
+  }
+
+  // whisper-extra-args: CLI > .env
+  const rawExtra = cliOpts.whisperExtraArgs || process.env.WHISPER_EXTRA_ARGS || '';
+  _resolvedWhisperExtraArgs = parseExtraArgs(rawExtra);
+  if (_resolvedWhisperExtraArgs.length) {
+    lockedPrint(styleInfo(`whisper extra args: ${_resolvedWhisperExtraArgs.join(' ')}`));
+  }
+}
 
 const TRANSCODE_EXT = process.env.TRANSCODE_EXT || '.wav';
 const FFMPEG_TRANSCODE_ARGS = (process.env.TRANSCODE_ARGS || '-vn -map_metadata -1 -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:LRA=11:linear=true,aresample=resampler=soxr:osr=16000:osf=s16:dither_method=shibata -ac 1 -c:a pcm_s16le').split(/ +/).filter(Boolean);
@@ -109,6 +142,55 @@ const PLATFORM_COL_MAP = {
 };
 
 // ============================== 工具函数 ==============================
+/**
+ * 解析提示词值：自动检测是文件路径还是内联文本。
+ * 如果值对应的文件存在，读取文件内容；否则当文本直接返回。
+ * 读取后自动将字面量 \n \t 转义为真正的换行/制表符。
+ */
+function resolvePromptValue(val) {
+  if (!val) return val || '';
+  const p = path.resolve(BASE_DIR, val);
+  if (fs.existsSync(p)) {
+    const content = fs.readFileSync(p, 'utf-8').trim();
+    return content.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  }
+  return val.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+}
+
+/**
+ * 解析 whisper 额外参数 shell 字符串为参数数组。
+ * 例如 "--beam_size 5 --best_of 5" → ["--beam_size", "5", "--best_of", "5"]
+ * 空字符串或 undefined 返回空数组。
+ */
+function parseExtraArgs(str) {
+  if (!str || !str.trim()) return [];
+  return str.trim().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * 合并 whisper 参数：基础参数 + 额外参数去重。
+ * 额外参数优先级最高，如果基础参数中存在同名 key（--xxx），则移除基础参数中的该 key-value 对。
+ * 返回合并后的参数数组。
+ */
+function mergeWhisperArgs(baseArgs, extraArgs) {
+  if (!extraArgs || !extraArgs.length) return baseArgs;
+  const extraKeys = new Set();
+  for (const arg of extraArgs) {
+    if (arg.startsWith('--')) extraKeys.add(arg);
+  }
+  const merged = [];
+  for (let i = 0; i < baseArgs.length; i++) {
+    const arg = baseArgs[i];
+    if (arg.startsWith('--') && extraKeys.has(arg)) {
+      // 跳过冲突的 key 及其 value
+      if (i + 1 < baseArgs.length && !baseArgs[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    merged.push(arg);
+  }
+  return [...merged, ...extraArgs];
+}
+
 function c(color, text) {
   const codes = {
     // styles
@@ -766,9 +848,10 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   const apiKey = process.env.AI_API_KEY || '';
   const baseUrl = (process.env.AI_BASE_URL || '').replace(/\/$/, '');
   const model = process.env.AI_MODEL || '';
-  // dotenv 不解析 \n \t 转义，需要手动替换，确保 prompt 换行正确
-  const rawPromptTpl = process.env.AI_PROMPT_TPL || '你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正】语音识别（Whisper）可能产生以下错误，请在理解上下文后修正明显错误（只修正、不改变原文语义、不添加新内容）：\n- 同音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"\n- 专业术语误判：如"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"\n- 形近字混淆：如"印记"误为"印迹"、"缓冲液"误为"缓冲夜"\n修正后的文本仅内部使用，最终只输出关键词列表。\n\n【第二步：提取关键词】\n请遵循以下规则：\n\n【语言判定】\n- 先统计内容的中文字符数和英文字母数\n- 中文占比 > 60% → 按纯中文处理\n- 英文占比 > 60% → 按纯英文处理\n- 两者都不满足 → 按中英混合处理\n\n【纯中文内容】\n- 提取全部有价值的关键词，不限定数量，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的有实际搜索价值的短语\n- 避免单字和泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 提取全部有价值的关键词，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的有实际搜索价值的短语\n- 避免单字和泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 提取全部有价值的关键词，不限定数量\n- 中文关键词必须是中文，英文关键词必须是英文，互不翻译\n- 中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔\n\n通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}';
-  const promptTpl = rawPromptTpl.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  // CLI > .env > 内置默认；resolvePromptValue 自动处理文件路径和 \n 转义
+  const promptTpl = _cliAiPrompt
+    || resolvePromptValue(process.env.AI_PROMPT_TPL)
+    || '你是多语言内容分析专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正】语音识别（Whisper）可能产生以下错误，请在理解上下文后修正明显错误（只修正、不改变原文语义、不添加新内容）：\n- 同音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"\n- 专业术语误判：如"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"\n- 形近字混淆：如"印记"误为"印迹"、"缓冲液"误为"缓冲夜"\n修正后的文本仅内部使用，最终只输出关键词列表。\n\n【第二步：提取关键词】\n请遵循以下规则：\n\n【语言判定】\n- 先统计内容的中文字符数和英文字母数\n- 中文占比 > 60% → 按纯中文处理\n- 英文占比 > 60% → 按纯英文处理\n- 两者都不满足 → 按中英混合处理\n\n【纯中文内容】\n- 提取全部有价值的关键词，不限定数量，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的有实际搜索价值的短语\n- 避免单字和泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 提取全部有价值的关键词，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的有实际搜索价值的短语\n- 避免单字和泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 提取全部有价值的关键词，不限定数量\n- 中文关键词必须是中文，英文关键词必须是英文，互不翻译\n- 中文关键词放在前面，英文关键词放在后面，统一用英文逗号分隔\n\n通用规则：全面覆盖内容主题，不遗漏不重复，不要凭空编造内容中没有的概念。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
@@ -1182,7 +1265,10 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     if (WHISPER_THREADS && WHISPER_THREADS !== '0') args.push('--threads', WHISPER_THREADS);
     args.push('--output_format', WHISPER_OUTPUT_FORMAT, '--output_dir', outDir);
 
-    const { stderr } = await spawnWithTimeout('whisper', args, timeout, {
+    // 合并 WHISPER_EXTRA_ARGS（CLI > .env），去重后追加
+    const finalArgs = mergeWhisperArgs(args, _resolvedWhisperExtraArgs);
+
+    const { stderr } = await spawnWithTimeout('whisper', finalArgs, timeout, {
       onProgress: (_src, line) => {
         if (line.trim()) {
           // whisper progress: "[00:00.000 --> 00:30.000]  text..." → show end timestamp
@@ -2549,11 +2635,17 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--content-column <col>', 'Excel 模式：指定包含已爬取文本的列名，批量做 AI 分析')
     .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
     .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用）')
-    .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）');
+    .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）')
+    .option('--whisper-initial-prompt <text|path>', 'Whisper 初始提示词（文本或文件路径，CLI 优先级最高）')
+    .option('--ai-prompt <text|path>', 'AI 分析提示词模板（文本或文件路径，CLI 优先级最高）')
+    .option('--whisper-extra-args <args>', 'Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）');
 
   program.parse();
 
   const opts = program.opts();
+
+  // ── CLI 覆盖：提示词文件/文本归一化 + whisper extra args ──
+  applyCliOverrides(opts);
 
   // ── init 模式 ──
   if (opts.init) {
