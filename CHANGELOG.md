@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.0] - 2026-06-13
+
+### Features
+
+- 提示词支持文件路径、新增 CLI 参数、whisper extra-args 去重 (`973c80b`)
+
+### Chores
+
+- update before release (`a0b4a2a`)
+
+
 ## [1.2.22] - 2026-06-12
 
 ### Bug Fixes
