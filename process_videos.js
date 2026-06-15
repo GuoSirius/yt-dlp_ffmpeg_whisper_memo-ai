@@ -55,6 +55,7 @@ const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'output/downloads');
 const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'output/transcoded');
 const COOKIES_DIR = envPath('COOKIES_DIR', 'data/cookies');
 const REPORTS_DIR = envPath('REPORTS_DIR', 'output/reports');
+const PROGRESS_DIR = envPath('PROGRESS_DIR', 'output/progress');
 
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
@@ -1361,6 +1362,72 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
   }
 }
 
+// ============================== 增量进度写回 ==============================
+
+/**
+ * 每完成一个任务立即写入 progress JSON，方便用户随时查看中间结果。
+ *
+ * 目录结构: output/progress/{sheet}/task_{stem}.json
+ * 文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
+ */
+function saveTaskProgress(result) {
+  const progressDir = path.join(PROGRESS_DIR, result.sheet);
+  fs.mkdirSync(progressDir, { recursive: true });
+  const progressFile = path.join(progressDir, `task_${result.stem}.json`);
+
+  const content = (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string')
+    ? result.transcribe.file : null;
+  const keywords = (result.analyze.status === 'success' && typeof result.analyze.file === 'string')
+    ? result.analyze.file : null;
+
+  const data = {
+    sheet: result.sheet,
+    id_val: result.id_val,
+    title: result.title,
+    stem: result.stem,
+    platform: result.platform,
+    video_url: result.video_url,
+    overall_status: result.overall_status,
+    error: result.error,
+    content,
+    keywords,
+    download: {
+      status: result.download.status,
+      file: result.download.file,
+      error: result.download.error,
+      retries_used: result.download.retries_used,
+    },
+    transcode: {
+      status: result.transcode.status,
+      file: result.transcode.file,
+      error: result.transcode.error,
+      retries_used: result.transcode.retries_used,
+    },
+    transcribe: {
+      status: result.transcribe.status,
+      error: result.transcribe.error,
+      retries_used: result.transcribe.retries_used,
+    },
+    analyze: {
+      status: result.analyze.status,
+      error: result.analyze.error,
+      retries_used: result.analyze.retries_used,
+    },
+    timestamp: new Date().toISOString(),
+  };
+
+  fs.writeFileSync(progressFile, JSON.stringify(data, null, 2), 'utf-8');
+
+  // 打印简短提示
+  const infoParts = [result.overall_status];
+  if (content) infoParts.push(`content(${content.length} chars)`);
+  if (keywords) infoParts.push(`keywords(${keywords.length} chars)`);
+  lockedPrint(
+    c('dim', `  📄 进度已保存: output/progress/${result.sheet}/task_${result.stem}.json`)
+    + c('dim', `  [${infoParts.join(', ')}]`)
+  );
+}
+
 // ============================== Excel 批量写回 ==============================
 function writeAllContentsToExcel(results, keywordsDict = null) {
   if (!results.length) return;
@@ -2378,6 +2445,8 @@ async function run({
       }
       results.push(result);
       overall.addResult(result.overall_status);
+      // ── 即时保存进度 ──
+      saveTaskProgress(result);
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);
@@ -2577,6 +2646,8 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
       }
       results.push(result);
       overall.addResult(result.overall_status);
+      // ── 即时保存进度 ──
+      saveTaskProgress(result);
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);

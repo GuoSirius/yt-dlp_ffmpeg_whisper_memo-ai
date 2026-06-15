@@ -89,6 +89,7 @@ DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "output/downloads")
 TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "output/transcoded")
 COOKIES_DIR = _env_path("COOKIES_DIR", "data/cookies")
 REPORTS_DIR = _env_path("REPORTS_DIR", "output/reports")
+PROGRESS_DIR = _env_path("PROGRESS_DIR", "output/progress")
 
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
@@ -1384,6 +1385,79 @@ def _transcribe_service(
         return None, max_retries, str(e)[:500]
 
 
+# ─────────────────────────────── 增量进度写回 ────────────────────────────────
+
+def save_task_progress(result: TaskResult) -> None:
+    """每完成一个任务立即写入 progress JSON，方便用户随时查看中间结果。
+
+    目录结构: output/progress/{sheet}/task_{stem}.json
+    文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
+    """
+    progress_dir = PROGRESS_DIR / result.sheet
+    progress_dir.mkdir(parents=True, exist_ok=True)
+    progress_file = progress_dir / f"task_{result.stem}.json"
+
+    # 提取 content 和 keywords（StepResult.file 被借用存文本）
+    content = result.transcribe.file if (
+        result.transcribe.status == "success" and isinstance(result.transcribe.file, str)
+    ) else None
+    keywords = result.analyze.file if (
+        result.analyze.status == "success" and isinstance(result.analyze.file, str)
+    ) else None
+
+    data = {
+        "sheet": result.sheet,
+        "id_val": result.id_val,
+        "title": result.title,
+        "stem": result.stem,
+        "platform": result.platform,
+        "video_url": result.video_url,
+        "overall_status": result.overall_status,
+        "error": result.error,
+        "content": content,
+        "keywords": keywords,
+        "download": {
+            "status": result.download.status,
+            "file": result.download.file,
+            "error": result.download.error,
+            "retries_used": result.download.retries_used,
+        },
+        "transcode": {
+            "status": result.transcode.status,
+            "file": result.transcode.file,
+            "error": result.transcode.error,
+            "retries_used": result.transcode.retries_used,
+        },
+        "transcribe": {
+            "status": result.transcribe.status,
+            "error": result.transcribe.error,
+            "retries_used": result.transcribe.retries_used,
+        },
+        "analyze": {
+            "status": result.analyze.status,
+            "error": result.analyze.error,
+            "retries_used": result.analyze.retries_used,
+        },
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    with open(progress_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # 打印简短提示
+    info_parts = [result.overall_status]
+    if content:
+        info_parts.append(f"content({len(content)}字符)")
+    if keywords:
+        info_parts.append(f"keywords({len(keywords)}字符)")
+    with _print_lock:
+        print(
+            c("dim", f"  📄 进度已保存: output/progress/{result.sheet}/task_{result.stem}.json")
+            + f"  [{', '.join(info_parts)}]",
+            flush=True,
+        )
+
+
 # ─────────────────────────────── Excel 批量写回 ─────────────────────────────
 
 def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None):
@@ -2130,6 +2204,8 @@ def run(
                 result = future.result()
                 results.append(result)
                 overall.add_result(result.overall_status)
+                # ── 即时保存进度 ──
+                save_task_progress(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
                 stem = stem_name(row, sheet_name)
@@ -2141,6 +2217,8 @@ def run(
                 )
                 results.append(tr)
                 overall.add_result("failed")
+                # ── 即时保存进度（异常任务也记录）──
+                save_task_progress(tr)
 
             # 每次完成打印分隔线 + 总体进度
             with _print_lock:
@@ -2267,6 +2345,8 @@ def run_from_report(
                 result = future.result()
                 results.append(result)
                 overall.add_result(result.overall_status)
+                # ── 即时保存进度 ──
+                save_task_progress(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
                 stem = stem_name(row, sheet_name)
@@ -2278,6 +2358,8 @@ def run_from_report(
                 )
                 results.append(tr)
                 overall.add_result("failed")
+                # ── 即时保存进度（异常任务也记录）──
+                save_task_progress(tr)
 
             with _print_lock:
                 print(f"\n{overall.summary_line()}\n", flush=True)
