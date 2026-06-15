@@ -1444,7 +1444,8 @@ def save_task_progress(result: TaskResult) -> None:
     with open(progress_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # 打印简短提示
+    # 打印简短提示（使用动态 PROGRESS_DIR 而非硬编码路径）
+    rel_path = os.path.relpath(str(progress_file), str(BASE_DIR)).replace("\\", "/")
     info_parts = [result.overall_status]
     if content:
         info_parts.append(f"content({len(content)}字符)")
@@ -1452,30 +1453,37 @@ def save_task_progress(result: TaskResult) -> None:
         info_parts.append(f"keywords({len(keywords)}字符)")
     with _print_lock:
         print(
-            c("dim", f"  📄 进度已保存: output/progress/{result.sheet}/task_{result.stem}.json")
+            c("dim", f"  📄 进度已保存: {rel_path}")
             + f"  [{', '.join(info_parts)}]",
             flush=True,
         )
 
+    # 释放内存：content / keywords 已持久化到 JSON，可安全清空
+    result.transcribe.file = None
+    result.analyze.file = None
+
 
 # ─────────────────────────────── Excel 批量写回 ─────────────────────────────
 
-def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None):
+def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None, content_dict: dict[tuple[str, str], str] | None = None):
     """
     将所有识别文本批量写回 Excel。
     使用 openpyxl 直接操作，单线程安全。
-    参数 results 中只处理 transcribe.status == "success" 且 transcribe.text 非空的结果。
+    通过 content_dict 直接传入内容（避免依赖 result 对象上可能已被释放的大文本字段）。
     """
     if not results:
         return
 
-    # 收集需要写入的数据：{(sheet_name, key): text}
-    updates: dict[tuple[str, str], str] = {}
-    for tr in results:
-        if tr.transcribe.status == "success" and tr.transcribe.file:
-            text = tr.transcribe.file  # 这里 file 字段存的是识别文本（为兼容 StepResult 结构）
-            if text.strip():
-                updates[(tr.sheet, tr.id_val)] = text
+    # 收集需要写入的数据
+    if content_dict is not None:
+        updates = content_dict
+    else:
+        updates: dict[tuple[str, str], str] = {}
+        for tr in results:
+            if tr.transcribe.status == "success" and tr.transcribe.file:
+                text = tr.transcribe.file
+                if text.strip():
+                    updates[(tr.sheet, tr.id_val)] = text
 
     if not updates:
         return
@@ -2185,6 +2193,9 @@ def run(
     # ── 并发执行 ──
     results: list[TaskResult] = []
     overall = OverallProgress(total=len(tasks))
+    # 提前收集 content / keywords 用于 Excel 回写（save_task_progress 后会释放内存）
+    content_updates: dict[tuple[str, str], str] = {}
+    ai_updates: dict[tuple[str, str], str] = {}
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
         future_map = {}
@@ -2204,7 +2215,11 @@ def run(
                 result = future.result()
                 results.append(result)
                 overall.add_result(result.overall_status)
-                # ── 即时保存进度 ──
+                # ── 收集 content / keywords 再保存进度（保存后会释放内存）──
+                if result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
+                    content_updates[(result.sheet, result.id_val)] = result.transcribe.file
+                if result.analyze.status == "success" and isinstance(result.analyze.file, str):
+                    ai_updates[(result.sheet, result.id_val)] = result.analyze.file
                 save_task_progress(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
@@ -2217,7 +2232,6 @@ def run(
                 )
                 results.append(tr)
                 overall.add_result("failed")
-                # ── 即时保存进度（异常任务也记录）──
                 save_task_progress(tr)
 
             # 每次完成打印分隔线 + 总体进度
@@ -2229,12 +2243,8 @@ def run(
 
     # ── 批量写回 Excel ──
     if "transcribe" in steps:
-        # 收集 AI 分析结果，一并写入 Excel
-        kw_dict: dict[tuple[str, str], str] = {}
-        for tr in results:
-            if tr.analyze.status == "success" and tr.analyze.file:
-                kw_dict[(tr.sheet, tr.id_val)] = tr.analyze.file
-        write_all_contents_to_excel(results, kw_dict if kw_dict else None)
+        write_all_contents_to_excel(results, ai_updates if ai_updates else None,
+                                     content_updates if content_updates else None)
 
     # ── 生成报告 ──
     config = {
@@ -2326,6 +2336,8 @@ def run_from_report(
 
     results: list[TaskResult] = []
     overall = OverallProgress(total=len(tasks))
+    content_updates: dict[tuple[str, str], str] = {}
+    ai_updates: dict[tuple[str, str], str] = {}
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
         future_map = {}
@@ -2345,7 +2357,11 @@ def run_from_report(
                 result = future.result()
                 results.append(result)
                 overall.add_result(result.overall_status)
-                # ── 即时保存进度 ──
+                # ── 收集 content / keywords 再保存进度（保存后会释放内存）──
+                if result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
+                    content_updates[(result.sheet, result.id_val)] = result.transcribe.file
+                if result.analyze.status == "success" and isinstance(result.analyze.file, str):
+                    ai_updates[(result.sheet, result.id_val)] = result.analyze.file
                 save_task_progress(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
@@ -2358,19 +2374,14 @@ def run_from_report(
                 )
                 results.append(tr)
                 overall.add_result("failed")
-                # ── 即时保存进度（异常任务也记录）──
                 save_task_progress(tr)
 
             with _print_lock:
                 print(f"\n{overall.summary_line()}\n", flush=True)
 
     if "transcribe" in steps:
-        # 收集 AI 分析结果，一并写入 Excel
-        kw_dict: dict[tuple[str, str], str] = {}
-        for tr in results:
-            if tr.analyze.status == "success" and tr.analyze.file:
-                kw_dict[(tr.sheet, tr.id_val)] = tr.analyze.file
-        write_all_contents_to_excel(results, kw_dict if kw_dict else None)
+        write_all_contents_to_excel(results, ai_updates if ai_updates else None,
+                                     content_updates if content_updates else None)
 
     config = {
         "mode": "retry-failed",

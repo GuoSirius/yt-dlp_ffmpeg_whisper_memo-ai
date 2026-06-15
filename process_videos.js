@@ -1418,27 +1418,34 @@ function saveTaskProgress(result) {
 
   fs.writeFileSync(progressFile, JSON.stringify(data, null, 2), 'utf-8');
 
-  // 打印简短提示
+  // 打印简短提示（使用动态 PROGRESS_DIR 而非硬编码路径）
+  const relPath = path.relative(BASE_DIR, progressFile).replace(/\\/g, '/');
   const infoParts = [result.overall_status];
   if (content) infoParts.push(`content(${content.length} chars)`);
   if (keywords) infoParts.push(`keywords(${keywords.length} chars)`);
   lockedPrint(
-    c('dim', `  📄 进度已保存: output/progress/${result.sheet}/task_${result.stem}.json`)
+    c('dim', `  📄 进度已保存: ${relPath}`)
     + c('dim', `  [${infoParts.join(', ')}]`)
   );
+
+  // 释放内存：content / keywords 已持久化到 JSON，可安全清空
+  result.transcribe.file = null;
+  result.analyze.file = null;
 }
 
 // ============================== Excel 批量写回 ==============================
-function writeAllContentsToExcel(results, keywordsDict = null) {
+function writeAllContentsToExcel(results, keywordsDict = null, contentDict = null) {
   if (!results.length) return;
 
-  // Collect content updates
-  const updates = new Map(); // key: "sheet|id"
-  for (const r of results) {
-    if (r.transcribe.status === 'success' && r.transcribe.file) {
-      const text = r.transcribe.file;
-      if (text.trim()) {
-        updates.set(`${r.sheet}|${r.id_val}`, text);
+  // 优先使用预先收集的 contentDict（run 阶段已从 result 对象提取，避免大文本驻留内存）
+  const updates = contentDict || new Map();
+  if (!contentDict) {
+    for (const r of results) {
+      if (r.transcribe.status === 'success' && r.transcribe.file) {
+        const text = r.transcribe.file;
+        if (text.trim()) {
+          updates.set(`${r.sheet}|${r.id_val}`, text);
+        }
       }
     }
   }
@@ -2426,6 +2433,8 @@ async function run({
 
   // ── 并发执行 ──
   const results = [];
+  const contentMap = new Map();   // "sheet|id" → text（提前收集，saveTaskProgress 后会释放内存）
+  const kwMap = new Map();        // "sheet|id" → keywords
   const overall = new OverallProgress(tasks.length);
   const limit = pLimit(Math.max(1, concurrency));
 
@@ -2445,7 +2454,13 @@ async function run({
       }
       results.push(result);
       overall.addResult(result.overall_status);
-      // ── 即时保存进度 ──
+      // ── 收集 content / keywords 再保存进度（保存后会释放内存）──
+      if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
+        contentMap.set(`${result.sheet}|${result.id_val}`, result.transcribe.file);
+      }
+      if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
+        kwMap.set(`${result.sheet}|${result.id_val}`, result.analyze.file);
+      }
       saveTaskProgress(result);
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
@@ -2458,13 +2473,8 @@ async function run({
 
   // ── 批量写回 Excel ──
   if (steps.includes('transcribe') || contentColumn) {
-    const kwMap = new Map();
-    for (const r of results) {
-      if (r.analyze.status === 'success' && r.analyze.file) {
-        kwMap.set(`${r.sheet}|${r.id_val}`, r.analyze.file);
-      }
-    }
-    writeAllContentsToExcel(results, kwMap.size ? kwMap : null);
+    writeAllContentsToExcel(results, kwMap.size ? kwMap : null,
+                            contentMap.size ? contentMap : null);
   }
 
   // ── 生成报告 ──
@@ -2627,6 +2637,8 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
   }
 
   const results = [];
+  const contentMap = new Map();   // "sheet|id" → text（提前收集，saveTaskProgress 后会释放内存）
+  const kwMap = new Map();        // "sheet|id" → keywords
   const overall = new OverallProgress(tasks.length);
   const limit = pLimit(Math.max(1, concurrency));
 
@@ -2646,7 +2658,13 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
       }
       results.push(result);
       overall.addResult(result.overall_status);
-      // ── 即时保存进度 ──
+      // ── 收集 content / keywords 再保存进度（保存后会释放内存）──
+      if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
+        contentMap.set(`${result.sheet}|${result.id_val}`, result.transcribe.file);
+      }
+      if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
+        kwMap.set(`${result.sheet}|${result.id_val}`, result.analyze.file);
+      }
       saveTaskProgress(result);
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
@@ -2658,13 +2676,8 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
   await Promise.all(taskFns);
 
   if (steps.includes('transcribe')) {
-    const kwMap = new Map();
-    for (const r of results) {
-      if (r.analyze.status === 'success' && r.analyze.file) {
-        kwMap.set(`${r.sheet}|${r.id_val}`, r.analyze.file);
-      }
-    }
-    writeAllContentsToExcel(results, kwMap.size ? kwMap : null);
+    writeAllContentsToExcel(results, kwMap.size ? kwMap : null,
+                            contentMap.size ? contentMap : null);
   }
 
   const config = {
