@@ -94,8 +94,8 @@ PROGRESS_DIR = _env_path("PROGRESS_DIR", "output/progress")
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
 FFPROBE = os.getenv("FFPROBE", "ffprobe")
-# ── Whisper 共享参数（local 和 service 通用） ──
-WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "local")  # "service" 或 "local"
+# ── Whisper 共享参数（local、faster-whisper 和 service 通用） ──
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "local")  # "service" / "faster-whisper" / "local"
 WHISPER_TEMPERATURE = os.getenv("WHISPER_TEMPERATURE", "0.0")  # 推理温度 (0.0~1.0)
 WHISPER_TEMPERATURE_INC = os.getenv("WHISPER_TEMPERATURE_INC", "0.2")  # 温度增量 (fallback 时升温步长)
 WHISPER_OUTPUT_FORMAT = os.getenv("WHISPER_OUTPUT_FORMAT", "json")  # 输出格式: txt/vtt/srt/tsv/json/all (服务端映射到 response_format)
@@ -105,7 +105,7 @@ WHISPER_SERVICE = os.getenv("WHISPER_SERVICE", "http://localhost:9588")  # 服�
 # 服务端模型路径（ggml 文件，用于 POST /load 切换模型；留空则使用服务端当前加载的模型）
 WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
 
-# ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──         //
+# ── Whisper 本地模式参数（local / faster-whisper 通用） ──         //
 WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")  # 任务类型: transcribe/translate
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
@@ -118,7 +118,15 @@ WHISPER_CONDITION_ON_PREV = os.getenv("WHISPER_CONDITION_ON_PREV", "False")  # �
 WHISPER_FP16 = os.getenv("WHISPER_FP16", "False")  # CPU 应设为 False
 WHISPER_THREADS = os.getenv("WHISPER_THREADS", "0")  # 线程数 (0=自动)
 
+# ── faster-whisper 专用参数（backend=faster-whisper 时生效） ──
+WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")  # 计算精度: int8/float16/int8_float16/default/auto
+WHISPER_VAD_FILTER = os.getenv("WHISPER_VAD_FILTER", "True")  # VAD 静音过滤 (True/False)
+WHISPER_VAD_ONSET = os.getenv("WHISPER_VAD_ONSET", "0.5")  # VAD 灵敏度阈值 (0.0~1.0)
+WHISPER_NUM_WORKERS = os.getenv("WHISPER_NUM_WORKERS", "1")  # CTranslate2 并行 worker 数
+
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
+_FW_MODEL: object | None = None  # 缓存的 faster-whisper WhisperModel 实例
+_FW_MODEL_CFG: str = ""  # 缓存的模型配置指纹 (model/device/compute_type 组合)
 
 # ── CLI 覆盖占位（CLI 解析后由 apply_cli_overrides 填充）──
 _cli_ai_prompt: str | None = None  # --ai-prompt
@@ -1133,6 +1141,13 @@ def _check_whisper_available() -> bool:
         except Exception:
             log.error("本地 whisper CLI 不可用，请确认: pip install openai-whisper")
             return False
+    elif WHISPER_BACKEND == "faster-whisper":
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except ImportError:
+            log.error("faster-whisper 不可用，请确认: pip install faster-whisper")
+            return False
     else:
         try:
             r = requests.get(WHISPER_SERVICE, timeout=3)
@@ -1191,21 +1206,31 @@ def step_transcribe(
     max_retries: int, retry_delay: float,
     timeout: int = 0,
 ) -> tuple[str | None, int, str | None]:
-    """调用 whisper 识别（支持 service 和 local 两种后端）。返回 (文本, 重试次数, 错误信息)"""
+    """调用 whisper 识别（支持 local / faster-whisper / service 三种后端）。返回 (文本, 重试次数, 错误信息)"""
     stem = audio_file.stem
 
     if not _check_whisper_available():
-        backend_info = f"本地 whisper CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+        if WHISPER_BACKEND == "local":
+            backend_info = "本地 whisper CLI"
+        elif WHISPER_BACKEND == "faster-whisper":
+            backend_info = "faster-whisper (faster_whisper)"
+        else:
+            backend_info = WHISPER_SERVICE
         msg = f"whisper 不可用 ({backend_info})"
         log.warning(f"[{stem}] {msg}")
         return None, 0, msg
 
     file_size_mb = audio_file.stat().st_size / (1024 * 1024)
-    mode_label = "local" if WHISPER_BACKEND == "local" else "service"
     if WHISPER_BACKEND == "local":
+        mode_label = "local"
         model_label = WHISPER_MODEL
         lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+    elif WHISPER_BACKEND == "faster-whisper":
+        mode_label = "faster-whisper"
+        model_label = f"{WHISPER_MODEL}/{WHISPER_COMPUTE_TYPE}"
+        lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
     else:
+        mode_label = "service"
         model_label = Path(WHISPER_SERVICE_MODEL).name if WHISPER_SERVICE_MODEL else "(default)"
         lang_label = "auto"
     with _print_lock:
@@ -1217,6 +1242,8 @@ def step_transcribe(
     try:
         if WHISPER_BACKEND == "local":
             text, retries, err = _transcribe_local(audio_file, stem, max_retries, retry_delay)
+        elif WHISPER_BACKEND == "faster-whisper":
+            text, retries, err = _transcribe_faster_whisper(audio_file, stem, max_retries, retry_delay)
         else:
             text, retries, err = _transcribe_service(audio_file, stem, max_retries, retry_delay, timeout)
     finally:
@@ -1330,6 +1357,132 @@ def _transcribe_local(
     except Exception as e:
         log.error(f"[{stem}] 本地 whisper 识别失败: {e}")
         return None, max_retries, str(e)[:500]
+
+
+def _transcribe_faster_whisper(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """faster-whisper (CTranslate2) Python API 识别"""
+    global _FW_MODEL, _FW_MODEL_CFG
+
+    def _get_model():
+        """获取或复用 WhisperModel 实例（按 model/device/compute_type 缓存）"""
+        global _FW_MODEL, _FW_MODEL_CFG
+        cfg = f"{WHISPER_MODEL}|{WHISPER_DEVICE}|{WHISPER_COMPUTE_TYPE}"
+        if _FW_MODEL is not None and _FW_MODEL_CFG == cfg:
+            return _FW_MODEL
+        from faster_whisper import WhisperModel
+        model_kwargs: dict = {
+            "device": WHISPER_DEVICE,
+            "compute_type": WHISPER_COMPUTE_TYPE,
+            "num_workers": int(WHISPER_NUM_WORKERS),
+        }
+        if WHISPER_THREADS and WHISPER_THREADS != "0":
+            model_kwargs["cpu_threads"] = int(WHISPER_THREADS)
+        if WHISPER_MODEL_DIR:
+            model_kwargs["download_root"] = WHISPER_MODEL_DIR
+        with _print_lock:
+            print(f"  [{stem}] 加载 faster-whisper 模型: {WHISPER_MODEL} (device={WHISPER_DEVICE}, compute_type={WHISPER_COMPUTE_TYPE})...", flush=True)
+        _FW_MODEL = WhisperModel(WHISPER_MODEL, **model_kwargs)
+        _FW_MODEL_CFG = cfg
+        return _FW_MODEL
+
+    def _run():
+        model = _get_model()
+
+        # 构建 transcribe 参数
+        transcribe_kwargs: dict = {
+            "beam_size": int(WHISPER_BEAM_SIZE),
+            "best_of": int(WHISPER_BEST_OF),
+            "temperature": float(WHISPER_TEMPERATURE),
+        }
+        if WHISPER_TEMPERATURE_INC:
+            transcribe_kwargs["temperature_increment_on_fallback"] = float(WHISPER_TEMPERATURE_INC)
+        if WHISPER_LANGUAGE:
+            transcribe_kwargs["language"] = WHISPER_LANGUAGE
+        if WHISPER_TASK:
+            transcribe_kwargs["task"] = WHISPER_TASK
+        if WHISPER_INITIAL_PROMPT:
+            transcribe_kwargs["initial_prompt"] = WHISPER_INITIAL_PROMPT
+        transcribe_kwargs["condition_on_previous_text"] = WHISPER_CONDITION_ON_PREV.lower() in ("true", "1", "yes")
+
+        # VAD 参数
+        if WHISPER_VAD_FILTER.lower() in ("true", "1", "yes"):
+            transcribe_kwargs["vad_filter"] = True
+            transcribe_kwargs["vad_parameters"] = {
+                "onset": float(WHISPER_VAD_ONSET),
+            }
+        else:
+            transcribe_kwargs["vad_filter"] = False
+
+        # 从 WHISPER_EXTRA_ARGS 解析额外参数（支持 CLI 覆盖）
+        if _resolved_whisper_extra_args:
+            transcribe_kwargs = _apply_fw_extra_args(transcribe_kwargs, _resolved_whisper_extra_args)
+
+        segments_iter, info = model.transcribe(str(audio_file), **transcribe_kwargs)
+
+        # 合并所有段的文本
+        segments = list(segments_iter)
+        text = "".join(seg.text for seg in segments).strip()
+        if not text:
+            raise ValueError("faster-whisper 返回空文本")
+        return text
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        if err:
+            return None, retries_used, err
+        return text, 0, None
+    except Exception as e:
+        log.error(f"[{stem}] faster-whisper 识别失败: {e}")
+        return None, max_retries, str(e)[:500]
+
+
+def _apply_fw_extra_args(base_kwargs: dict, extra_args: list[str]) -> dict:
+    """将 WHISPER_EXTRA_ARGS 中的额外参数应用到 faster-whisper transcribe kwargs。
+
+    支持两种格式：
+      --key value         → kwargs[key] = value (自动转 bool/int/float)
+      --key               → kwargs[key] = True (布尔标志)
+    对已有参数进行覆盖。
+    """
+    if not extra_args:
+        return base_kwargs
+    kwargs = dict(base_kwargs)
+    i = 0
+    while i < len(extra_args):
+        arg = extra_args[i]
+        if arg.startswith("--"):
+            key = arg[2:]
+            if i + 1 < len(extra_args) and not extra_args[i + 1].startswith("--"):
+                val = extra_args[i + 1]
+                # 自动类型转换
+                if val.lower() in ("true", "1", "yes"):
+                    kwargs[key] = True
+                elif val.lower() in ("false", "0", "no"):
+                    kwargs[key] = False
+                elif "." in val:
+                    try:
+                        kwargs[key] = float(val)
+                    except ValueError:
+                        kwargs[key] = val
+                else:
+                    try:
+                        kwargs[key] = int(val)
+                    except ValueError:
+                        kwargs[key] = val
+                i += 2
+            else:
+                # 无值 flag → True
+                kwargs[key] = True
+                i += 1
+        else:
+            i += 1
+    return kwargs
 
 
 def _transcribe_service(

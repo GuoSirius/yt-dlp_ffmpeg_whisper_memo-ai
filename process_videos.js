@@ -60,7 +60,7 @@ const PROGRESS_DIR = envPath('PROGRESS_DIR', 'output/progress');
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE || 'ffprobe';
-// ── Whisper 共享参数（local 和 service 通用） ──
+// ── Whisper 共享参数（local、faster-whisper 和 service 通用） ──
 const WHISPER_BACKEND = process.env.WHISPER_BACKEND || 'local';
 const WHISPER_TEMPERATURE = process.env.WHISPER_TEMPERATURE || '0.0';
 const WHISPER_TEMPERATURE_INC = process.env.WHISPER_TEMPERATURE_INC || '0.2';
@@ -70,7 +70,7 @@ const WHISPER_OUTPUT_FORMAT = process.env.WHISPER_OUTPUT_FORMAT || 'json'; // �
 const WHISPER_SERVICE = process.env.WHISPER_SERVICE || 'http://localhost:9588';
 const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 模型路径 (/load)，留空=使用服务端默认
 
-// ── Whisper 本地模式参数（独有，openai-whisper CLI 专用） ──
+// ── Whisper 本地模式参数（local / faster-whisper 通用） ──
 const WHISPER_TASK = process.env.WHISPER_TASK || 'transcribe';            // 任务类型: transcribe/translate
 const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';            // 模型名: tiny/base/small/medium/large-v3/turbo
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || '';           // 语言: 设 zh 避免繁体混入; 留空=自动检测
@@ -83,6 +83,12 @@ let WHISPER_INITIAL_PROMPT = process.env.WHISPER_INITIAL_PROMPT || '';// 初始�
 const WHISPER_CONDITION_ON_PREV = process.env.WHISPER_CONDITION_ON_PREV || 'False'; // 推荐 False: 每段独立解码, 避免长视频错误累积; True=前段文本传入(仅适合短音频)
 const WHISPER_FP16 = process.env.WHISPER_FP16 || 'False';              // CPU 应设为 False
 const WHISPER_THREADS = process.env.WHISPER_THREADS || '0';            // 线程数 (0=自动)
+
+// ── faster-whisper 专用参数（backend=faster-whisper 时生效） ──
+const WHISPER_COMPUTE_TYPE = process.env.WHISPER_COMPUTE_TYPE || 'int8';   // 计算精度: int8/float16/int8_float16/default/auto
+const WHISPER_VAD_FILTER = process.env.WHISPER_VAD_FILTER || 'True';      // VAD 静音过滤 (True/False)
+const WHISPER_VAD_ONSET = process.env.WHISPER_VAD_ONSET || '0.5';         // VAD 灵敏度阈值 (0.0~1.0)
+const WHISPER_NUM_WORKERS = process.env.WHISPER_NUM_WORKERS || '1';       // CTranslate2 并行 worker 数
 
 let _SERVICE_MODEL_LOADED = null;
 
@@ -732,6 +738,14 @@ async function checkWhisperAvailable() {
       logError('本地 whisper CLI 不可用，请确认: pip install openai-whisper');
       return false;
     }
+  } else if (WHISPER_BACKEND === 'faster-whisper') {
+    try {
+      execSync('whisper-ctranslate2 --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+      return true;
+    } catch {
+      logError('whisper-ctranslate2 CLI 不可用，请确认: pip install whisper-ctranslate2');
+      return false;
+    }
   } else {
     try {
       const resp = await fetch(WHISPER_SERVICE, { signal: AbortSignal.timeout(3000) });
@@ -1206,7 +1220,10 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
 
   const whisperOk = await checkWhisperAvailable();
   if (!whisperOk) {
-    const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+    let backend;
+    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else backend = WHISPER_SERVICE;
     logWarn(`[${stem}] whisper not available (${backend})`);
     return { text: null, retries: 0, error: `whisper not available (${backend})` };
   }
@@ -1214,12 +1231,17 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const fileSizeMB = (fs.statSync(audioFile).size / (1024 * 1024)).toFixed(1);
   const dur = getDuration(audioFile);
   const durStr = dur ? `, 时长 ${Math.floor(dur / 60)}:${(dur % 60).toFixed(0).padStart(2, '0')}` : '';
-  const modeLabel = WHISPER_BACKEND === 'local' ? 'local' : 'service';
-  let modelLabel, langLabel;
+  let modeLabel, modelLabel, langLabel;
   if (WHISPER_BACKEND === 'local') {
+    modeLabel = 'local';
     modelLabel = WHISPER_MODEL;
     langLabel = WHISPER_LANGUAGE || 'auto';
+  } else if (WHISPER_BACKEND === 'faster-whisper') {
+    modeLabel = 'faster-whisper';
+    modelLabel = `${WHISPER_MODEL}/${WHISPER_COMPUTE_TYPE}`;
+    langLabel = WHISPER_LANGUAGE || 'auto';
   } else {
+    modeLabel = 'service';
     modelLabel = WHISPER_SERVICE_MODEL ? path.basename(WHISPER_SERVICE_MODEL) : '(default)';
     langLabel = 'auto';
   }
@@ -1230,6 +1252,8 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   try {
     if (WHISPER_BACKEND === 'local') {
       result = await transcribeLocal(audioFile, stem, maxRetries, retryDelay);
+    } else if (WHISPER_BACKEND === 'faster-whisper') {
+      result = await transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay);
     } else {
       result = await transcribeService(audioFile, stem, maxRetries, retryDelay, timeout);
     }
@@ -1293,6 +1317,73 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
         return JSON.parse(raw).text || '';
       } catch {
         return raw; // fallback to raw
+      }
+    }
+    return raw;
+  }
+
+  try {
+    const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
+    if (error) return { text: null, retries: retriesUsed, error };
+    return { text, retries: 0, error: null };
+  } catch (e) {
+    return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+  }
+}
+
+/**
+ * faster-whisper 后端识别（使用 whisper-ctranslate2 CLI）。
+ * 构建命令行参数，与 Python 版保持一致的参数语义和识别效果。
+ */
+async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
+  const outDir = path.dirname(audioFile);
+
+  async function doTranscribe() {
+    const args = [
+      audioFile,
+      '--task', WHISPER_TASK,
+      '--model', WHISPER_MODEL,
+      '--device', WHISPER_DEVICE,
+      '--compute_type', WHISPER_COMPUTE_TYPE,
+      '--beam_size', WHISPER_BEAM_SIZE,
+      '--best_of', WHISPER_BEST_OF,
+      '--condition_on_previous_text', WHISPER_CONDITION_ON_PREV,
+      '--num_workers', WHISPER_NUM_WORKERS,
+      '--vad_filter', WHISPER_VAD_FILTER,
+      '--vad_onset', WHISPER_VAD_ONSET,
+    ];
+    if (WHISPER_MODEL_DIR) args.push('--model_directory', WHISPER_MODEL_DIR);
+    if (WHISPER_LANGUAGE) args.push('--language', WHISPER_LANGUAGE);
+    args.push('--temperature', WHISPER_TEMPERATURE);
+    if (WHISPER_TEMPERATURE_INC) args.push('--temperature_increment_on_fallback', WHISPER_TEMPERATURE_INC);
+    if (WHISPER_INITIAL_PROMPT) args.push('--initial_prompt', WHISPER_INITIAL_PROMPT);
+    if (WHISPER_THREADS && WHISPER_THREADS !== '0') args.push('--threads', WHISPER_THREADS);
+    args.push('--output_format', WHISPER_OUTPUT_FORMAT, '--output_dir', outDir);
+
+    // 合并 WHISPER_EXTRA_ARGS（CLI > .env），去重后追加
+    const finalArgs = mergeWhisperArgs(args, _resolvedWhisperExtraArgs);
+
+    // whisper-ctranslate2 的 stderr 进度格式与 openai-whisper 一致，直接复用解析
+    const { stderr } = await spawnWithTimeout('whisper-ctranslate2', finalArgs, timeout, {
+      onProgress: (_src, line) => {
+        if (line.trim()) {
+          const m = line.match(/^\[[\d:.]+\s*-->\s*([\d:.]+)\]/);
+          if (m) updateLine(`[${stem}] 识别中... ${m[1]}`);
+        }
+      }
+    });
+    // whisper-ctranslate2 输出文件: {stem}.{ext}
+    const outExt = WHISPER_OUTPUT_FORMAT === 'json' ? 'json' : 'txt';
+    const outFile = path.join(outDir, `${stem}.${outExt}`);
+    if (!fs.existsSync(outFile)) {
+      throw new Error('whisper-ctranslate2 output file not generated');
+    }
+    const raw = fs.readFileSync(outFile, 'utf-8').trim();
+    if (WHISPER_OUTPUT_FORMAT === 'json') {
+      try {
+        return JSON.parse(raw).text || '';
+      } catch {
+        return raw;
       }
     }
     return raw;
