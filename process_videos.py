@@ -434,6 +434,23 @@ def c(color: str, text: str) -> str:
     }
     return colors.get(color, "") + text + colors["reset"]
 
+def _print_long(msg: str | None, *, max_chars: int = 800, indent: str = "       ") -> None:
+    """打印可能较长的错误信息，超长时截断并提示。
+
+    当错误信息包含换行（如 stderr 多行输出）时，逐行缩进打印。
+    """
+    if not msg:
+        return
+    s = str(msg)
+    if len(s) > max_chars:
+        s = s[:max_chars] + f"...(truncated, total {len(msg)} chars)"
+    for ln in s.splitlines():
+        if ln.strip():
+            print(c("red", f"{indent}{ln}"))
+        else:
+            print(indent)
+
+
 
 # ─────────────────────────────── 总体进度 ───────────────────────────────────
 
@@ -1406,7 +1423,9 @@ def _transcribe_local(
         )
         import re
         last_ts = ""
+        _stderr_lines = []  # 积累 stderr，失败时一并输出
         for line in proc.stderr:
+            _stderr_lines.append(line.rstrip("\n"))
             line_s = line.strip()
             if not line_s:
                 continue
@@ -1424,8 +1443,12 @@ def _transcribe_local(
         if last_ts:
             sys.stderr.write("\n")
             sys.stderr.flush()
+        _stderr_text = "\n".join(_stderr_lines).strip()
         if proc.returncode != 0:
-            raise RuntimeError(f"whisper CLI 退出码 {proc.returncode}")
+            raise RuntimeError(
+                f"whisper CLI 退出码 {proc.returncode}"
+                + (f"\nstderr:\n{_stderr_text}" if _stderr_text else "")
+            )
         # whisper 输出文件: {stem}.{ext}
         out_file = out_dir / f"{stem}.{out_ext}"
         if not out_file.exists():
@@ -1530,8 +1553,26 @@ def _transcribe_faster_whisper(
             return None, retries_used, err
         return text, 0, None
     except Exception as e:
-        log.error(f"[{stem}] faster-whisper 识别失败: {e}")
-        return None, max_retries, str(e)[:500]
+        import traceback as _tb
+        _audio_size = audio_file.stat().st_size if audio_file.exists() else "N/A"
+        _err_details = (
+            f"[{stem}] faster-whisper 识别失败\n"
+            f"  audio : {audio_file} ({_audio_size} bytes)\n"
+            f"  model : {WHISPER_MODEL} (device={WHISPER_DEVICE}, compute_type={WHISPER_COMPUTE_TYPE})\n"
+            f"  model_dir: {WHISPER_MODEL_DIR or '~/.cache/huggingface/hub'}\n"
+            f"  error : {e}\n"
+        )
+        # 如果是 SSL/cert 相关错误，给出解决提示
+        _err_str = str(e)
+        if any(k in _err_str.lower() for k in ("certificate", "ssl", "CERTIFICATE_VERIFY_FAILED", "ConnectError")):
+            _err_details += (
+                f"  ⚠️ 疑似 SSL/证书错误，可能的解决方案：\n"
+                f"    1. 设置环境变量 SSL_CERT_FILE=/path/to/cert.pem\n"
+                f"    2. pip install --upgrade certifi\n"
+                f"    3. 设置 WHISPER_MODEL_DIR 指向已下载的本地模型目录（跳过在线下载）\n"
+            )
+        log.error(_err_details + f"  traceback:\n{_tb.format_exc()}")
+        return None, max_retries, _err_details.strip()
 
 
 def _apply_fw_extra_args(base_kwargs: dict, extra_args: list[str]) -> dict:
@@ -1982,13 +2023,13 @@ def print_report_summary(results: list[TaskResult]):
             icon = {"partial": "⚠️", "failed": "❌", "no_video": "⏭️"}.get(r.overall_status, "?")
             print(f"  {icon} [{r.sheet}] {r.id_val} ({r.title[:30] if r.title else 'N/A'})")
             if r.error:
-                print(c("red", f"       错误: {r.error[:120]}"))
+                _print_long(r.error, max_chars=800, indent="       ")
             if r.download.status == "failed":
-                print(c("red", f"       下载失败: {r.download.error[:120] if r.download.error else 'N/A'}"))
+                _print_long(r.download.error, max_chars=800, indent="       ")
             if r.transcode.status == "failed":
-                print(c("red", f"       转码失败: {r.transcode.error[:120] if r.transcode.error else 'N/A'}"))
+                _print_long(r.transcode.error, max_chars=800, indent="       ")
             if r.transcribe.status == "failed":
-                print(c("red", f"       识别失败: {r.transcribe.error[:120] if r.transcribe.error else 'N/A'}"))
+                _print_long(r.transcribe.error, max_chars=800, indent="       ")
 
 
 # ─────────────────────────────── 单任务处理 ─────────────────────────────────
@@ -2333,7 +2374,8 @@ def _run_url_task(opts):
         print(c("dim", "  📥 下载: 已跳过 (文件已存在)"))
         successes.append("download")
     elif dl:
-        print(f"  📥 {c('red', '下载失败')}: {dl.error or ''}")
+        print(f"  📥 {c('red', '下载失败')}")
+        _print_long(dl.error, indent="       ")
 
     tc = result.transcode
     if tc and tc.file and Path(tc.file).exists():
@@ -2344,7 +2386,8 @@ def _run_url_task(opts):
         print(c("dim", "  🎵 转码: 已跳过 (文件已存在)"))
         successes.append("transcode")
     elif tc:
-        print(f"  🎵 {c('red', '转码失败')}: {tc.error or ''}")
+        print(f"  🎵 {c('red', '转码失败')}")
+        _print_long(tc.error, indent="       ")
 
     tr = result.transcribe
     if tr and tr.file and isinstance(tr.file, str):
@@ -2354,7 +2397,8 @@ def _run_url_task(opts):
         print(c("dim", "  📝 识别: 已跳过"))
         successes.append("transcribe")
     elif tr:
-        print(f"  📝 {c('red', '识别失败')}: {tr.error or ''}")
+        print(f"  📝 {c('red', '识别失败')}")
+        _print_long(tr.error, indent="       ")
 
     an = result.analyze
     if an and an.file and isinstance(an.file, str):
@@ -2363,7 +2407,8 @@ def _run_url_task(opts):
     elif an and an.status == "skipped":
         print(c("dim", "  🤖 AI分析: 已跳过"))
     elif an:
-        print(f"  🤖 {c('red', 'AI分析失败')}: {an.error or ''}")
+        print(f"  🤖 {c('red', 'AI分析失败')}")
+        _print_long(an.error, indent="       ")
 
     # 保存文本结果
     transcribe_text = tr.file if (tr and isinstance(tr.file, str)) else ""

@@ -377,6 +377,16 @@ function lockedPrint(s) {
   console.log(s);
 }
 
+function printLong(msg, indent = '       ') {
+  if (!msg) return;
+  const s = String(msg);
+  const label = s.length > 800 ? s.slice(0, 800) + `...(truncated, total ${s.length} chars)` : s;
+  for (const ln of label.split('\n')) {
+    if (ln.trim()) console.log(`${indent}${c('red', ln)}`);
+    else console.log(indent);
+  }
+}
+
 // ============================== 进度追踪 ==============================
 class OverallProgress {
   constructor(total) {
@@ -984,7 +994,12 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
     child.on('close', code => {
       if (timer) clearTimeout(timer);
       if (code === 0) resolve({ stdout, stderr });
-      else reject(Object.assign(new Error(`Exit code ${code}`), { code, stderr }));
+      else {
+        // 把 stderr 末尾也写进 message，方便直接打印 e.message 就能看到原因
+        const preview = stderr.trim().slice(-3000);
+        const msg = `Exit code ${code}` + (preview ? `\nstderr:\n${preview}` : '');
+        reject(Object.assign(new Error(msg), { code, stderr }));
+      }
     });
     child.on('error', err => {
       if (timer) clearTimeout(timer);
@@ -1466,7 +1481,11 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     if (error) return { text: null, retries: retriesUsed, error };
     return { text, retries: 0, error: null };
   } catch (e) {
-    return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
+    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    logError(_detail);
+    return { text: null, retries: maxRetries, error: _detail };
   }
 }
 
@@ -1533,7 +1552,11 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
     if (error) return { text: null, retries: retriesUsed, error };
     return { text, retries: 0, error: null };
   } catch (e) {
-    return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
+    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    logError(_detail);
+    return { text: null, retries: maxRetries, error: _detail };
   }
 }
 
@@ -1588,7 +1611,11 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
     if (error) return { text: null, retries: retriesUsed, error };
     return { text, retries: 0, error: null };
   } catch (e) {
-    return { text: null, retries: maxRetries, error: String(e.message).slice(0, 500) };
+    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
+    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    logError(_detail);
+    return { text: null, retries: maxRetries, error: _detail };
   }
 }
 
@@ -1862,10 +1889,10 @@ function printReportSummary(results) {
       const statusLabel = { partial: '部分成功', failed: '失败', no_video: '无视频ID' }[r.overall_status] || r.overall_status;
       console.log(`  ${icon} [${r.sheet}] ${c('bold', r.id_val)} - ${statusLabel}`);
       console.log(`    标题: ${(r.title || 'N/A').slice(0, 50)}`);
-      if (r.error) console.log(`    ${c('red', '错误:')} ${r.error.slice(0, 120)}`);
-      if (r.download.status === 'failed') console.log(`    ${c('red', '下载失败:')} ${(r.download.error || 'N/A').slice(0, 120)}`);
-      if (r.transcode.status === 'failed') console.log(`    ${c('red', '转码失败:')} ${(r.transcode.error || 'N/A').slice(0, 120)}`);
-      if (r.transcribe.status === 'failed') console.log(`    ${c('red', '识别失败:')} ${(r.transcribe.error || 'N/A').slice(0, 120)}`);
+      if (r.error) { console.log(`    ${c('red', '错误:')}`); printLong(r.error); }
+      if (r.download.status === 'failed') { console.log(`    ${c('red', '下载失败:')}`); printLong(r.download.error); }
+      if (r.transcode.status === 'failed') { console.log(`    ${c('red', '转码失败:')}`); printLong(r.transcode.error); }
+      if (r.transcribe.status === 'failed') { console.log(`    ${c('red', '识别失败:')}`); printLong(r.transcribe.error); }
     }
   }
 }
@@ -2367,12 +2394,14 @@ async function runInputTask(opts) {
           // 日志已在 stepTranscribe 中输出
           result.transcribe = new StepResult('success', text);
         } else {
-          lockedPrint(styleFail(`[${usedStem}] 识别失败: ${(error || '').slice(0, 200)}`));
+          lockedPrint(styleFail(`[${usedStem}] 识别失败:`));
+          printLong(error);
           result.transcribe = new StepResult('failed', null, error);
         }
       } catch (e) {
-        lockedPrint(styleFail(`[${usedStem}] 识别异常: ${(e.message || '').slice(0, 200)}`));
-        result.transcribe = new StepResult('failed', null, String(e.message).slice(0, 500));
+        lockedPrint(styleFail(`[${usedStem}] 识别异常:`));
+        printLong(e.message || e);
+        result.transcribe = new StepResult('failed', null, String(e.stderr || e.message || e));
       }
     }
   } else {
@@ -2393,12 +2422,14 @@ async function runInputTask(opts) {
           lockedPrint(styleDone(`[${usedStem}] AI 分析完成 (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} 字符)`));
           result.analyze = new StepResult('success', kw);
         } else {
-          lockedPrint(styleFail(`[${usedStem}] AI 分析失败: ${(error || '').slice(0, 200)}`));
+          lockedPrint(styleFail(`[${usedStem}] AI 分析失败:`));
+          printLong(error);
           result.analyze = new StepResult('failed', null, error);
         }
       } catch (e) {
-        lockedPrint(styleFail(`[${usedStem}] AI 分析异常: ${(e.message || '').slice(0, 200)}`));
-        result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500));
+        lockedPrint(styleFail(`[${usedStem}] AI 分析异常:`));
+        printLong(e.stderr || e.message || e);
+        result.analyze = new StepResult('failed', null, String(e.stderr || e.message || e));
       }
     } else {
       lockedPrint(styleWarn(`[${usedStem}] AI 分析已禁用 (AI_ENABLED=false)`));
