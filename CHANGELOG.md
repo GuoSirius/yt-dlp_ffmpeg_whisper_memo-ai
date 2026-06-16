@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.0] - 2026-06-16
+
+### Features
+
+- 引入 OUTPUT_DIR 统一输出根目录，新增 --output CLI 参数 (`ee7095e`)
+- 新增 faster-whisper 后端支持 (`75f976b`)
+- 增量 JSON 进度保存 — 每完成一个任务立即写 output/progress/{sheet}/task_{stem}.json (`c77108f`)
+
+### Bug Fixes
+
+- 增量进度保存 3 项修复 (`d90957a`)
+
+### Chores
+
+- update before release (`a561102`)
+
+
 ## [1.3.3] - 2026-06-13
 
 ### Chores
