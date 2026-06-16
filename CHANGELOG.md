@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0] - 2026-06-16
+
+### Features
+
+- 新增 FunASR 第 4 种 Whisper 后端(中文 WER ~5%) - cli/service 双模式 + 8 主模型 + 4 辅助模型完整支持 (`36c6b73`)
+
+### Chores
+
+- update before release (`4c77b6c`)
+- remove dead code (unused imports, variables, functions) (`1e5d852`)
+
+
 ## [1.4.3] - 2026-06-16
 
 ### Bug Fixes
