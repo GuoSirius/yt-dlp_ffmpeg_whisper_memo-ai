@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.1] - 2026-06-16
+
+### Bug Fixes
+
+- 错误信息不透传——失败时完整输出 stderr / traceback (`590dc24`)
+
+### Chores
+
+- update before release (`01be99d`)
+
+
 ## [1.4.0] - 2026-06-16
 
 ### Features
