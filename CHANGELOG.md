@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.2] - 2026-06-16
+
+### Documentation
+
+- 同步 v1.4 的三项核心变更到 README (`395fe09`)
+
+### Chores
+
+- update before release (`92b5359`)
+
+
 ## Unreleased
 
 ### Documentation
