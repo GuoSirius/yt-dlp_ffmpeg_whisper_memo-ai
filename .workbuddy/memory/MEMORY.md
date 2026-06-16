@@ -61,3 +61,14 @@
   - `saveTaskProgress` 改为 async + 实时写 line 1637-1660
   - `run()` 启动扫描 line 2661-2676
 
+## 错误信息透传（2026-06-16 修复）
+- **核心原则**：失败时必须输出真实原因（stderr / traceback），禁止让用户看到 "Exit code 2" 这种干燥提示
+- JS `spawnWithTimeout` reject 时把 stderr 末尾（最长 3000 字符）写进 `error.message`，所有调用方自动受益
+- Python `_transcribe_local` 累 stderr 在 `_stderr_lines`，subprocess 失败时随 `RuntimeError` 抛出
+- Python `_transcribe_faster_whisper` except 块：打印完整 traceback + 上下文（音频路径/模型/SSL 错误检测）
+- **禁止在汇总/逐任务打印里用 `[:120]` / `[:200]` 硬截断** —— 必须用 `_print_long` / `printLong` 辅助函数（带"超长截断提示"和"含换行逐行打印"）
+- 关键位置：
+  - `spawnWithTimeout`：`process_videos.js:984-991`
+  - Python `_print_long`：`process_videos.py:437-451`
+  - JS `printLong`：`process_videos.js:380-389`
+
