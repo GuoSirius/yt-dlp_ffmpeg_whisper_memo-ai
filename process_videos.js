@@ -1483,7 +1483,7 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
   } catch (e) {
     // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
     // e.message 在 spawnWithTimeout 修复后也已包含 stderr
-    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
     logError(_detail);
     return { text: null, retries: maxRetries, error: _detail };
   }
@@ -1554,7 +1554,7 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
   } catch (e) {
     // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
     // e.message 在 spawnWithTimeout 修复后也已包含 stderr
-    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
     logError(_detail);
     return { text: null, retries: maxRetries, error: _detail };
   }
@@ -1613,7 +1613,7 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
   } catch (e) {
     // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
     // e.message 在 spawnWithTimeout 修复后也已包含 stderr
-    const_detail = String(e.stderr || e.message || e).slice(0, 5000);
+    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
     logError(_detail);
     return { text: null, retries: maxRetries, error: _detail };
   }
