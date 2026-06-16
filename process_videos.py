@@ -48,7 +48,7 @@ from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock, Thread
+from threading import Lock
 
 import colorama
 colorama.init()
@@ -62,7 +62,7 @@ from openpyxl import load_workbook
 from console_ui import (
     update_line, clear_line, text_bar, Spinner,
     parse_ytdlp_line, parse_ffmpeg_progress, reset_ffmpeg_state,
-    fmt_size, fmt_time, fmt_speed,
+    fmt_size,
 )
 
 # --env-file 需在 load_dotenv 之前解析
@@ -658,7 +658,6 @@ def precompute_stems(df: pd.DataFrame, sheet_name: str) -> None:
     """
     from collections import Counter
 
-    n = len(df)
     # Pass 1: base stems (id or title fallback)
     base_stems: dict[int, str] = {}
     for idx, row in df.iterrows():
@@ -849,7 +848,6 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600,
     )
 
     output_lines: list[str] = []
-    last_progress = ""
     start = time.monotonic()
 
     for line in proc.stdout:
@@ -858,7 +856,6 @@ def run_with_progress(cmd: list[str], label: str, parser_fn, timeout: int = 600,
         if progress:
             # 单行动态刷新，不换行
             update_line(f"  [{label}] {progress}")
-            last_progress = progress
 
         # 同步超时检测：每读一行检查一次
         if timeout > 0 and time.monotonic() - start > timeout:
@@ -1252,7 +1249,7 @@ def _check_whisper_available() -> bool:
             return False
     elif WHISPER_BACKEND == "faster-whisper":
         try:
-            import faster_whisper  # noqa: F401
+            from faster_whisper import WhisperModel  # noqa: F401
             return True
         except ImportError:
             log.error("faster-whisper 不可用，请确认: pip install faster-whisper")
@@ -1297,7 +1294,6 @@ def check_environment(steps: list[str]) -> dict:
         ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
         ai_key = os.getenv("AI_API_KEY", "")
         ai_url = os.getenv("AI_BASE_URL", "")
-        ai_model = os.getenv("AI_MODEL", "")
         if not ai_enabled:
             result["ai"] = False
             result["all_ok"] = False
@@ -2321,7 +2317,6 @@ def _run_url_task(opts):
     pkey = opts["pkey"]
     video_id = opts["video_id"]
     stem = opts["stem"]
-    dl_dir = opts["dl_dir"]
     steps = opts["steps"]
     max_retries = opts["max_retries"]
     retry_delay = opts["retry_delay"]

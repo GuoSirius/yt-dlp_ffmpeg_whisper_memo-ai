@@ -2,6 +2,7 @@
 
 ~*
 data/export_2026-06-10_split.xlsx
+data/examples/website_split_demo.xlsx
 
 __pycache__/
 node_modules/

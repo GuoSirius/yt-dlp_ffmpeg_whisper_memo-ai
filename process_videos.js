@@ -15,8 +15,7 @@
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
-import { spawn, execSync, execFile } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import readline from 'readline';
 import XLSX from 'xlsx';
 import pLimit from 'p-limit';
@@ -26,7 +25,7 @@ import { select, input } from '@inquirer/prompts';
 
 // 控制台单行动态显示
 import {
-  updateLine, clearLine, fmtSize, fmtTime, fmtSpeed, textBar,
+  updateLine, clearLine, fmtSize, fmtTime, textBar,
   startSpinner, stopSpinner,
   parseYtdlpLine, parseFfmpegProgress, resetFfmpegState,
 } from './console-ui.mjs';
@@ -124,9 +123,7 @@ const WHISPER_NUM_WORKERS = process.env.WHISPER_NUM_WORKERS || '1';       // CTr
 let _SERVICE_MODEL_LOADED = null;
 
 // ── CLI 覆盖占位（CLI 解析后由 applyCliOverrides 填充）──
-let _cliWhisperInitialPrompt = null;  // --whisper-initial-prompt
 let _cliAiPrompt = null;              // --ai-prompt
-let _cliWhisperExtraArgs = null;      // --whisper-extra-args (shell string)
 let _resolvedWhisperExtraArgs = [];   // 解析后的参数数组
 
 /**
@@ -365,9 +362,6 @@ function logError(msg) {
 function logStep(msg) {
   console.log(`${timestamp()} ${c('cyan', '[STEP]')}  ${msg}`);
 }
-function logDebug(msg) {
-  if (process.env.DEBUG) console.log(`${timestamp()} ${c('gray', '[DEBUG]')} ${msg}`);
-}
 function timestamp() {
   return new Date().toTimeString().slice(0, 8);
 }
@@ -481,37 +475,6 @@ function readExcelSheet(sheetName) {
   }
   const ws = wb.Sheets[sheetName];
   return XLSX.utils.sheet_to_json(ws);
-}
-
-function writeExcelCell(sheetName, rowIndex, colName, value) {
-  // rowIndex is 0-based in the sheet data
-  const wb = XLSX.readFile(EXCEL_FILE);
-  if (!wb.SheetNames.includes(sheetName)) {
-    logWarn(`Sheet [${sheetName}] not found, skip write`);
-    return false;
-  }
-  const ws = wb.Sheets[sheetName];
-
-  // Convert to AOA to find column index
-  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
-  const headers = aoa[0];
-  const colIdx = headers.indexOf(colName);
-  if (colIdx === -1) {
-    logWarn(`[${sheetName}] column "${colName}" not found, skip write`);
-    return false;
-  }
-
-  // Ensure the row exists
-  while (aoa.length <= rowIndex + 1) {
-    aoa.push([]);
-  }
-  aoa[rowIndex + 1][colIdx] = value;
-
-  // Rebuild sheet
-  const newWs = XLSX.utils.aoa_to_sheet(aoa);
-  wb.Sheets[sheetName] = newWs;
-  XLSX.writeFile(wb, EXCEL_FILE);
-  return true;
 }
 
 // ============================== 断点续跑工具 ==============================
@@ -1106,27 +1069,6 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     lockedPrint(styleFail(`[${label}] AI 分析失败: ${result.error}`));
   }
   return result;
-}
-
-// ============================== 清理残留文件 ==============================
-function cleanupPartials(dlDir, stem) {
-  const patterns = [
-    new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\..*\\.part$`),
-    new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\..*\\.ytdl$`),
-  ];
-  try {
-    const files = fs.readdirSync(dlDir);
-    for (const f of files) {
-      const fullPath = path.join(dlDir, f);
-      try {
-        const stat = fs.statSync(fullPath);
-        if (!stat.isFile()) continue;
-      } catch { continue; }
-      if (f === `${stem}.part` || f === `${stem}.ytdl` || patterns.some(p => p.test(f))) {
-        try { fs.unlinkSync(fullPath); lockedPrint(`  [${stem}] cleaned partial: ${f}`); } catch { }
-      }
-    }
-  } catch { }
 }
 
 // ============================== 下载 ==============================
