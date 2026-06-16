@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+
+- README 同步：Whisper 三后端(local / faster-whisper / service)章节、OUTPUT_DIR 7 子目录结构、--output CLI 与最小产物阈值参数、断点续跑(Resume)校验机制、错误信息透传机制
+
 ## [1.4.1] - 2026-06-16
 
 ### Bug Fixes
