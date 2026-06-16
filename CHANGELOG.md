@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.4.3] - 2026-06-16
+
+### Bug Fixes
+
+- 修复 transcribe catch 块 const_detail 拼写错误 (`94e783d`)
+
+### Chores
+
+- update before release (`a406303`)
+
+
 ## [1.4.2] - 2026-06-16
 
 ### Documentation
