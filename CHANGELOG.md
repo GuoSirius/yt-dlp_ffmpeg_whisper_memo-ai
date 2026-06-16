@@ -24,9 +24,13 @@
 
 ## Unreleased
 
+### Features
+
+- 新增 FunASR 第 4 种 Whisper 后端（中文 WER ~5%，远低于 Whisper 的 ~15%）：CLI 模式走 AutoModel 本地推理，service 模式走 funasr-server OpenAI 兼容 API；15 个 `FUNASR_*` 环境变量 + `FUNASR_EXTRA_ARGS`（与 WHISPER_EXTRA_ARGS 同语义）+ `--funasr-extra-args` CLI 覆盖；模型实例全局缓存，按 model/device/vad/punc/spk 组合复用
+
 ### Documentation
 
-- README 同步：Whisper 三后端(local / faster-whisper / service)章节、OUTPUT_DIR 7 子目录结构、--output CLI 与最小产物阈值参数、断点续跑(Resume)校验机制、错误信息透传机制
+- README 同步 FunASR 章节：四后端介绍、CLI/服务两种模式安装启动、8 个主模型 + 4 个辅助模型完整对比表、选型建议、WHISPER vs FunASR 决策树
 
 ## [1.4.1] - 2026-06-16
 

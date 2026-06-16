@@ -97,8 +97,8 @@ cp .env.example .env
 | 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge） |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
-| 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server） |
-| 识别 | `WHISPER_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) 四组，共 21 个变量 |
+| 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
+| 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 | 输出 | `OUTPUT_DIR` | 输出根目录（默认 `output`），7 个子目录（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`）由代码自动创建，目录名硬编码。优先级：**CLI `--output <dir>` > env `OUTPUT_DIR` > 默认 `output`** |
 | 输出 | `COOKIES_DIR` | Cookie 文件目录（独立于 `OUTPUT_DIR`，不归并到其下） |
@@ -123,13 +123,13 @@ cp .env.example .env
 
 ### Whisper 语音识别
 
-支持三种后端，通过 `WHISPER_BACKEND` 切换。所有 Whisper 相关环境变量分四组管理：
+支持**四种后端**，通过 `WHISPER_BACKEND` 切换。所有 Whisper / FunASR 相关环境变量分多组管理：
 
-**🔷 共享变量（两种后端均生效）**
+**🔷 共享变量（四种后端均生效）**
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `WHISPER_BACKEND` | `local` | 后端选择：`local` / `faster-whisper` / `service` |
+| `WHISPER_BACKEND` | `local` | 后端选择：`local` / `faster-whisper` / `service` / **`funasr`**（中文专用, WER ~5%） |
 | `WHISPER_TEMPERATURE` | `0.0` | 采样温度（0.0=贪婪解码，推荐中文识别） |
 | `WHISPER_TEMPERATURE_INC` | `0.2` | 温度递减步长（fallback 时温度递增步长） |
 | `WHISPER_OUTPUT_FORMAT` | `json` | 输出格式：`json` / `txt` / `srt` / `vtt` / `tsv` |
@@ -147,7 +147,7 @@ API 端点：
 - `POST /inference` ← 上传 wav 文件，返回识别文本（参数: file / temperature / temperature_inc / response_format）
 - `POST /load` ← 切换模型（参数: model=模型文件路径），脚本首次识别时自动调用，同一模型只加载一次（缓存）
 
-> 注意：三种模式不能混用。`WHISPER_MODEL` / `WHISPER_LANGUAGE` 等本地变量在服务模式或 faster-whisper 模式下不生效；`WHISPER_COMPUTE_TYPE` / `WHISPER_VAD_FILTER` 等 faster-whisper 专有变量在其他模式下不生效；反之亦然。
+> 注意：四种模式不能混用。`WHISPER_MODEL` / `WHISPER_LANGUAGE` 等本地变量在服务模式或 faster-whisper 模式下不生效；`WHISPER_COMPUTE_TYPE` / `WHISPER_VAD_FILTER` 等 faster-whisper 专有变量在其他模式下不生效；`FUNASR_*` 仅在 funasr 模式下生效；反之亦然。
 
 **🔸 本地模式独有**（`WHISPER_BACKEND=local`）
 
@@ -186,6 +186,92 @@ CTranslate2 重写的 Whisper 推理实现，速度约为 openai-whisper 的 4 �
 > - Node.js 版：`pip install whisper-ctranslate2`（脚本以 `whisper-ctranslate2` CLI 方式调用，参数透传）
 >
 > **共享参数复用**：`WHISPER_MODEL` / `WHISPER_LANGUAGE` / `WHISPER_BEAM_SIZE` / `WHISPER_INITIAL_PROMPT` / `WHISPER_EXTRA_ARGS` 等 17 个共享变量在 faster-whisper 模式下同样生效，无需重复配置。
+
+**🔸 funasr 模式独有**（`WHISPER_BACKEND=funasr`）
+
+阿里达摩院开源的工业级中文语音识别工具包，中文 WER 约 **5%**（Whisper 中文约 15%），内置 VAD + 标点 + 热词 + 说话人 + 情感识别能力。推荐中文场景使用。
+
+funasr 模式通过 `FUNASR_MODE` 进一步选择子模式：
+- **`cli`**（默认）= 本地 `funasr` CLI（首次自动从 ModelScope 下载模型，CPU 也能跑）
+- **`service`** = 远程 `funasr-server`（OpenAI 兼容 API，GPU 推荐，多任务并发）
+
+**funasr 共享变量（cli + service 通用）**
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `FUNASR_MODE` | `cli` | 子模式：`cli`（本地 AutoModel）/`service`（远程 funasr-server） |
+| `FUNASR_MODEL` | `paraformer-zh` | 主 ASR 模型：见下「可用模型对比表」 |
+| `FUNASR_VAD_MODEL` | `fsmn-vad` | VAD 模型（语音活动检测），留空=用主模型内置 VAD |
+| `FUNASR_PUNC_MODEL` | `ct-punc` | 标点恢复模型（自动加中英文标点），留空=不做标点恢复 |
+| `FUNASR_SPK_MODEL` | 空 | 说话人分离/确认模型（`cam++`），留空=不做说话人分离 |
+| `FUNASR_EMOTION_MODEL` | 空 | 情感识别模型（`emotion2vec_plus_large`），留空=不做情感识别 |
+| `FUNASR_HOTWORD` | 空 | 热词列表（空格分隔），如 `"魔搭 ModelScope 通义千问"`，显著提升专有名词识别 |
+| `FUNASR_LANGUAGE` | `zh` | 主语言（中文 `zh`；SenseVoice 配 `auto` 可自动检测 50+ 语种） |
+| `FUNASR_EXTRA_ARGS` | 空 | 额外 funasr 参数（shell 字符串），追加到命令末尾。同名参数自动去重（extra 覆盖已有）。CLI 覆盖：`--funasr-extra-args`（CLI > .env） |
+
+**funasr CLI 模式独有**（`FUNASR_MODE=cli`）
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `FUNASR_DEVICE` | `cpu` | 推理设备：`cpu` / `cuda`（GPU 强烈推荐，中文 large 模型差距 10×+） |
+| `FUNASR_QUANTIZE` | `True` | int8 量化（省 50% 内存，CPU 推荐；GPU 设为 `False`） |
+| `FUNASR_BATCH_SIZE_S` | `300` | 动态批处理音频秒数（60-600，大文件=更大值） |
+| `FUNASR_VAD_MAX_SEGMENT` | `20000` | VAD 最大单段长度（ms，`0`=不切分） |
+
+依赖：`pip install funasr modelscope`，脚本以 `funasr ++model=... ++input=...` 方式调用，模型自动从 ModelScope 下载到 `~/.cache/modelscope/hub`。
+
+**funasr 服务模式独有**（`FUNASR_MODE=service`）
+
+需先启动 `funasr-server`：
+```bash
+# GPU 模式（强烈推荐）
+pip install funasr vllm fastapi uvicorn python-multipart
+funasr-server --device cuda --port 8899
+
+# CPU 模式
+funasr-server --device cpu --port 8899
+
+# 额外启用 MCP 协议（让 Claude / Cursor 等 AI 助手能直接调用语音识别）
+funasr-server --device cuda --port 8899 --enable-mcp
+```
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `FUNASR_SERVICE_URL` | `http://localhost:8899` | funasr-server 地址 |
+| `FUNASR_SERVICE_MODEL` | `iic/SenseVoiceSmall` | 服务侧加载的模型 ID（首次调用会触发 ModelScope 下载） |
+
+API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: file / model / response_format / prompt=热词 / language），脚本首次识别时直接调用，模型由服务端管理。
+
+**FunASR 可用模型对比表**（funasr 1.3.9，2026-05-29 发布）
+
+| 模型名 | 参数量 | 磁盘 | 速度 | 语种 | 时间戳 | 情绪 | 事件 | 说话人 | 推荐场景 |
+|--------|--------|------|------|------|--------|------|------|--------|----------|
+| `paraformer-zh` | 220M | ~1GB | 13×实时 | zh/en | ✓ | ✗ | ✗ | 需 cam++ | **中文首选（精度最高）** |
+| `SenseVoiceSmall` | 234M | ~1GB | 170×实时 | 50+ | ✗ | ✓ | ✓ | 需 cam++ | 多语种/实时/需情绪/事件 |
+| `Fun-ASR-Nano` | 800M | ~3GB | 加速（vLLM） | 31 | ✓ | ✗ | ✗ | 需 cam++ | 复杂上下文理解 |
+| `paraformer-zh-streaming` | 220M | ~1GB | 流式 | zh/en | ✓ | ✗ | ✗ | 需 cam++ | 实时字幕 |
+| `Qwen3-ASR` | 1700M | ~7GB | 较慢 | 52 | ✗ | ✗ | ✗ | 需 cam++ | 多语种高质量 |
+| `GLM-ASR-Nano` | 1500M | ~6GB | 较慢 | 17 | ✗ | ✗ | ✗ | 需 cam++ | 方言场景 |
+| `Whisper-large-v3` | 1550M | ~3GB | 1× | 多 | ✗ | ✗ | ✗ | 需 cam++ | 兼容 Whisper 用户 |
+| `Whisper-large-v3-turbo` | 809M | ~2GB | 2-3× | 多 | ✗ | ✗ | ✗ | 需 cam++ | Whisper 加速 |
+
+辅助模型（按需搭配主模型）：
+
+| 模型 | 参数量 | 磁盘 | 速度 | 功能 |
+|------|--------|------|------|------|
+| `fsmn-vad` | 0.4M | 内置 | 实时 | VAD 语音活动检测 |
+| `ct-punc` | 290M | ~1GB | — | 中英文标点恢复 |
+| `cam++` | 7.2M | 内置 | 实时 | 说话人分离/确认（CPU 实时） |
+| `emotion2vec_plus_large` | 300M | ~1GB | — | 情感识别 |
+
+> **选择建议**：
+> - **中文批量处理** → `paraformer-zh`（高精 + 13×实时，CPU 也能跑，性价比最高）
+> - **多语种 / 实时** → `SenseVoiceSmall`（170×实时，50+ 语种，内置情绪/事件检测）
+> - **需要说话人分离** → `paraformer-zh` + `cam++`
+> - **流式字幕** → `paraformer-zh-streaming`
+> - **GPU 高质量** → `Qwen3-ASR`（52 语种）/ `Fun-ASR-Nano`（31 语种 LLM 架构）
+
+> **WHISPER vs FunASR 选型**：Whisper 优势是 99 种语言覆盖 + 翻译任务 (`task=translate`)；FunASR 优势是中文 WER 显著更低、内置 VAD/标点/说话人/情感、中文场景速度更快。**纯中文识别强烈推荐 FunASR**。
 
 ### 目录结构
 

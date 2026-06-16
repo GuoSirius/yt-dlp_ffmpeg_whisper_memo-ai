@@ -146,6 +146,44 @@ WHISPER_VAD_FILTER = os.getenv("WHISPER_VAD_FILTER", "True")  # VAD 静音过滤
 WHISPER_VAD_ONSET = os.getenv("WHISPER_VAD_ONSET", "0.5")  # VAD 灵敏度阈值 (0.0~1.0)
 WHISPER_NUM_WORKERS = os.getenv("WHISPER_NUM_WORKERS", "1")  # CTranslate2 并行 worker 数
 
+# ── FunASR 专用参数（backend=funasr 时生效） ──
+# FunASR 专攻中文场景，WER ~5%（Whisper 中文 ~15%）。
+# 需先安装: pip install funasr modelscope (cli)
+#           或:   pip install funasr vllm fastapi uvicorn python-multipart (service, GPU 推荐)
+FUNASR_MODE = os.getenv("FUNASR_MODE", "cli")  # "cli" = 本地 AutoModel; "service" = 远程 funasr-server (OpenAI 兼容 API)
+FUNASR_MODEL = os.getenv("FUNASR_MODEL", "paraformer-zh")  # 主 ASR 模型: paraformer-zh / SenseVoiceSmall / Fun-ASR-Nano / Qwen3-ASR ...
+FUNASR_VAD_MODEL = os.getenv("FUNASR_VAD_MODEL", "fsmn-vad")  # VAD 模型（留空=用主模型内置）
+FUNASR_PUNC_MODEL = os.getenv("FUNASR_PUNC_MODEL", "ct-punc")  # 标点恢复（留空=不做）
+FUNASR_SPK_MODEL = os.getenv("FUNASR_SPK_MODEL", "")  # 说话人分离（留空=不做）
+FUNASR_EMOTION_MODEL = os.getenv("FUNASR_EMOTION_MODEL", "")  # 情感识别（留空=不做）
+FUNASR_DEVICE = os.getenv("FUNASR_DEVICE", "cpu")  # cpu / cuda（GPU 强烈推荐）
+FUNASR_QUANTIZE = os.getenv("FUNASR_QUANTIZE", "True")  # int8 量化（省 50% 内存, GPU 设 False）
+FUNASR_BATCH_SIZE_S = os.getenv("FUNASR_BATCH_SIZE_S", "300")  # 动态批处理音频秒数 (60-600)
+FUNASR_HOTWORD = os.getenv("FUNASR_HOTWORD", "")  # 热词（空格分隔, 显著提升专有名词）
+FUNASR_LANGUAGE = os.getenv("FUNASR_LANGUAGE", "zh")  # 主语言（中文 zh, SenseVoice 配 auto 可自动检测 50+ 语种）
+FUNASR_VAD_MAX_SEGMENT = os.getenv("FUNASR_VAD_MAX_SEGMENT", "20000")  # VAD 最大单段长度 (ms, 0=不切分)
+FUNASR_SERVICE_URL = os.getenv("FUNASR_SERVICE_URL", "http://localhost:8899")  # funasr-server 地址
+FUNASR_SERVICE_MODEL = os.getenv("FUNASR_SERVICE_MODEL", "iic/SenseVoiceSmall")  # 服务侧加载的模型 ID
+
+# ── FunASR 专用参数（backend=funasr 时生效） ──
+# FunASR 专攻中文场景，WER ~5%（Whisper 中文 ~15%）。
+# 需先安装: pip install funasr modelscope (cli)
+#           或:   pip install funasr vllm fastapi uvicorn python-multipart (service, GPU 推荐)
+FUNASR_MODE = os.getenv("FUNASR_MODE", "cli")  # "cli" = 本地 AutoModel; "service" = 远程 funasr-server (OpenAI 兼容 API)
+FUNASR_MODEL = os.getenv("FUNASR_MODEL", "paraformer-zh")  # 主 ASR 模型: paraformer-zh / SenseVoiceSmall / Fun-ASR-Nano / Qwen3-ASR ...
+FUNASR_VAD_MODEL = os.getenv("FUNASR_VAD_MODEL", "fsmn-vad")  # VAD 模型（留空=用主模型内置）
+FUNASR_PUNC_MODEL = os.getenv("FUNASR_PUNC_MODEL", "ct-punc")  # 标点恢复（留空=不做）
+FUNASR_SPK_MODEL = os.getenv("FUNASR_SPK_MODEL", "")  # 说话人分离（留空=不做）
+FUNASR_EMOTION_MODEL = os.getenv("FUNASR_EMOTION_MODEL", "")  # 情感识别（留空=不做）
+FUNASR_DEVICE = os.getenv("FUNASR_DEVICE", "cpu")  # cpu / cuda（GPU 强烈推荐）
+FUNASR_QUANTIZE = os.getenv("FUNASR_QUANTIZE", "True")  # int8 量化（省 50% 内存, GPU 设 False）
+FUNASR_BATCH_SIZE_S = os.getenv("FUNASR_BATCH_SIZE_S", "300")  # 动态批处理音频秒数 (60-600)
+FUNASR_HOTWORD = os.getenv("FUNASR_HOTWORD", "")  # 热词（空格分隔, 显著提升专有名词）
+FUNASR_LANGUAGE = os.getenv("FUNASR_LANGUAGE", "zh")  # 主语言（中文 zh, SenseVoice 配 auto 可自动检测 50+ 语种）
+FUNASR_VAD_MAX_SEGMENT = os.getenv("FUNASR_VAD_MAX_SEGMENT", "20000")  # VAD 最大单段长度 (ms, 0=不切分)
+FUNASR_SERVICE_URL = os.getenv("FUNASR_SERVICE_URL", "http://localhost:8899")  # funasr-server 地址
+FUNASR_SERVICE_MODEL = os.getenv("FUNASR_SERVICE_MODEL", "iic/SenseVoiceSmall")  # 服务侧加载的模型 ID
+
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 _FW_MODEL: object | None = None  # 缓存的 faster-whisper WhisperModel 实例
 _FW_MODEL_CFG: str = ""  # 缓存的模型配置指纹 (model/device/compute_type 组合)
@@ -153,6 +191,7 @@ _FW_MODEL_CFG: str = ""  # 缓存的模型配置指纹 (model/device/compute_typ
 # ── CLI 覆盖占位（CLI 解析后由 apply_cli_overrides 填充）──
 _cli_ai_prompt: str | None = None  # --ai-prompt
 _resolved_whisper_extra_args: list[str] = []  # 解析后的参数数组
+_resolved_funasr_extra_args: list[str] = []  # FunASR 额外参数（CLI > .env）
 
 
 def _resolve_prompt_value(val: str | None) -> str:
@@ -203,7 +242,7 @@ def _merge_whisper_args(base_args: list[str], extra_args: list[str]) -> list[str
 
 def apply_cli_overrides(args: argparse.Namespace) -> None:
     """应用 CLI 覆盖：CLI > .env > 内置默认（在 parser.parse_args() 后调用）"""
-    global WHISPER_INITIAL_PROMPT, _cli_ai_prompt, _resolved_whisper_extra_args
+    global WHISPER_INITIAL_PROMPT, _cli_ai_prompt, _resolved_whisper_extra_args, _resolved_funasr_extra_args
 
     # whisper-initial-prompt: CLI > .env > 内置默认
     if args.whisper_initial_prompt is not None:
@@ -221,6 +260,13 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
     if _resolved_whisper_extra_args:
         with _print_lock:
             print(f"  whisper extra args: {' '.join(_resolved_whisper_extra_args)}", flush=True)
+
+    # funasr-extra-args: CLI > .env
+    raw_funasr_extra = getattr(args, "funasr_extra_args", None) or os.getenv("FUNASR_EXTRA_ARGS", "")
+    _resolved_funasr_extra_args = _parse_extra_args(raw_funasr_extra)
+    if _resolved_funasr_extra_args:
+        with _print_lock:
+            print(f"  funasr extra args: {' '.join(_resolved_funasr_extra_args)}", flush=True)
 
 TRANSCODE_EXT = os.getenv("TRANSCODE_EXT", ".wav")
 FFMPEG_TRANSCODE_ARGS = os.getenv("TRANSCODE_ARGS", "-vn -map_metadata -1 -map 0:a:0 -af loudnorm=I=-16:TP=-1.5:LRA=11:linear=true,aresample=resampler=soxr:osr=16000:osf=s16:dither_method=shibata -ac 1 -c:a pcm_s16le").split()
@@ -1254,6 +1300,19 @@ def _check_whisper_available() -> bool:
         except ImportError:
             log.error("faster-whisper 不可用，请确认: pip install faster-whisper")
             return False
+    elif WHISPER_BACKEND == "funasr":
+        if FUNASR_MODE == "service":
+            try:
+                r = requests.get(FUNASR_SERVICE_URL, timeout=3)
+                return True
+            except Exception:
+                return False
+        try:
+            from funasr import AutoModel  # noqa: F401
+            return True
+        except ImportError:
+            log.error("funasr 不可用，请确认: pip install funasr")
+            return False
     else:
         try:
             r = requests.get(WHISPER_SERVICE, timeout=3)
@@ -1334,6 +1393,16 @@ def step_transcribe(
         mode_label = "faster-whisper"
         model_label = f"{WHISPER_MODEL}/{WHISPER_COMPUTE_TYPE}"
         lang_label = WHISPER_LANGUAGE if WHISPER_LANGUAGE else "auto"
+    elif WHISPER_BACKEND == "funasr":
+        mode_label = f"funasr/{FUNASR_MODE}"
+        if FUNASR_MODE == "service":
+            model_label = Path(FUNASR_SERVICE_MODEL).name if FUNASR_SERVICE_MODEL else "(server default)"
+        else:
+            _m = [FUNASR_MODEL]
+            if FUNASR_VAD_MODEL:    _m.append(FUNASR_VAD_MODEL)
+            if FUNASR_PUNC_MODEL:   _m.append(FUNASR_PUNC_MODEL)
+            model_label = "+".join(_m)
+        lang_label = FUNASR_LANGUAGE if FUNASR_LANGUAGE else "auto"
     else:
         mode_label = "service"
         model_label = Path(WHISPER_SERVICE_MODEL).name if WHISPER_SERVICE_MODEL else "(default)"
@@ -1349,6 +1418,8 @@ def step_transcribe(
             text, retries, err = _transcribe_local(audio_file, stem, max_retries, retry_delay)
         elif WHISPER_BACKEND == "faster-whisper":
             text, retries, err = _transcribe_faster_whisper(audio_file, stem, max_retries, retry_delay)
+        elif WHISPER_BACKEND == "funasr":
+            text, retries, err = _transcribe_funasr(audio_file, stem, max_retries, retry_delay, timeout)
         else:
             text, retries, err = _transcribe_service(audio_file, stem, max_retries, retry_delay, timeout)
     finally:
@@ -1612,6 +1683,330 @@ def _apply_fw_extra_args(base_kwargs: dict, extra_args: list[str]) -> dict:
         else:
             i += 1
     return kwargs
+
+
+def _transcribe_funasr(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR 识别（cli 模式走 AutoModel, service 模式走 HTTP 转发到 funasr-server）"""
+    if FUNASR_MODE == "service":
+        return _transcribe_funasr_service(audio_file, stem, max_retries, retry_delay, timeout)
+    return _transcribe_funasr_cli(audio_file, stem, max_retries, retry_delay, timeout)
+
+
+def _transcribe_funasr_cli(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR CLI 模式：本地 AutoModel 推理（首次自动下载 ModelScope 模型）"""
+    global _FUNASR_MODEL, _FUNASR_MODEL_CFG
+
+    def _get_model():
+        """获取或复用 AutoModel 实例（按 model/device/vad/punc/spk 组合缓存）"""
+        global _FUNASR_MODEL, _FUNASR_MODEL_CFG
+        cfg = f"{FUNASR_MODEL}|{FUNASR_DEVICE}|{FUNASR_VAD_MODEL}|{FUNASR_PUNC_MODEL}|{FUNASR_SPK_MODEL}|{FUNASR_EMOTION_MODEL}"
+        if _FUNASR_MODEL is not None and _FUNASR_MODEL_CFG == cfg:
+            return _FUNASR_MODEL
+        from funasr import AutoModel  # 延迟导入，避免 funasr 未装时启动失败
+        model_kwargs: dict = {
+            "model": FUNASR_MODEL,
+            "device": FUNASR_DEVICE,
+        }
+        # 可选辅助模型（空字符串=不启用）
+        if FUNASR_VAD_MODEL:
+            model_kwargs["vad_model"] = FUNASR_VAD_MODEL
+        if FUNASR_PUNC_MODEL:
+            model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
+        if FUNASR_SPK_MODEL:
+            model_kwargs["spk_model"] = FUNASR_SPK_MODEL
+        if FUNASR_EMOTION_MODEL:
+            model_kwargs["emotion_model"] = FUNASR_EMOTION_MODEL
+        with _print_lock:
+            _models = [FUNASR_MODEL]
+            if FUNASR_VAD_MODEL:    _models.append(FUNASR_VAD_MODEL)
+            if FUNASR_PUNC_MODEL:   _models.append(FUNASR_PUNC_MODEL)
+            if FUNASR_SPK_MODEL:    _models.append(FUNASR_SPK_MODEL)
+            if FUNASR_EMOTION_MODEL: _models.append(FUNASR_EMOTION_MODEL)
+            print(f"  [{stem}] 加载 FunASR 模型: {'+'.join(_models)} (device={FUNASR_DEVICE})...", flush=True)
+        _FUNASR_MODEL = AutoModel(**model_kwargs)
+        _FUNASR_MODEL_CFG = cfg
+        return _FUNASR_MODEL
+
+    def _run():
+        model = _get_model()
+
+        # 构建 generate 参数
+        generate_kwargs: dict = {
+            "input": str(audio_file),
+            "batch_size_s": int(FUNASR_BATCH_SIZE_S),
+        }
+        if FUNASR_HOTWORD:
+            generate_kwargs["hotword"] = FUNASR_HOTWORD
+        if FUNASR_LANGUAGE:
+            generate_kwargs["language"] = FUNASR_LANGUAGE
+        if FUNASR_VAD_MODEL and FUNASR_VAD_MAX_SEGMENT and FUNASR_VAD_MAX_SEGMENT != "0":
+            generate_kwargs["vad_kwargs"] = {"max_single_segment_time": int(FUNASR_VAD_MAX_SEGMENT)}
+
+        # 从 FUNASR_EXTRA_ARGS 解析额外参数（支持 CLI 覆盖）
+        if _resolved_funasr_extra_args:
+            generate_kwargs = _apply_fw_extra_args(generate_kwargs, _resolved_funasr_extra_args)
+
+        results = model.generate(**generate_kwargs)
+        if not results:
+            raise ValueError("FunASR 返回空结果")
+        # results[0] 通常是 dict，含 "text" 字段
+        first = results[0]
+        if isinstance(first, dict):
+            text = (first.get("text") or "").strip()
+        else:
+            text = str(first).strip()
+        if not text:
+            raise ValueError("FunASR 返回空文本")
+        return text
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        if err:
+            return None, retries_used, err
+        return text, 0, None
+    except Exception as e:
+        import traceback as _tb
+        _audio_size = audio_file.stat().st_size if audio_file.exists() else "N/A"
+        _err_details = (
+            f"[{stem}] FunASR CLI 识别失败\n"
+            f"  audio    : {audio_file} ({_audio_size} bytes)\n"
+            f"  mode     : cli (AutoModel)\n"
+            f"  model    : {FUNASR_MODEL} (device={FUNASR_DEVICE})\n"
+            f"  vad/punc : {FUNASR_VAD_MODEL} / {FUNASR_PUNC_MODEL}\n"
+            f"  hotword  : {FUNASR_HOTWORD or '(none)'}\n"
+            f"  error    : {e}\n"
+        )
+        # 如果是 SSL/cert 相关错误，给出解决提示
+        _err_str = str(e)
+        if any(k in _err_str.lower() for k in ("certificate", "ssl", "CERTIFICATE_VERIFY_FAILED", "ConnectError")):
+            _err_details += (
+                f"  ⚠️ 疑似 SSL/证书错误，可能的解决方案：\n"
+                f"    1. 设置环境变量 SSL_CERT_FILE=/path/to/cert.pem\n"
+                f"    2. pip install --upgrade certifi\n"
+                f"    3. 设置 FUNASR_MODEL_DIR 指向已下载的本地模型目录（跳过在线下载）\n"
+            )
+        log.error(_err_details + f"  traceback:\n{_tb.format_exc()}")
+        return None, max_retries, _err_details.strip()
+
+
+def _transcribe_funasr_service(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR 服务模式：调用 funasr-server OpenAI 兼容 API。"""
+    global _Service_model_loaded
+
+    def _run():
+        # ── 按需切换模型（仅当指定了 model 时，且服务支持动态加载） ──
+        if FUNASR_SERVICE_MODEL and FUNASR_SERVICE_MODEL != _Service_model_loaded:
+            with _print_lock:
+                print(f"  [{stem}] 加载 FunASR 服务模型: {FUNASR_SERVICE_MODEL}", flush=True)
+
+        with open(audio_file, "rb") as f:
+            data = {
+                "model": FUNASR_SERVICE_MODEL,
+                "response_format": "json",
+            }
+            if FUNASR_HOTWORD:
+                # OpenAI 兼容 API 的 hotword 一般以 prompt 形式传递
+                data["prompt"] = FUNASR_HOTWORD
+            resp = requests.post(
+                f"{FUNASR_SERVICE_URL}/v1/audio/transcriptions",
+                files={"file": (audio_file.name, f, "audio/wav")},
+                data=data,
+                timeout=timeout if timeout > 0 else None,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        text = (data.get("text") or "").strip()
+        if not text:
+            raise ValueError("FunASR 服务返回空文本")
+        _Service_model_loaded = FUNASR_SERVICE_MODEL
+        return text
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        if err:
+            return None, retries_used, err
+        return text, 0, None
+    except Exception as e:
+        log.error(f"[{stem}] FunASR 服务识别失败: {e}")
+        return None, max_retries, str(e)[:500]
+
+
+def _transcribe_funasr(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR 识别（cli 模式走 AutoModel, service 模式走 HTTP 转发到 funasr-server）"""
+    if FUNASR_MODE == "service":
+        return _transcribe_funasr_service(audio_file, stem, max_retries, retry_delay, timeout)
+    return _transcribe_funasr_cli(audio_file, stem, max_retries, retry_delay, timeout)
+
+
+def _transcribe_funasr_cli(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR CLI 模式：本地 AutoModel 推理（首次自动下载 ModelScope 模型）"""
+    global _FUNASR_MODEL, _FUNASR_MODEL_CFG
+
+    def _get_model():
+        """获取或复用 AutoModel 实例（按 model/device/vad/punc/spk 组合缓存）"""
+        global _FUNASR_MODEL, _FUNASR_MODEL_CFG
+        cfg = f"{FUNASR_MODEL}|{FUNASR_DEVICE}|{FUNASR_VAD_MODEL}|{FUNASR_PUNC_MODEL}|{FUNASR_SPK_MODEL}|{FUNASR_EMOTION_MODEL}"
+        if _FUNASR_MODEL is not None and _FUNASR_MODEL_CFG == cfg:
+            return _FUNASR_MODEL
+        from funasr import AutoModel  # 延迟导入，避免 funasr 未装时启动失败
+        model_kwargs: dict = {
+            "model": FUNASR_MODEL,
+            "device": FUNASR_DEVICE,
+        }
+        # 可选辅助模型（空字符串=不启用）
+        if FUNASR_VAD_MODEL:
+            model_kwargs["vad_model"] = FUNASR_VAD_MODEL
+        if FUNASR_PUNC_MODEL:
+            model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
+        if FUNASR_SPK_MODEL:
+            model_kwargs["spk_model"] = FUNASR_SPK_MODEL
+        if FUNASR_EMOTION_MODEL:
+            model_kwargs["emotion_model"] = FUNASR_EMOTION_MODEL
+        with _print_lock:
+            _models = [FUNASR_MODEL]
+            if FUNASR_VAD_MODEL:    _models.append(FUNASR_VAD_MODEL)
+            if FUNASR_PUNC_MODEL:   _models.append(FUNASR_PUNC_MODEL)
+            if FUNASR_SPK_MODEL:    _models.append(FUNASR_SPK_MODEL)
+            if FUNASR_EMOTION_MODEL: _models.append(FUNASR_EMOTION_MODEL)
+            print(f"  [{stem}] 加载 FunASR 模型: {'+'.join(_models)} (device={FUNASR_DEVICE})...", flush=True)
+        _FUNASR_MODEL = AutoModel(**model_kwargs)
+        _FUNASR_MODEL_CFG = cfg
+        return _FUNASR_MODEL
+
+    def _run():
+        model = _get_model()
+
+        # 构建 generate 参数
+        generate_kwargs: dict = {
+            "input": str(audio_file),
+            "batch_size_s": int(FUNASR_BATCH_SIZE_S),
+        }
+        if FUNASR_HOTWORD:
+            generate_kwargs["hotword"] = FUNASR_HOTWORD
+        if FUNASR_LANGUAGE:
+            generate_kwargs["language"] = FUNASR_LANGUAGE
+        if FUNASR_VAD_MODEL and FUNASR_VAD_MAX_SEGMENT and FUNASR_VAD_MAX_SEGMENT != "0":
+            generate_kwargs["vad_kwargs"] = {"max_single_segment_time": int(FUNASR_VAD_MAX_SEGMENT)}
+
+        # 从 FUNASR_EXTRA_ARGS 解析额外参数（支持 CLI 覆盖）
+        if _resolved_funasr_extra_args:
+            generate_kwargs = _apply_fw_extra_args(generate_kwargs, _resolved_funasr_extra_args)
+
+        results = model.generate(**generate_kwargs)
+        if not results:
+            raise ValueError("FunASR 返回空结果")
+        # results[0] 通常是 dict，含 "text" 字段
+        first = results[0]
+        if isinstance(first, dict):
+            text = (first.get("text") or "").strip()
+        else:
+            text = str(first).strip()
+        if not text:
+            raise ValueError("FunASR 返回空文本")
+        return text
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        if err:
+            return None, retries_used, err
+        return text, 0, None
+    except Exception as e:
+        import traceback as _tb
+        _audio_size = audio_file.stat().st_size if audio_file.exists() else "N/A"
+        _err_details = (
+            f"[{stem}] FunASR CLI 识别失败\n"
+            f"  audio    : {audio_file} ({_audio_size} bytes)\n"
+            f"  mode     : cli (AutoModel)\n"
+            f"  model    : {FUNASR_MODEL} (device={FUNASR_DEVICE})\n"
+            f"  vad/punc : {FUNASR_VAD_MODEL} / {FUNASR_PUNC_MODEL}\n"
+            f"  hotword  : {FUNASR_HOTWORD or '(none)'}\n"
+            f"  error    : {e}\n"
+        )
+        # 如果是 SSL/cert 相关错误，给出解决提示
+        _err_str = str(e)
+        if any(k in _err_str.lower() for k in ("certificate", "ssl", "CERTIFICATE_VERIFY_FAILED", "ConnectError")):
+            _err_details += (
+                f"  ⚠️ 疑似 SSL/证书错误，可能的解决方案：\n"
+                f"    1. 设置环境变量 SSL_CERT_FILE=/path/to/cert.pem\n"
+                f"    2. pip install --upgrade certifi\n"
+                f"    3. 设置 FUNASR_MODEL_DIR 指向已下载的本地模型目录（跳过在线下载）\n"
+            )
+        log.error(_err_details + f"  traceback:\n{_tb.format_exc()}")
+        return None, max_retries, _err_details.strip()
+
+
+def _transcribe_funasr_service(
+    audio_file: Path, stem: str,
+    max_retries: int, retry_delay: float,
+    timeout: int = 0,
+) -> tuple[str | None, int, str | None]:
+    """FunASR 服务模式：调用 funasr-server OpenAI 兼容 API。"""
+    global _Service_model_loaded
+
+    def _run():
+        # ── 按需切换模型（仅当指定了 model 时，且服务支持动态加载） ──
+        if FUNASR_SERVICE_MODEL and FUNASR_SERVICE_MODEL != _Service_model_loaded:
+            with _print_lock:
+                print(f"  [{stem}] 加载 FunASR 服务模型: {FUNASR_SERVICE_MODEL}", flush=True)
+
+        with open(audio_file, "rb") as f:
+            data = {
+                "model": FUNASR_SERVICE_MODEL,
+                "response_format": "json",
+            }
+            if FUNASR_HOTWORD:
+                # OpenAI 兼容 API 的 hotword 一般以 prompt 形式传递
+                data["prompt"] = FUNASR_HOTWORD
+            resp = requests.post(
+                f"{FUNASR_SERVICE_URL}/v1/audio/transcriptions",
+                files={"file": (audio_file.name, f, "audio/wav")},
+                data=data,
+                timeout=timeout if timeout > 0 else None,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        text = (data.get("text") or "").strip()
+        if not text:
+            raise ValueError("FunASR 服务返回空文本")
+        _Service_model_loaded = FUNASR_SERVICE_MODEL
+        return text
+
+    try:
+        text, retries_used, err = retry_call(
+            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
+        )
+        if err:
+            return None, retries_used, err
+        return text, 0, None
+    except Exception as e:
+        log.error(f"[{stem}] FunASR 服务识别失败: {e}")
+        return None, max_retries, str(e)[:500]
 
 
 def _transcribe_service(
@@ -1906,7 +2301,14 @@ def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) ->
             print(f"  ⏭ ffprobe: 未启用（步骤不含 transcode）")
         # whisper
         if "transcribe" in steps:
-            backend_info = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
+            if WHISPER_BACKEND == "local":
+                backend_info = "本地CLI"
+            elif WHISPER_BACKEND == "faster-whisper":
+                backend_info = "faster-whisper (faster_whisper)"
+            elif WHISPER_BACKEND == "funasr":
+                backend_info = f"funasr/{FUNASR_MODE} ({FUNASR_MODEL})"
+            else:
+                backend_info = WHISPER_SERVICE
             if env["whisper"]:
                 print(f"  ✅ whisper ({backend_info}): 可用")
             else:
@@ -2585,7 +2987,14 @@ def run(
     # ── 检测 whisper ──
     whisper_available = _check_whisper_available() if "transcribe" in steps else False
     if "transcribe" in steps and not whisper_available:
-        backend_info = f"本地 whisper CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+        if WHISPER_BACKEND == "local":
+            backend_info = "本地 whisper CLI"
+        elif WHISPER_BACKEND == "faster-whisper":
+            backend_info = "faster-whisper (faster_whisper)"
+        elif WHISPER_BACKEND == "funasr":
+            backend_info = f"funasr/{FUNASR_MODE}"
+        else:
+            backend_info = WHISPER_SERVICE
         log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
 
     # ── 断点续跑：扫描 progress JSON，统计将跳过的任务/步骤数 ──
@@ -3374,7 +3783,14 @@ if __name__ == "__main__":
         if "transcribe" in steps:
             whisper_available = _check_whisper_available()
             if not whisper_available:
-                backend = "local CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+                if WHISPER_BACKEND == "local":
+                    backend = "local CLI"
+                elif WHISPER_BACKEND == "faster-whisper":
+                    backend = "faster-whisper (faster_whisper)"
+                elif WHISPER_BACKEND == "funasr":
+                    backend = f"funasr/{FUNASR_MODE}"
+                else:
+                    backend = WHISPER_SERVICE
                 log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
 
         # 执行流水线
@@ -3443,7 +3859,14 @@ if __name__ == "__main__":
         if "transcribe" in steps:
             whisper_available = _check_whisper_available()
             if not whisper_available:
-                backend = "local CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
+                if WHISPER_BACKEND == "local":
+                    backend = "local CLI"
+                elif WHISPER_BACKEND == "faster-whisper":
+                    backend = "faster-whisper (faster_whisper)"
+                elif WHISPER_BACKEND == "funasr":
+                    backend = f"funasr/{FUNASR_MODE}"
+                else:
+                    backend = WHISPER_SERVICE
                 log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
 
         # dry-run 模式

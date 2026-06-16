@@ -120,11 +120,30 @@ const WHISPER_VAD_FILTER = process.env.WHISPER_VAD_FILTER || 'True';      // VAD
 const WHISPER_VAD_ONSET = process.env.WHISPER_VAD_ONSET || '0.5';         // VAD 灵敏度阈值 (0.0~1.0)
 const WHISPER_NUM_WORKERS = process.env.WHISPER_NUM_WORKERS || '1';       // CTranslate2 并行 worker 数
 
+// ── FunASR 专用参数（backend=funasr 时生效） ──
+// FunASR 专攻中文场景，WER ~5%（Whisper 中文 ~15%）。
+// 需先安装: pip install funasr modelscope (cli)  或  pip install funasr vllm fastapi uvicorn python-multipart (service, GPU 推荐)
+const FUNASR_MODE = process.env.FUNASR_MODE || 'cli';                      // "cli" = 本地 AutoModel; "service" = 远程 funasr-server (OpenAI 兼容 API)
+const FUNASR_MODEL = process.env.FUNASR_MODEL || 'paraformer-zh';          // 主 ASR 模型: paraformer-zh / SenseVoiceSmall / Fun-ASR-Nano / Qwen3-ASR ...
+const FUNASR_VAD_MODEL = process.env.FUNASR_VAD_MODEL || 'fsmn-vad';       // VAD 模型（留空=用主模型内置）
+const FUNASR_PUNC_MODEL = process.env.FUNASR_PUNC_MODEL || 'ct-punc';      // 标点恢复（留空=不做）
+const FUNASR_SPK_MODEL = process.env.FUNASR_SPK_MODEL || '';               // 说话人分离（留空=不做）
+const FUNASR_EMOTION_MODEL = process.env.FUNASR_EMOTION_MODEL || '';       // 情感识别（留空=不做）
+const FUNASR_DEVICE = process.env.FUNASR_DEVICE || 'cpu';                  // cpu / cuda（GPU 强烈推荐）
+const FUNASR_QUANTIZE = process.env.FUNASR_QUANTIZE || 'True';             // int8 量化（省 50% 内存, GPU 设 False）
+const FUNASR_BATCH_SIZE_S = process.env.FUNASR_BATCH_SIZE_S || '300';      // 动态批处理音频秒数 (60-600)
+const FUNASR_HOTWORD = process.env.FUNASR_HOTWORD || '';                   // 热词（空格分隔, 显著提升专有名词）
+const FUNASR_LANGUAGE = process.env.FUNASR_LANGUAGE || 'zh';               // 主语言（中文 zh, SenseVoice 配 auto 可自动检测 50+ 语种）
+const FUNASR_VAD_MAX_SEGMENT = process.env.FUNASR_VAD_MAX_SEGMENT || '20000'; // VAD 最大单段长度 (ms, 0=不切分)
+const FUNASR_SERVICE_URL = process.env.FUNASR_SERVICE_URL || 'http://localhost:8899'; // funasr-server 地址
+const FUNASR_SERVICE_MODEL = process.env.FUNASR_SERVICE_MODEL || 'iic/SenseVoiceSmall'; // 服务侧加载的模型 ID
+
 let _SERVICE_MODEL_LOADED = null;
 
 // ── CLI 覆盖占位（CLI 解析后由 applyCliOverrides 填充）──
 let _cliAiPrompt = null;              // --ai-prompt
 let _resolvedWhisperExtraArgs = [];   // 解析后的参数数组
+let _resolvedFunasrExtraArgs = [];    // FunASR 额外参数（CLI > .env）
 
 /**
  * 应用 CLI 覆盖：CLI > .env > 内置默认
@@ -149,6 +168,13 @@ function applyCliOverrides(cliOpts) {
   _resolvedWhisperExtraArgs = parseExtraArgs(rawExtra);
   if (_resolvedWhisperExtraArgs.length) {
     lockedPrint(styleInfo(`whisper extra args: ${_resolvedWhisperExtraArgs.join(' ')}`));
+  }
+
+  // funasr-extra-args: CLI > .env
+  const rawFunasrExtra = cliOpts.funasrExtraArgs || process.env.FUNASR_EXTRA_ARGS || '';
+  _resolvedFunasrExtraArgs = parseExtraArgs(rawFunasrExtra);
+  if (_resolvedFunasrExtraArgs.length) {
+    lockedPrint(styleInfo(`funasr extra args: ${_resolvedFunasrExtraArgs.join(' ')}`));
   }
 }
 
@@ -858,6 +884,22 @@ async function checkWhisperAvailable() {
       logError('whisper-ctranslate2 CLI 不可用，请确认: pip install whisper-ctranslate2');
       return false;
     }
+  } else if (WHISPER_BACKEND === 'funasr') {
+    if (FUNASR_MODE === 'service') {
+      try {
+        await fetch(FUNASR_SERVICE_URL, { signal: AbortSignal.timeout(3000) });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    try {
+      execSync('funasr --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+      return true;
+    } catch {
+      logError('funasr CLI 不可用，请确认: pip install funasr modelscope');
+      return false;
+    }
   } else {
     try {
       const resp = await fetch(WHISPER_SERVICE, { signal: AbortSignal.timeout(3000) });
@@ -917,7 +959,11 @@ async function checkEnvironmentAsync(steps) {
     if (!ok) {
       result.whisper = false;
       result.allOk = false;
-      const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : `service ${WHISPER_SERVICE}`;
+      let backend;
+      if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+      else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+      else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+      else backend = `service ${WHISPER_SERVICE}`;
       result.issues.push(`whisper not available (${backend})`);
     }
   }
@@ -1315,10 +1361,11 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const transcribeStart = Date.now();
 
   const whisperOk = await checkWhisperAvailable();
-  if (!whisperOk) {
+    if (!whisperOk) {
     let backend;
     if (WHISPER_BACKEND === 'local') backend = 'local CLI';
     else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
     else backend = WHISPER_SERVICE;
     logWarn(`[${stem}] whisper not available (${backend})`);
     return { text: null, retries: 0, error: `whisper not available (${backend})` };
@@ -1336,6 +1383,17 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
     modeLabel = 'faster-whisper';
     modelLabel = `${WHISPER_MODEL}/${WHISPER_COMPUTE_TYPE}`;
     langLabel = WHISPER_LANGUAGE || 'auto';
+  } else if (WHISPER_BACKEND === 'funasr') {
+    modeLabel = `funasr/${FUNASR_MODE}`;
+    if (FUNASR_MODE === 'service') {
+      modelLabel = path.basename(FUNASR_SERVICE_MODEL) || '(server default)';
+    } else {
+      const _m = [FUNASR_MODEL];
+      if (FUNASR_VAD_MODEL)  _m.push(FUNASR_VAD_MODEL);
+      if (FUNASR_PUNC_MODEL) _m.push(FUNASR_PUNC_MODEL);
+      modelLabel = _m.join('+');
+    }
+    langLabel = FUNASR_LANGUAGE || 'auto';
   } else {
     modeLabel = 'service';
     modelLabel = WHISPER_SERVICE_MODEL ? path.basename(WHISPER_SERVICE_MODEL) : '(default)';
@@ -1350,6 +1408,8 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
       result = await transcribeLocal(audioFile, stem, maxRetries, retryDelay);
     } else if (WHISPER_BACKEND === 'faster-whisper') {
       result = await transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay);
+    } else if (WHISPER_BACKEND === 'funasr') {
+      result = await transcribeFunasr(audioFile, stem, maxRetries, retryDelay, timeout);
     } else {
       result = await transcribeService(audioFile, stem, maxRetries, retryDelay, timeout);
     }
@@ -1487,6 +1547,130 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
       }
     }
     return raw;
+  }
+
+  try {
+    const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
+    if (error) return { text: null, retries: retriesUsed, error };
+    return { text, retries: 0, error: null };
+  } catch (e) {
+    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
+    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
+    logError(_detail);
+    return { text: null, retries: maxRetries, error: _detail };
+  }
+}
+
+/**
+ * FunASR 后端识别（funasr CLI 模式或 funasr-server 模式）。
+ * - FUNASR_MODE=cli      → 本地 funasr CLI (funasr ++model=... ++input=...)
+ * - FUNASR_MODE=service  → 远程 funasr-server (OpenAI 兼容 API /v1/audio/transcriptions)
+ */
+async function transcribeFunasr(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
+  if (FUNASR_MODE === 'service') {
+    return await transcribeFunasrService(audioFile, stem, maxRetries, retryDelay, timeout);
+  }
+  return await transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, timeout);
+}
+
+/**
+ * FunASR CLI 模式：funasr ++model ++input 直接调用。
+ * 首次会自动从 ModelScope 下载模型（~/.cache/modelscope/hub）。
+ */
+async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
+  async function doTranscribe() {
+    const args = [
+      `++model=${FUNASR_MODEL}`,
+      `++input=${audioFile}`,
+    ];
+    if (FUNASR_VAD_MODEL)    args.push(`++vad_model=${FUNASR_VAD_MODEL}`);
+    if (FUNASR_PUNC_MODEL)   args.push(`++punc_model=${FUNASR_PUNC_MODEL}`);
+    if (FUNASR_SPK_MODEL)    args.push(`++spk_model=${FUNASR_SPK_MODEL}`);
+    if (FUNASR_EMOTION_MODEL) args.push(`++emotion_model=${FUNASR_EMOTION_MODEL}`);
+    if (FUNASR_HOTWORD)      args.push(`++hotword=${FUNASR_HOTWORD}`);
+    if (FUNASR_LANGUAGE)     args.push(`++language=${FUNASR_LANGUAGE}`);
+    if (FUNASR_DEVICE === 'cuda') args.push('++device=cuda');
+    // quantize 在 funasr CLI 中不是 ++ 参数，自动启用是通过 int8 量化模型（paraformer-zh 默认就是 int8）
+    // FUNASR_BATCH_SIZE_S / VAD_MAX_SEGMENT 透传到 generate kwargs 通过 --key=value 无法直接设置，需用 FUNASR_EXTRA_ARGS
+
+    // 合并 FUNASR_EXTRA_ARGS（CLI > .env），去重后追加
+    const finalArgs = mergeWhisperArgs(args, _resolvedFunasrExtraArgs);
+
+    const { stderr } = await spawnWithTimeout('funasr', finalArgs, timeout, {
+      onProgress: (_src, line) => {
+        if (line.trim()) updateLine(`[${stem}] funasr 加载/识别中... ${line.trim().slice(-40)}`);
+      }
+    });
+    // funasr CLI 默认输出 JSON 到 {input}.json
+    const jsonFile = `${audioFile}.json`;
+    const txtFile = `${audioFile}.txt`;
+    let text = '';
+    if (fs.existsSync(jsonFile)) {
+      const raw = fs.readFileSync(jsonFile, 'utf-8').trim();
+      try {
+        const arr = JSON.parse(raw);
+        // funasr JSON 通常是 [ { "text": "...", "timestamp": [...] } ]
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === 'object') {
+          text = (arr[0].text || '').trim();
+        } else if (typeof arr === 'string') {
+          text = arr.trim();
+        } else {
+          text = String(arr).trim();
+        }
+      } catch {
+        text = raw; // fallback
+      }
+    } else if (fs.existsSync(txtFile)) {
+      text = fs.readFileSync(txtFile, 'utf-8').trim();
+    } else {
+      throw new Error('funasr 输出文件未生成（既无 .json 也无 .txt）');
+    }
+    if (!text) throw new Error('funasr 返回空文本');
+    return text;
+  }
+
+  try {
+    const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
+    if (error) return { text: null, retries: retriesUsed, error };
+    return { text, retries: 0, error: null };
+  } catch (e) {
+    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
+    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
+    logError(_detail);
+    return { text: null, retries: maxRetries, error: _detail };
+  }
+}
+
+/**
+ * FunASR 服务模式：调用 funasr-server 的 OpenAI 兼容 API。
+ * funasr-server 默认端口 8899, 接口: POST {URL}/v1/audio/transcriptions
+ */
+async function transcribeFunasrService(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
+  async function doTranscribe() {
+    const fileBlob = await fs.openAsBlob(audioFile);
+    const form = new FormData();
+    form.append('file', fileBlob, path.basename(audioFile));
+    form.append('model', FUNASR_SERVICE_MODEL);
+    form.append('response_format', 'json');
+    if (FUNASR_HOTWORD) form.append('prompt', FUNASR_HOTWORD);
+    if (FUNASR_LANGUAGE) form.append('language', FUNASR_LANGUAGE);
+
+    const controller = new AbortController();
+    let timer;
+    if (timeout > 0) timer = setTimeout(() => controller.abort(), timeout * 1000);
+    const resp = await fetch(`${FUNASR_SERVICE_URL}/v1/audio/transcriptions`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`/v1/audio/transcriptions failed: HTTP ${resp.status}`);
+    const data = await resp.json();
+    const text = (data.text || '').trim();
+    if (!text) throw new Error('funasr-server returned empty text');
+    return text;
   }
 
   try {
@@ -2738,7 +2922,11 @@ async function run({
   if (steps.includes('transcribe')) {
     whisperAvailable = await checkWhisperAvailable();
     if (!whisperAvailable) {
-      const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+      let backend;
+    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+    else backend = WHISPER_SERVICE;
       logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
     }
   }
@@ -3055,7 +3243,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--output <dir>', '指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/progress/logs 自动创建）')
     .option('--whisper-initial-prompt <text|path>', 'Whisper 初始提示词（文本或文件路径，CLI 优先级最高）')
     .option('--ai-prompt <text|path>', 'AI 分析提示词模板（文本或文件路径，CLI 优先级最高）')
-    .option('--whisper-extra-args <args>', 'Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）');
+    .option('--whisper-extra-args <args>', 'Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）')
+    .option('--funasr-extra-args <args>', 'FunASR 额外参数（shell 字符串，如 "--batch_size_s 600"，最高优先级且自动去重）');
 
   program.parse();
 
@@ -3192,7 +3381,11 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     if (steps.includes('transcribe')) {
       whisperAvailable = await checkWhisperAvailable();
       if (!whisperAvailable) {
-        const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+        let backend;
+    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+    else backend = WHISPER_SERVICE;
         logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
       }
     }
@@ -3319,7 +3512,11 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     if (steps.includes('transcribe')) {
       whisperAvailable = await checkWhisperAvailable();
       if (!whisperAvailable) {
-        const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : WHISPER_SERVICE;
+        let backend;
+    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+    else backend = WHISPER_SERVICE;
         logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
       }
     }
