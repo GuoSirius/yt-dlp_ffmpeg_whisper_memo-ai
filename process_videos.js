@@ -51,11 +51,42 @@ function envPath(key, defaultValue) {
 }
 
 let EXCEL_FILE = envPath('EXCEL_FILE', 'data/examples/website_split.xlsx');
-const DOWNLOADS_DIR = envPath('DOWNLOADS_DIR', 'output/downloads');
-const TRANSCODED_DIR = envPath('TRANSCODED_DIR', 'output/transcoded');
 const COOKIES_DIR = envPath('COOKIES_DIR', 'data/cookies');
-const REPORTS_DIR = envPath('REPORTS_DIR', 'output/reports');
-const PROGRESS_DIR = envPath('PROGRESS_DIR', 'output/progress');
+
+// ── 输出根目录 + 7 个固定子目录（子目录名不可通过 env 覆盖）──
+let OUTPUT_DIR = envPath('OUTPUT_DIR', 'output');
+let DOWNLOADS_DIR    = path.join(OUTPUT_DIR, 'downloads');   // yt-dlp 原始下载
+let TRANSCODED_DIR   = path.join(OUTPUT_DIR, 'transcoded');  // ffmpeg 转出的音频
+let TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts'); // whisper 识别文本（断点续跑校验依据）
+let KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');    // AI 关键词
+let REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');     // 执行报告 JSON
+let PROGRESS_DIR     = path.join(OUTPUT_DIR, 'progress');    // 增量进度 JSON
+let LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');        // 运行日志/console-ui 输出
+
+/**
+ * 用 --output / OUTPUT_DIR 指定的根目录覆盖所有 7 个子目录常量。
+ * 子目录名固定；调用后立即 mkdirSync。
+ */
+function applyOutputDir(newRoot, logFn) {
+  OUTPUT_DIR = newRoot;
+  DOWNLOADS_DIR    = path.join(OUTPUT_DIR, 'downloads');
+  TRANSCODED_DIR   = path.join(OUTPUT_DIR, 'transcoded');
+  TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts');
+  KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');
+  REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');
+  PROGRESS_DIR     = path.join(OUTPUT_DIR, 'progress');
+  LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');
+  for (const d of [DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+  if (logFn) logFn(`输出根目录覆盖为: ${OUTPUT_DIR}`);
+}
+
+applyOutputDir(OUTPUT_DIR);
+
+// 断点续跑：产物最小长度阈值
+const MIN_TRANSCRIPT_CHARS = parseInt(process.env.MIN_TRANSCRIPT_CHARS || '50', 10);
+const MIN_KEYWORDS_CHARS = parseInt(process.env.MIN_KEYWORDS_CHARS || '5', 10);
 
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
@@ -471,6 +502,114 @@ function writeExcelCell(sheetName, rowIndex, colName, value) {
   wb.Sheets[sheetName] = newWs;
   XLSX.writeFile(wb, EXCEL_FILE);
   return true;
+}
+
+// ============================== 断点续跑工具 ==============================
+
+function transcriptPath(sheetName, stem) {
+  const d = path.join(TRANSCRIPTS_DIR, sheetName);
+  fs.mkdirSync(d, { recursive: true });
+  return path.join(d, `${stem}.txt`);
+}
+
+function keywordsPath(sheetName, stem) {
+  const d = path.join(KEYWORDS_DIR, sheetName);
+  fs.mkdirSync(d, { recursive: true });
+  return path.join(d, `${stem}.txt`);
+}
+
+function progressPath(sheetName, stem) {
+  const d = path.join(PROGRESS_DIR, sheetName);
+  fs.mkdirSync(d, { recursive: true });
+  return path.join(d, `task_${stem}.json`);
+}
+
+function safeRemove(p) {
+  if (!p) return;
+  try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) { logWarn(`清理文件失败 ${p}: ${e.message}`); }
+}
+
+function validateTranscriptText(text) {
+  if (!text || !String(text).trim()) return { ok: false, err: '识别文本为空' };
+  if (String(text).trim().length < MIN_TRANSCRIPT_CHARS) {
+    return { ok: false, err: `识别文本过短(${String(text).trim().length}<${MIN_TRANSCRIPT_CHARS})` };
+  }
+  return { ok: true, err: null };
+}
+
+function validateKeywordsText(text) {
+  if (!text || !String(text).trim()) return { ok: false, err: '关键词为空' };
+  if (String(text).trim().length < MIN_KEYWORDS_CHARS) {
+    return { ok: false, err: `关键词过短(${String(text).trim().length}<${MIN_KEYWORDS_CHARS})` };
+  }
+  return { ok: true, err: null };
+}
+
+function loadTaskProgress(sheetName, stem) {
+  const p = progressPath(sheetName, stem);
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (e) {
+    logWarn(`progress JSON 解析失败 ${p}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * 按 id/title key 匹配行号，写入指定列（断点续跑实时写 Excel）。
+ * XLSX.writeFile 非线程安全，本函数假定外层已用 _excel_lock 串行化（JS 中用 await + 队列）。
+ */
+function writeExcelCellByKey(sheetName, key, colName, value) {
+  if (!value || !String(value).trim()) return false;
+  const wb = XLSX.readFile(EXCEL_FILE);
+  if (!wb.SheetNames.includes(sheetName)) {
+    logWarn(`Sheet [${sheetName}] not found, skip write`);
+    return false;
+  }
+  const ws = wb.Sheets[sheetName];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  if (!aoa.length) return false;
+  const headers = aoa[0];
+  const colIdx = headers.indexOf(colName);
+  if (colIdx === -1) {
+    logWarn(`[${sheetName}] column "${colName}" not found, skip write`);
+    return false;
+  }
+  const idIdx = headers.indexOf(COL_ID);
+  const titleIdx = headers.indexOf(COL_TITLE);
+
+  for (let r = 1; r < aoa.length; r++) {
+    const row = aoa[r];
+    let matched = false;
+    if (idIdx >= 0 && row[idIdx] != null) {
+      const v = String(row[idIdx]);
+      if (/^\d+(\.\d+)?$/.test(v) && String(parseInt(v, 10)) === String(key)) matched = true;
+      else if (v === String(key)) matched = true;
+    }
+    if (!matched && titleIdx >= 0) {
+      if (String(row[titleIdx]) === String(key)) matched = true;
+    }
+    if (matched) {
+      aoa[r][colIdx] = value;
+      const newWs = XLSX.utils.aoa_to_sheet(aoa);
+      wb.Sheets[sheetName] = newWs;
+      XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
+      return true;
+    }
+  }
+  logWarn(`[${sheetName}] 未找到匹配行 key=${key}`);
+  return false;
+}
+
+// Excel 写锁（XLSX.writeFile 非线程安全）
+let _excelWriteLock = null;
+function acquireExcelLock() {
+  if (!_excelWriteLock) _excelWriteLock = Promise.resolve();
+  const release = _excelWriteLock;
+  let resolveNext;
+  _excelWriteLock = new Promise(r => { resolveNext = r; });
+  return release.then(() => () => resolveNext());
 }
 
 function getVideoId(row) {
@@ -1456,12 +1595,12 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
 // ============================== 增量进度写回 ==============================
 
 /**
- * 每完成一个任务立即写入 progress JSON，方便用户随时查看中间结果。
+ * 每完成一个任务立即写入 progress JSON + 实时回写 Excel。
  *
  * 目录结构: output/progress/{sheet}/task_{stem}.json
  * 文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
  */
-function saveTaskProgress(result) {
+async function saveTaskProgress(result) {
   const progressDir = path.join(PROGRESS_DIR, result.sheet);
   fs.mkdirSync(progressDir, { recursive: true });
   const progressFile = path.join(progressDir, `task_${result.stem}.json`);
@@ -1522,6 +1661,26 @@ function saveTaskProgress(result) {
   // 释放内存：content / keywords 已持久化到 JSON，可安全清空
   result.transcribe.file = null;
   result.analyze.file = null;
+
+  // ── 断点续跑：实时回写 Excel（断电时仍能保留已完成的识别/分析结果）──
+  if (content) {
+    try {
+      const release = await acquireExcelLock();
+      try { writeExcelCellByKey(result.sheet, String(result.id_val), COL_CONTENT, content); }
+      finally { release(); }
+    } catch (e) {
+      logWarn(`[${result.stem}] 实时写 Excel content 失败（不影响 progress JSON）: ${e.message}`);
+    }
+  }
+  if (keywords) {
+    try {
+      const release = await acquireExcelLock();
+      try { writeExcelCellByKey(result.sheet, String(result.id_val), COL_KEYWORDS, keywords); }
+      finally { release(); }
+    } catch (e) {
+      logWarn(`[${result.stem}] 实时写 Excel keywords 失败（不影响 progress JSON）: ${e.message}`);
+    }
+  }
 }
 
 // ============================== Excel 批量写回 ==============================
@@ -1763,6 +1922,46 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   lockedPrint(c('dim', '─'.repeat(62)));
   logInfo(`[${stem}] start (sheet=${sheetName}, platform=${pkey || 'N/A'}, title=${title.slice(0, 40)})`);
 
+  // ── 断点续跑：读取上次 progress，按 status=success 跳过已完成 step ──
+  const prior = force ? null : loadTaskProgress(sheetName, stem);
+  const skipSteps = new Set();
+  if (prior) {
+    if (prior.download && prior.download.status === 'success' && prior.download.file
+        && fs.existsSync(prior.download.file) && fs.statSync(prior.download.file).size > 0) {
+      skipSteps.add('download');
+      result.download = new StepResult('success', prior.download.file, null, 0);
+    }
+    if (prior.transcode && prior.transcode.status === 'success' && prior.transcode.file
+        && fs.existsSync(prior.transcode.file) && fs.statSync(prior.transcode.file).size > 0) {
+      skipSteps.add('transcode');
+      result.transcode = new StepResult('success', prior.transcode.file, null, 0);
+    }
+    if (prior.transcribe && prior.transcribe.status === 'success') {
+      const tp = transcriptPath(sheetName, stem);
+      if (fs.existsSync(tp)) {
+        const cachedText = fs.readFileSync(tp, 'utf-8');
+        if (validateTranscriptText(cachedText).ok) {
+          skipSteps.add('transcribe');
+          result.transcribe = new StepResult('success', cachedText, null, 0);
+        }
+      }
+    }
+    if (prior.analyze && prior.analyze.status === 'success') {
+      const kp = keywordsPath(sheetName, stem);
+      if (fs.existsSync(kp)) {
+        const cachedKw = fs.readFileSync(kp, 'utf-8');
+        if (validateKeywordsText(cachedKw).ok) {
+          skipSteps.add('analyze');
+          result.analyze = new StepResult('success', cachedKw, null, 0);
+        }
+      }
+    }
+    if (skipSteps.size) {
+      lockedPrint(c('cyan', `  ♻️ 断点续跑：跳过已完成步骤 ${[...skipSteps].sort()}`)
+        + c('dim', `  [来源: progress JSON]`));
+    }
+  }
+
   // ── download ──
   let dlFile = null;
   if (preContent) {
@@ -1774,17 +1973,25 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       result.error = 'no video ID';
       return result;
     }
-    try {
-      const { file, retries, error } = await stepDownload(row, sheetName, maxRetries, retryDelay, force, downloadTimeout);
-      dlFile = file;
-      result.download = new StepResult(file ? 'success' : 'failed', file, error, retries);
-    } catch (e) {
-      result.download = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
-    }
-    if (!dlFile) {
-      result.overall_status = 'failed';
-      result.error = `download failed: ${result.download.error}`;
-      return result;
+    if (skipSteps.has('download')) {
+      dlFile = result.download.file;
+      lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 download，复用 ${path.basename(dlFile)}`));
+    } else {
+      try {
+        const { file, retries, error } = await stepDownload(row, sheetName, maxRetries, retryDelay, force, downloadTimeout);
+        dlFile = file;
+        result.download = new StepResult(file ? 'success' : 'failed', file, error, retries);
+      } catch (e) {
+        result.download = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
+        // 失败清理残留
+        safeRemove(path.join(DOWNLOADS_DIR, sheetName, `${stem}.part`));
+        safeRemove(path.join(DOWNLOADS_DIR, sheetName, `${stem}.ytdl`));
+      }
+      if (!dlFile) {
+        result.overall_status = 'failed';
+        result.error = `download failed: ${result.download.error}`;
+        return result;
+      }
     }
   } else {
     const dlDir = path.join(DOWNLOADS_DIR, sheetName);
@@ -1801,17 +2008,25 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   if (preContent) {
     result.transcode = new StepResult('skipped', null, 'pre-content mode');
   } else if (steps.includes('transcode') && dlFile) {
-    try {
-      const { file, retries, error } = await stepTranscode(dlFile, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
-      tcFile = file;
-      result.transcode = new StepResult(file ? 'success' : 'failed', file, error, retries);
-    } catch (e) {
-      result.transcode = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
-    }
-    if (!tcFile) {
-      result.overall_status = 'partial';
-      result.error = `download success but transcode failed: ${result.transcode.error}`;
-      return result;
+    if (skipSteps.has('transcode')) {
+      tcFile = result.transcode.file;
+      lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 transcode，复用 ${path.basename(tcFile)}`));
+    } else {
+      try {
+        const { file, retries, error } = await stepTranscode(dlFile, sheetName, maxRetries, retryDelay, force, transcodeTimeout);
+        tcFile = file;
+        result.transcode = new StepResult(file ? 'success' : 'failed', file, error, retries);
+      } catch (e) {
+        result.transcode = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
+        // 失败清理损坏的转码文件
+        const bad = path.join(TRANSCODED_DIR, sheetName, stem + TRANSCODE_EXT);
+        if (fs.existsSync(bad) && fs.statSync(bad).size === 0) safeRemove(bad);
+      }
+      if (!tcFile) {
+        result.overall_status = 'partial';
+        result.error = `download success but transcode failed: ${result.transcode.error}`;
+        return result;
+      }
     }
   } else {
     const tcDir = path.join(TRANSCODED_DIR, sheetName);
@@ -1834,42 +2049,75 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       result.error = 'download+transcode success but whisper unreachable';
       return result;
     }
-    try {
-      const { text, retries, error } = await stepTranscribe(tcFile, maxRetries, retryDelay, transcribeTimeout);
+    if (skipSteps.has('transcribe')) {
+      const cached = result.transcribe.file;
+      lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 transcribe，复用缓存文本(${cached.length}字符)`));
+    } else {
+      let text = null, retries = 0, error = null;
+      try {
+        const r = await stepTranscribe(tcFile, maxRetries, retryDelay, transcribeTimeout);
+        text = r.text; retries = r.retries; error = r.error;
+      } catch (e) {
+        error = String(e.message).slice(0, 500);
+      }
+      const v = validateTranscriptText(text);
+      if (!v.ok) {
+        text = null;
+        error = error || v.err;
+        safeRemove(transcriptPath(sheetName, stem));
+      }
       result.transcribe = new StepResult(text ? 'success' : 'failed', text, error, retries);
       if (!text) {
         result.overall_status = 'partial';
         result.error = `download+transcode success but transcribe failed: ${error}`;
-      } else {
-        result.overall_status = 'success';
+        return result;
       }
-    } catch (e) {
-      result.transcribe = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
-      result.overall_status = 'partial';
-      result.error = `download+transcode success but transcribe failed: ${e.message}`;
     }
+    // 落盘 transcript（断点续跑校验依据）
+    try { fs.writeFileSync(transcriptPath(sheetName, stem), result.transcribe.file, 'utf-8'); }
+    catch (e) { logWarn(`[${stem}] 写入 transcript 失败: ${e.message}`); }
   }
 
   // ── AI analyze ──
   if (steps.includes('analyze') && result.transcribe.status === 'success') {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
-      const txt = result.transcribe.file;
-      if (txt) {
-        try {
-          const aiStart = Date.now();
-          const { text: kw, retries, error } = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout, result.stem);
-          result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
-          if (kw) {
-            lockedPrint(`  [${result.stem}] ${c('green', 'AI analysis done')} (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} chars)`);
-          } else {
-            lockedPrint(`  [${result.stem}] ${c('red', 'AI analysis failed')}: ${error}`);
-          }
-        } catch (e) {
-          result.analyze = new StepResult('failed', null, String(e.message).slice(0, 500), maxRetries);
-        }
+      if (skipSteps.has('analyze')) {
+        const cached = result.analyze.file;
+        lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 analyze，复用缓存关键词(${cached.length}字符)`));
+        result.analyze = new StepResult('success', cached, null, 0);
       } else {
-        result.analyze = new StepResult('skipped', null, 'content empty');
+        const txt = result.transcribe.file;
+        if (txt) {
+          let kw = null, retries = 0, error = null;
+          try {
+            const aiStart = Date.now();
+            const r = await stepAnalyze(txt, maxRetries, retryDelay, analyzeTimeout, result.stem);
+            kw = r.text; retries = r.retries; error = r.error;
+            if (kw) {
+              lockedPrint(`  [${result.stem}] ${c('green', 'AI analysis done')} (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} chars)`);
+            } else {
+              lockedPrint(`  [${result.stem}] ${c('red', 'AI analysis failed')}: ${error}`);
+            }
+          } catch (e) {
+            error = String(e.message).slice(0, 500);
+            retries = maxRetries;
+          }
+          const v = validateKeywordsText(kw);
+          if (!v.ok) {
+            kw = null;
+            error = error || v.err;
+            safeRemove(keywordsPath(sheetName, stem));
+          }
+          result.analyze = new StepResult(kw ? 'success' : 'failed', kw, error, retries);
+        } else {
+          result.analyze = new StepResult('skipped', null, 'content empty');
+        }
+      }
+      // 落盘 keywords
+      if (result.analyze.status === 'success' && result.analyze.file) {
+        try { fs.writeFileSync(keywordsPath(sheetName, stem), result.analyze.file, 'utf-8'); }
+        catch (e) { logWarn(`[${stem}] 写入 keywords 失败: ${e.message}`); }
       }
     } else {
       result.analyze = new StepResult('skipped');
@@ -2522,6 +2770,22 @@ async function run({
     }
   }
 
+  // ── 断点续跑：扫描 progress JSON，统计将跳过的任务/步骤数 ──
+  if (!force) {
+    let skippedTasks = 0, resumeTasks = 0;
+    for (const { row, sheetName } of tasks) {
+      const prior = loadTaskProgress(sheetName, stemName(row, sheetName));
+      if (!prior) continue;
+      if (prior.overall_status === 'success') skippedTasks++;
+      else resumeTasks++;
+    }
+    if (skippedTasks || resumeTasks) {
+      console.log('');
+      console.log(c('cyan', `  ♻️ 断点续跑扫描: 完整跳过 ${skippedTasks} 条 / 部分续跑 ${resumeTasks} 条 / 全量重跑 ${tasks.length - skippedTasks - resumeTasks} 条`));
+      console.log('');
+    }
+  }
+
   // ── 并发执行 ──
   const results = [];
   const contentMap = new Map();   // "sheet|id" → text（提前收集，saveTaskProgress 后会释放内存）
@@ -2552,7 +2816,7 @@ async function run({
       if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
         kwMap.set(`${result.sheet}|${result.id_val}`, result.analyze.file);
       }
-      saveTaskProgress(result);
+      saveTaskProgress(result).catch(e => logWarn(`saveTaskProgress failed: ${e.message}`));
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);
@@ -2756,7 +3020,7 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
       if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
         kwMap.set(`${result.sheet}|${result.id_val}`, result.analyze.file);
       }
-      saveTaskProgress(result);
+      saveTaskProgress(result).catch(e => logWarn(`saveTaskProgress failed: ${e.message}`));
       lockedPrint('');
       lockedPrint(c('dim', '─'.repeat(62)));
       console.log(`\n${overall.summaryLine()}\n`);
@@ -2815,6 +3079,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
     .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）')
+    .option('--output <dir>', '指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/progress/logs 自动创建）')
     .option('--whisper-initial-prompt <text|path>', 'Whisper 初始提示词（文本或文件路径，CLI 优先级最高）')
     .option('--ai-prompt <text|path>', 'AI 分析提示词模板（文本或文件路径，CLI 优先级最高）')
     .option('--whisper-extra-args <args>', 'Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）');
@@ -2880,6 +3145,16 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
   if (opts.file) {
     EXCEL_FILE = path.resolve(opts.file);
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
+  }
+
+  // ── output 覆盖（CLI > env > 默认 "output"）──
+  if (opts.output) {
+    const newRoot = path.isAbsolute(opts.output)
+      ? path.resolve(opts.output)
+      : path.resolve(BASE_DIR, opts.output);
+    if (newRoot !== OUTPUT_DIR) {
+      applyOutputDir(newRoot, logInfo);
+    }
   }
   const steps = opts.step?.length ? opts.step : ['download', 'transcode', 'transcribe', 'analyze'];
   // --content-column 模式：默认只跑 AI 分析

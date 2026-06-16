@@ -85,11 +85,33 @@ def _env_path(key: str, default: str) -> Path:
     return p if p.is_absolute() else BASE_DIR / p
 
 EXCEL_FILE = _env_path("EXCEL_FILE", "data/examples/website_split.xlsx")
-DOWNLOADS_DIR = _env_path("DOWNLOADS_DIR", "output/downloads")
-TRANSCODED_DIR = _env_path("TRANSCODED_DIR", "output/transcoded")
 COOKIES_DIR = _env_path("COOKIES_DIR", "data/cookies")
-REPORTS_DIR = _env_path("REPORTS_DIR", "output/reports")
-PROGRESS_DIR = _env_path("PROGRESS_DIR", "output/progress")
+
+def _apply_output_dir(new_root: Path, *, log_func=None) -> None:
+    """
+    用 --output / OUTPUT_DIR 指定的根目录覆盖所有 7 个子目录常量。
+    子目录名固定；调用后立即 mkdir。
+    注意：必须用 global 声明，否则会创建局部变量导致其他模块看不到。
+    """
+    global OUTPUT_DIR, DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR
+    global KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR
+    OUTPUT_DIR = new_root
+    DOWNLOADS_DIR   = OUTPUT_DIR / "downloads"
+    TRANSCODED_DIR  = OUTPUT_DIR / "transcoded"
+    TRANSCRIPTS_DIR = OUTPUT_DIR / "transcripts"
+    KEYWORDS_DIR    = OUTPUT_DIR / "keywords"
+    REPORTS_DIR     = OUTPUT_DIR / "reports"
+    PROGRESS_DIR    = OUTPUT_DIR / "progress"
+    LOGS_DIR        = OUTPUT_DIR / "logs"
+    for _d in (DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR):
+        _d.mkdir(parents=True, exist_ok=True)
+    if log_func:
+        log_func(f"输出根目录覆盖为: {OUTPUT_DIR}")
+
+
+# ── 输出根目录 + 7 个固定子目录（子目录名不可通过 env 覆盖）──
+OUTPUT_DIR = _env_path("OUTPUT_DIR", "output")
+_apply_output_dir(OUTPUT_DIR)
 
 YTDLP = os.getenv("YTDLP", "yt-dlp")
 FFMPEG = os.getenv("FFMPEG", "ffmpeg")
@@ -326,6 +348,76 @@ log = logging.getLogger(__name__)
 _excel_lock = Lock()
 # 控制台打印锁（并发时防止输出交错）
 _print_lock = Lock()
+
+# ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
+# transcribe 产物最小长度（字符），低于此视为残缺
+MIN_TRANSCRIPT_CHARS = int(os.getenv("MIN_TRANSCRIPT_CHARS", "50"))
+# analyze 产物最小长度（字符），低于此视为残缺
+MIN_KEYWORDS_CHARS = int(os.getenv("MIN_KEYWORDS_CHARS", "5"))
+
+
+def transcript_path(sheet_name: str, stem: str) -> Path:
+    """识别文本落盘路径。"""
+    d = TRANSCRIPTS_DIR / sheet_name
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{stem}.txt"
+
+
+def keywords_path(sheet_name: str, stem: str) -> Path:
+    """关键词落盘路径。"""
+    d = KEYWORDS_DIR / sheet_name
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{stem}.txt"
+
+
+def progress_path(sheet_name: str, stem: str) -> Path:
+    """单任务 progress JSON 路径。"""
+    d = PROGRESS_DIR / sheet_name
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"task_{stem}.json"
+
+
+def safe_remove(path: Path | None) -> None:
+    """安全删除文件（不存在/已删除不报错）。用于失败时清理残缺产物。"""
+    if not path:
+        return
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        log.warning(f"清理文件失败 {path}: {e}")
+
+
+def validate_transcript_text(text: str | None) -> tuple[bool, str | None]:
+    """transcribe 产物校验：非空 + 长度达标。返回 (是否有效, 错误信息)。"""
+    if not text or not text.strip():
+        return False, "识别文本为空"
+    if len(text.strip()) < MIN_TRANSCRIPT_CHARS:
+        return False, f"识别文本过短({len(text.strip())}<{MIN_TRANSCRIPT_CHARS})"
+    return True, None
+
+
+def validate_keywords_text(text: str | None) -> tuple[bool, str | None]:
+    """analyze 产物校验：非空 + 长度达标。返回 (是否有效, 错误信息)。"""
+    if not text or not text.strip():
+        return False, "关键词为空"
+    if len(text.strip()) < MIN_KEYWORDS_CHARS:
+        return False, f"关键词过短({len(text.strip())}<{MIN_KEYWORDS_CHARS})"
+    return True, None
+
+
+def load_task_progress(sheet_name: str, stem: str) -> dict | None:
+    """读取 progress JSON。文件不存在/解析失败返回 None。"""
+    p = progress_path(sheet_name, stem)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning(f"progress JSON 解析失败 {p}: {e}")
+        return None
+
 
 def c(color: str, text: str) -> str:
     """返回带 ANSI 颜色码的文本（使用 colorama）"""
@@ -1615,8 +1707,74 @@ def save_task_progress(result: TaskResult) -> None:
     result.transcribe.file = None
     result.analyze.file = None
 
+    # ── 断点续跑：实时回写 Excel（断电时仍能保留已完成的识别/分析结果）──
+    if content:
+        try:
+            write_excel_cell(result.sheet, str(result.id_val), COL_CONTENT, content)
+        except Exception as e:
+            log.warning(f"[{result.stem}] 实时写 Excel content 失败（不影响 progress JSON）: {e}")
+    if keywords:
+        try:
+            write_excel_cell(result.sheet, str(result.id_val), COL_KEYWORDS, keywords)
+        except Exception as e:
+            log.warning(f"[{result.stem}] 实时写 Excel keywords 失败（不影响 progress JSON）: {e}")
 
-# ─────────────────────────────── Excel 批量写回 ─────────────────────────────
+
+# ─────────────────────────────── Excel 实时写回 ─────────────────────────────
+
+def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bool:
+    """单条 Excel 单元格写回（断点续跑场景：每条任务完成立即写）。
+
+    使用 _excel_lock 串行化，openpyxl 非线程安全。
+    返回是否成功写入。
+    """
+    if not value or not value.strip():
+        return False
+    with _excel_lock:
+        try:
+            wb = load_workbook(str(EXCEL_FILE))
+        except Exception as e:
+            log.error(f"打开 Excel 失败: {e}")
+            return False
+        try:
+            if sheet_name not in wb.sheetnames:
+                log.warning(f"Sheet [{sheet_name}] 不存在，跳过写入")
+                return False
+            ws = wb[sheet_name]
+            headers = {cell.value: cell.column for cell in ws[1]}
+            if col_name not in headers:
+                log.warning(f"[{sheet_name}] 找不到 {col_name} 列，跳过写入")
+                return False
+            target_col = headers[col_name]
+            id_col = headers.get(COL_ID)
+            title_col = headers.get(COL_TITLE)
+
+            matched = False
+            for row in ws.iter_rows(min_row=2):
+                id_val = row[id_col - 1].value if id_col else None
+                title_val = row[title_col - 1].value if title_col else None
+                if id_col and id_val is not None:
+                    try:
+                        if str(int(float(id_val))) == str(key):
+                            matched = True
+                    except (ValueError, TypeError):
+                        pass
+                if not matched and title_col:
+                    if str(title_val) == str(key):
+                        matched = True
+                if matched:
+                    row[target_col - 1].value = value
+                    return True
+
+            log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
+            return False
+        finally:
+            try:
+                wb.save(str(EXCEL_FILE))
+            except Exception as e:
+                log.error(f"保存 Excel 失败: {e}")
+            wb.close()
+
 
 def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None, content_dict: dict[tuple[str, str], str] | None = None):
     """
@@ -1642,78 +1800,15 @@ def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[t
         return
 
     log.info(f"批量写入 {len(updates)} 条识别文本到 Excel...")
-    wb = load_workbook(str(EXCEL_FILE))
-
     for (sheet_name, key), text in updates.items():
-        if sheet_name not in wb.sheetnames:
-            log.warning(f"Sheet [{sheet_name}] 不存在，跳过写入")
-            continue
-
-        ws = wb[sheet_name]
-        headers = {cell.value: cell.column for cell in ws[1]}
-
-        if COL_CONTENT not in headers:
-            log.warning(f"[{sheet_name}] 找不到 {COL_CONTENT} 列，跳过写入")
-            continue
-
-        content_col = headers[COL_CONTENT]
-        id_col = headers.get(COL_ID)
-        title_col = headers.get(COL_TITLE)
-
-        matched = False
-        for row in ws.iter_rows(min_row=2):
-            id_val = row[id_col - 1].value if id_col else None
-            title_val = row[title_col - 1].value if title_col else None
-
-            if id_col and id_val is not None:
-                try:
-                    if str(int(float(id_val))) == str(key):
-                        matched = True
-                except (ValueError, TypeError):
-                    pass
-            if not matched and title_col:
-                if str(title_val) == str(key):
-                    matched = True
-
-            if matched:
-                row[content_col - 1].value = text
-                log.info(f"[{sheet_name}/{key}] content 已写入（{len(text)} 字符）")
-                break
-
-        if not matched:
-            log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
+        if write_excel_cell(sheet_name, str(key), COL_CONTENT, text):
+            log.info(f"[{sheet_name}/{key}] content 已写入（{len(text)} 字符）")
 
     # 写入 keywords 列（AI 分析结果）
     if keywords_dict:
         for (kw_sheet, kw_key), kw_text in keywords_dict.items():
-            if kw_sheet not in wb.sheetnames:
-                continue
-            ws_kw = wb[kw_sheet]
-            hdrs = {cell.value: cell.column for cell in ws_kw[1]}
-            if COL_KEYWORDS not in hdrs:
-                log.warning(f"[{kw_sheet}] 找不到 {COL_KEYWORDS} 列，跳过 keywords 写入")
-                continue
-            kw_col = hdrs[COL_KEYWORDS]
-            for row in ws_kw.iter_rows(min_row=2):
-                matched = False
-                id_col_kw = hdrs.get(COL_ID)
-                title_col_kw = hdrs.get(COL_TITLE)
-                if id_col_kw and row[id_col_kw - 1].value is not None:
-                    try:
-                        if str(int(float(row[id_col_kw - 1].value))) == str(kw_key):
-                            matched = True
-                    except (ValueError, TypeError):
-                        pass
-                if not matched and title_col_kw:
-                    if str(row[title_col_kw - 1].value) == str(kw_key):
-                        matched = True
-                if matched:
-                    row[kw_col - 1].value = kw_text
-                    log.info(f"[{kw_sheet}/{kw_key}] keywords 已写入（{len(kw_text)} 字符）")
-                    break
-
-    wb.save(str(EXCEL_FILE))
-    wb.close()
+            if write_excel_cell(kw_sheet, str(kw_key), COL_KEYWORDS, kw_text):
+                log.info(f"[{kw_sheet}/{kw_key}] keywords 已写入（{len(kw_text)} 字符）")
     log.info("Excel 写入完成")
 
 
@@ -1933,6 +2028,55 @@ def process_one_task(
         print(c("dim", "─" * 62))
     log.info(f"[{stem}] 开始处理 (sheet={sheet_name}, platform={pkey or 'N/A'})")
 
+    # ── 断点续跑：读取上次 progress，按 status=success 跳过已完成 step ──
+    # 规则：success 必须有产物可校验（文件存在 / 内容长度达标），否则视为未完成
+    prior = None if force else load_task_progress(sheet_name, stem)
+    skip_steps: set[str] = set()
+    if prior:
+        # download：上次成功时记录了文件路径，校验文件仍存在
+        if prior.get("download", {}).get("status") == "success":
+            f = prior["download"].get("file")
+            if f and Path(f).exists() and Path(f).stat().st_size > 0:
+                skip_steps.add("download")
+                result.download = StepResult("success", file=f)
+        # transcode：校验转码文件
+        if prior.get("transcode", {}).get("status") == "success":
+            f = prior["transcode"].get("file")
+            if f and Path(f).exists() and Path(f).stat().st_size > 0:
+                skip_steps.add("transcode")
+                result.transcode = StepResult("success", file=f)
+        # transcribe：校验 transcript 文本文件
+        if prior.get("transcribe", {}).get("status") == "success":
+            tp = transcript_path(sheet_name, stem)
+            if tp.exists():
+                try:
+                    cached_text = tp.read_text(encoding="utf-8")
+                except OSError:
+                    cached_text = ""
+                ok, _ = validate_transcript_text(cached_text)
+                if ok:
+                    skip_steps.add("transcribe")
+                    result.transcribe = StepResult("success", file=cached_text)
+        # analyze：校验 keywords 文本文件
+        if prior.get("analyze", {}).get("status") == "success":
+            kp = keywords_path(sheet_name, stem)
+            if kp.exists():
+                try:
+                    cached_kw = kp.read_text(encoding="utf-8")
+                except OSError:
+                    cached_kw = ""
+                ok, _ = validate_keywords_text(cached_kw)
+                if ok:
+                    skip_steps.add("analyze")
+                    result.analyze = StepResult("success", file=cached_kw)
+        if skip_steps:
+            with _print_lock:
+                print(
+                    c("cyan", f"  ♻️ 断点续跑：跳过已完成步骤 {sorted(skip_steps)}")
+                    + c("dim", f"  [来源: progress JSON]"),
+                    flush=True,
+                )
+
     # ── 下载 ──
     if "download" in steps:
         if not pkey:
@@ -1942,22 +2086,32 @@ def process_one_task(
             log.warning(f"[{stem}] 无可用视频 ID，标记为 no_video")
             return result
 
-        try:
-            dl_file, retries, err = step_download(row, sheet_name, max_retries, retry_delay, force, download_timeout)
-        except Exception as e:
-            dl_file, retries, err = None, max_retries, str(e)[:500]
+        if "download" in skip_steps:
+            dl_file = Path(result.download.file)
+            with _print_lock:
+                print(c("dim", f"  [{stem}] ♻️ 跳过 download，复用 {dl_file.name}"), flush=True)
+        else:
+            try:
+                dl_file, retries, err = step_download(row, sheet_name, max_retries, retry_delay, force, download_timeout)
+            except Exception as e:
+                dl_file, retries, err = None, max_retries, str(e)[:500]
 
-        result.download = StepResult(
-            status="success" if dl_file else "failed",
-            file=str(dl_file) if dl_file else None,
-            error=err,
-            retries_used=retries,
-        )
+            # 失败时清理残留（不留半成功文件）
+            if not dl_file:
+                dl_dir = DOWNLOADS_DIR / sheet_name
+                _cleanup_partial_files(dl_dir, stem)
 
-        if not dl_file:
-            result.overall_status = "failed"
-            result.error = f"下载失败: {err}"
-            return result
+            result.download = StepResult(
+                status="success" if dl_file else "failed",
+                file=str(dl_file) if dl_file else None,
+                error=err,
+                retries_used=retries,
+            )
+
+            if not dl_file:
+                result.overall_status = "failed"
+                result.error = f"下载失败: {err}"
+                return result
     else:
         dl_dir = DOWNLOADS_DIR / sheet_name
         dl_file = find_downloaded_file(dl_dir, stem)
@@ -1968,22 +2122,34 @@ def process_one_task(
 
     # ── 转码 ──
     if "transcode" in steps and dl_file:
-        try:
-            tc_file, retries, err = step_transcode(dl_file, sheet_name, max_retries, retry_delay, force, transcode_timeout)
-        except Exception as e:
-            tc_file, retries, err = None, max_retries, str(e)[:500]
+        if "transcode" in skip_steps:
+            tc_file = Path(result.transcode.file)
+            with _print_lock:
+                print(c("dim", f"  [{stem}] ♻️ 跳过 transcode，复用 {tc_file.name}"), flush=True)
+        else:
+            try:
+                tc_file, retries, err = step_transcode(dl_file, sheet_name, max_retries, retry_delay, force, transcode_timeout)
+            except Exception as e:
+                tc_file, retries, err = None, max_retries, str(e)[:500]
 
-        result.transcode = StepResult(
-            status="success" if tc_file else "failed",
-            file=str(tc_file) if tc_file else None,
-            error=err,
-            retries_used=retries,
-        )
+            # 失败时清理损坏的转码文件
+            if not tc_file:
+                tc_dir = TRANSCODED_DIR / sheet_name
+                bad = tc_dir / (stem + TRANSCODE_EXT)
+                if bad.exists() and (bad.stat().st_size == 0 or not force):
+                    safe_remove(bad)
 
-        if not tc_file:
-            result.overall_status = "partial"
-            result.error = f"下载成功但转码失败: {err}"
-            return result
+            result.transcode = StepResult(
+                status="success" if tc_file else "failed",
+                file=str(tc_file) if tc_file else None,
+                error=err,
+                retries_used=retries,
+            )
+
+            if not tc_file:
+                result.overall_status = "partial"
+                result.error = f"下载成功但转码失败: {err}"
+                return result
     else:
         tc_dir = TRANSCODED_DIR / sheet_name
         tc_path = tc_dir / (stem + TRANSCODE_EXT)
@@ -2002,48 +2168,87 @@ def process_one_task(
             result.error = "下载+转码成功但 whisper 服务不可达"
             return result
 
-        try:
-            text, retries, err = step_transcribe(tc_file, max_retries, retry_delay, transcribe_timeout)
-        except Exception as e:
-            text, retries, err = None, max_retries, str(e)[:500]
-
-        # 注意：StepResult.file 在这里存的是识别文本（为兼容 find_downloaded_file 等逻辑）
-        result.transcribe = StepResult(
-            status="success" if text else "failed",
-            file=text if text else None,  # 借用 file 字段存文本
-            error=err,
-            retries_used=retries,
-        )
-
-        if not text:
-            result.overall_status = "partial"
-            result.error = f"下载+转码成功但识别失败: {err}"
+        if "transcribe" in skip_steps:
+            text = result.transcribe.file
+            with _print_lock:
+                print(c("dim", f"  [{stem}] ♻️ 跳过 transcribe，复用缓存文本({len(text)}字符)"), flush=True)
         else:
-            result.overall_status = "success"
+            try:
+                text, retries, err = step_transcribe(tc_file, max_retries, retry_delay, transcribe_timeout)
+            except Exception as e:
+                text, retries, err = None, max_retries, str(e)[:500]
+
+            # 校验：transcribe 不允许"半成功"——产物不合格即清理
+            ok, validate_err = validate_transcript_text(text)
+            if not ok:
+                text = None
+                err = err or validate_err
+                safe_remove(transcript_path(sheet_name, stem))
+
+            result.transcribe = StepResult(
+                status="success" if text else "failed",
+                file=text if text else None,
+                error=err,
+                retries_used=retries,
+            )
+
+            if not text:
+                result.overall_status = "partial"
+                result.error = f"下载+转码成功但识别失败: {err}"
+                return result
+
+        # 识别成功 → 落盘 transcript 文件（断点续跑校验依据）
+        try:
+            tp = transcript_path(sheet_name, stem)
+            tp.write_text(result.transcribe.file, encoding="utf-8")
+        except OSError as e:
+            log.warning(f"[{stem}] 写入 transcript 失败: {e}")
 
     # ── AI 分析（transcribe 之后执行）──
     if "analyze" in steps and result.transcribe.status == "success":
         ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
         if ai_enabled:
-            txt = result.transcribe.file  # 借用 file 字段存文本
-            if txt:
-                try:
-                    ai_start = time.monotonic()
-                    kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout, result.stem)
-                except Exception as e:
-                    kw, retries, err = None, max_retries, str(e)[:500]
-                result.analyze = StepResult(
-                    status="success" if kw else "failed",
-                    file=kw,
-                    error=err,
-                    retries_used=retries,
-                )
-                if kw:
-                    print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(kw)} 字符）", flush=True)
-                else:
-                    print(f"  [{result.stem}] {c('red', 'AI 分析失败')}：{err}", flush=True)
+            if "analyze" in skip_steps:
+                kw = result.analyze.file
+                with _print_lock:
+                    print(c("dim", f"  [{stem}] ♻️ 跳过 analyze，复用缓存关键词({len(kw)}字符)"), flush=True)
+                result.analyze = StepResult("success", file=kw)
             else:
-                result.analyze = StepResult("skipped", error="识别文本为空")
+                txt = result.transcribe.file
+                if txt:
+                    try:
+                        ai_start = time.monotonic()
+                        kw, retries, err = step_analyze(txt, max_retries, retry_delay, analyze_timeout, result.stem)
+                    except Exception as e:
+                        kw, retries, err = None, max_retries, str(e)[:500]
+
+                    # 校验：analyze 不允许半成功
+                    ok, validate_err = validate_keywords_text(kw)
+                    if not ok:
+                        kw = None
+                        err = err or validate_err
+                        safe_remove(keywords_path(sheet_name, stem))
+
+                    result.analyze = StepResult(
+                        status="success" if kw else "failed",
+                        file=kw,
+                        error=err,
+                        retries_used=retries,
+                    )
+                    if kw:
+                        print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(kw)} 字符）", flush=True)
+                    else:
+                        print(f"  [{result.stem}] {c('red', 'AI 分析失败')}：{err}", flush=True)
+                else:
+                    result.analyze = StepResult("skipped", error="识别文本为空")
+
+            # analyze 成功 → 落盘 keywords 文件（断点续跑校验依据）
+            if result.analyze.status == "success" and result.analyze.file:
+                try:
+                    kp = keywords_path(sheet_name, stem)
+                    kp.write_text(result.analyze.file, encoding="utf-8")
+                except OSError as e:
+                    log.warning(f"[{stem}] 写入 keywords 失败: {e}")
         else:
             result.analyze = StepResult("skipped")
     elif "analyze" in steps and result.transcribe.status != "success":
@@ -2342,6 +2547,23 @@ def run(
     if "transcribe" in steps and not whisper_available:
         backend_info = f"本地 whisper CLI" if WHISPER_BACKEND == "local" else WHISPER_SERVICE
         log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
+
+    # ── 断点续跑：扫描 progress JSON，统计将跳过的任务/步骤数 ──
+    if not force:
+        skipped_tasks = 0
+        resume_tasks = 0
+        for (row, sn) in tasks:
+            prior = load_task_progress(sn, stem_name(row, sn))
+            if not prior:
+                continue
+            if prior.get("overall_status") == "success":
+                skipped_tasks += 1
+            else:
+                resume_tasks += 1
+        if skipped_tasks or resume_tasks:
+            print()
+            print(c("cyan", f"  ♻️ 断点续跑扫描: 完整跳过 {skipped_tasks} 条 / 部分续跑 {resume_tasks} 条 / 全量重跑 {len(tasks) - skipped_tasks - resume_tasks} 条"))
+            print()
 
     # ── 并发执行 ──
     results: list[TaskResult] = []
@@ -2959,6 +3181,10 @@ if __name__ == "__main__":
         help="指定要加载的 .env 文件路径（默认: 当前目录 .env）",
     )
     parser.add_argument(
+        "--output",
+        help="指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/progress/logs 自动创建）",
+    )
+    parser.add_argument(
         "--url",
         help="直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接",
     )
@@ -3039,6 +3265,12 @@ if __name__ == "__main__":
     if args.file:
         EXCEL_FILE = Path(args.file).resolve()
         log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
+
+    # ── output 覆盖（CLI > env > 默认 "output"）──
+    if args.output:
+        _new_root = Path(args.output).resolve() if Path(args.output).is_absolute() else (BASE_DIR / args.output).resolve()
+        if _new_root != OUTPUT_DIR:
+            _apply_output_dir(_new_root, log_func=log.info)
 
     steps = args.step if args.step else ["download", "transcode", "transcribe", "analyze"]
 
