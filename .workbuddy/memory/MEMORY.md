@@ -72,3 +72,9 @@
   - Python `_print_long`：`process_videos.py:437-451`
   - JS `printLong`：`process_videos.js:380-389`
 
+## README 同步规范（2026-06-16 教训）
+- **代码变更 + 文档同步必须同 commit 提交**，否则用户拉代码看 README 找不到对应功能
+- v1.4 三个 commit（OUTPUT_DIR 整合 / faster-whisper / 错误透传）README 全没同步 → 用户一句"readme 同步了吗"暴露
+- 同步要点：Whisper 三后端章节 / 7 子目录结构 / --output CLI / 断点续跑章节 / 错误透传章节 / 参数表 / 核心配置表 / CHANGELOG Unreleased 段
+- commitlint 拦截：`v1.4` 出现在行首被判 start-case → 改成「同步 v1.4 的」才过
+
