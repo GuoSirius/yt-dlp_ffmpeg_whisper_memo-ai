@@ -1138,7 +1138,8 @@ def step_download(
 
     download_start = time.monotonic()
 
-    base_cmd = [sys.executable, "-m", "yt_dlp"] if YTDLP == "yt-dlp" else [YTDLP]
+    # -X utf8: 强制 Python UTF-8 模式，修复 Windows 下 requests 库 latin-1 编码错误
+    base_cmd = [sys.executable, "-X", "utf8", "-m", "yt_dlp"] if YTDLP == "yt-dlp" else [YTDLP]
     cmd = base_cmd + [
         "--no-update",             # 抑制版本过期警告（避免 Windows latin-1 编码报错）
         "--socket-timeout", "60",  # 增大 socket 超时（默认 20s，腾讯视频等站点易超时）

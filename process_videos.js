@@ -1224,7 +1224,8 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
   if (cfg.extra_headers) args.push(...cfg.extra_headers);
   if (cfg.extra_args) args.push(...cfg.extra_args);
 
-  const env = { ...process.env, ...extraEnv };
+  // PYTHONUTF8=1: 强制 Python UTF-8 模式，修复 Windows 下 requests 库 latin-1 编码错误
+  const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...extraEnv };
 
   const downloadStart = Date.now();
   let lastPercent = -1;
