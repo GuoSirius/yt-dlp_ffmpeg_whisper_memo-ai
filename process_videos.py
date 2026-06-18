@@ -166,25 +166,6 @@ FUNASR_VAD_MAX_SEGMENT = os.getenv("FUNASR_VAD_MAX_SEGMENT", "20000")  # VAD 最
 FUNASR_SERVICE_URL = os.getenv("FUNASR_SERVICE_URL", "http://localhost:8899")  # funasr-server 地址
 FUNASR_SERVICE_MODEL = os.getenv("FUNASR_SERVICE_MODEL", "iic/SenseVoiceSmall")  # 服务侧加载的模型 ID
 
-# ── FunASR 专用参数（backend=funasr 时生效） ──
-# FunASR 专攻中文场景，WER ~5%（Whisper 中文 ~15%）。
-# 需先安装: pip install funasr modelscope (cli)
-#           或:   pip install funasr vllm fastapi uvicorn python-multipart (service, GPU 推荐)
-FUNASR_MODE = os.getenv("FUNASR_MODE", "cli")  # "cli" = 本地 AutoModel; "service" = 远程 funasr-server (OpenAI 兼容 API)
-FUNASR_MODEL = os.getenv("FUNASR_MODEL", "paraformer-zh")  # 主 ASR 模型: paraformer-zh / SenseVoiceSmall / Fun-ASR-Nano / Qwen3-ASR ...
-FUNASR_VAD_MODEL = os.getenv("FUNASR_VAD_MODEL", "fsmn-vad")  # VAD 模型（留空=用主模型内置）
-FUNASR_PUNC_MODEL = os.getenv("FUNASR_PUNC_MODEL", "ct-punc")  # 标点恢复（留空=不做）
-FUNASR_SPK_MODEL = os.getenv("FUNASR_SPK_MODEL", "")  # 说话人分离（留空=不做）
-FUNASR_EMOTION_MODEL = os.getenv("FUNASR_EMOTION_MODEL", "")  # 情感识别（留空=不做）
-FUNASR_DEVICE = os.getenv("FUNASR_DEVICE", "cpu")  # cpu / cuda（GPU 强烈推荐）
-FUNASR_QUANTIZE = os.getenv("FUNASR_QUANTIZE", "True")  # int8 量化（省 50% 内存, GPU 设 False）
-FUNASR_BATCH_SIZE_S = os.getenv("FUNASR_BATCH_SIZE_S", "300")  # 动态批处理音频秒数 (60-600)
-FUNASR_HOTWORD = os.getenv("FUNASR_HOTWORD", "")  # 热词（空格分隔, 显著提升专有名词）
-FUNASR_LANGUAGE = os.getenv("FUNASR_LANGUAGE", "zh")  # 主语言（中文 zh, SenseVoice 配 auto 可自动检测 50+ 语种）
-FUNASR_VAD_MAX_SEGMENT = os.getenv("FUNASR_VAD_MAX_SEGMENT", "20000")  # VAD 最大单段长度 (ms, 0=不切分)
-FUNASR_SERVICE_URL = os.getenv("FUNASR_SERVICE_URL", "http://localhost:8899")  # funasr-server 地址
-FUNASR_SERVICE_MODEL = os.getenv("FUNASR_SERVICE_MODEL", "iic/SenseVoiceSmall")  # 服务侧加载的模型 ID
-
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 _FW_MODEL: object | None = None  # 缓存的 faster-whisper WhisperModel 实例
 _FW_MODEL_CFG: str = ""  # 缓存的模型配置指纹 (model/device/compute_type 组合)
@@ -1159,6 +1140,8 @@ def step_download(
 
     base_cmd = [sys.executable, "-m", "yt_dlp"] if YTDLP == "yt-dlp" else [YTDLP]
     cmd = base_cmd + [
+        "--no-update",             # 抑制版本过期警告（避免 Windows latin-1 编码报错）
+        "--socket-timeout", "60",  # 增大 socket 超时（默认 20s，腾讯视频等站点易超时）
         url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
