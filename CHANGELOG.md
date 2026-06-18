@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.3] - 2026-06-18
+
+### Bug Fixes
+
+- 修复 .env / .env.example 行内注释导致变量值异常 (`c201ef1`)
+- 修复 Python 版 .env 加载时行内注释被读入环境变量值中 (`72a01e7`)
+
+### Chores
+
+- update before release (`0c367a5`)
+- 重整 .env 和 .env.example 格式 (`457f537`)
+
+
 ## [1.5.2] - 2026-06-18
 
 ### Bug Fixes
