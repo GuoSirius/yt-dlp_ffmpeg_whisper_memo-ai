@@ -1143,6 +1143,7 @@ def step_download(
     cmd = base_cmd + [
         "--no-update",             # 抑制版本过期警告（避免 Windows latin-1 编码报错）
         "--socket-timeout", "60",  # 增大 socket 超时（默认 20s，腾讯视频等站点易超时）
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
@@ -3677,6 +3678,18 @@ if __name__ == "__main__":
         help='Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）',
     )
     args = parser.parse_args()
+
+    # Windows 中文环境下强制 UTF-8，修复 yt-dlp / httpx / requests latin-1 编码错误
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            k32.SetConsoleCP(65001)
+            k32.SetConsoleOutputCP(65001)
+        except Exception:
+            pass
+        os.environ["PYTHONUTF8"] = "1"
+        os.environ["PYTHONIOENCODING"] = "utf-8"
 
     # ── CLI 覆盖：提示词文件/文本归一化 + whisper extra args ──
     apply_cli_overrides(args)
