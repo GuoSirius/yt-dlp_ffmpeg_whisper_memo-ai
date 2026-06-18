@@ -1143,7 +1143,6 @@ def step_download(
     cmd = base_cmd + [
         "--no-update",             # 抑制版本过期警告（避免 Windows latin-1 编码报错）
         "--socket-timeout", "60",  # 增大 socket 超时（默认 20s，腾讯视频等站点易超时）
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         url,
         "-o", str(dl_dir / f"{stem}.%(ext)s"),
         "--no-playlist",
@@ -1168,6 +1167,11 @@ def step_download(
         cmd += ["--cookies-from-browser", cfb]
     elif cookie_file and Path(cookie_file).exists():
         cmd += ["--cookies", cookie_file]
+
+    # User-Agent（可选，解决腾讯视频等站点编码问题）
+    user_agent = PLATFORM_CONFIG[pkey].get("user_agent", "")
+    if user_agent:
+        cmd += ["--user-agent", user_agent]
 
     # Proxy（如 http://127.0.0.1:7890）
     # 同时设置子进程环境变量，确保 yt-dlp 内的 node/ejs 等子进程也走代理

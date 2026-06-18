@@ -1213,6 +1213,11 @@ async function stepDownload(row, sheetName, maxRetries, retryDelay, force, timeo
     args.push('--cookies', cfg.cookie_file);
   }
 
+  // User-Agent（可选，解决腾讯视频等站点编码问题）
+  if (cfg.user_agent) {
+    args.push('--user-agent', cfg.user_agent);
+  }
+
   // Proxy
   const extraEnv = {};
   if (cfg.proxy) {
