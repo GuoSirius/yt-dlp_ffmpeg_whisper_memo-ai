@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.5] - 2026-06-18
+
+### Bug Fixes
+
+- faster-whisper VadOptions 参数名 onset 改为 threshold (`a768cec`)
+- faster-whisper 后端不支持 temperature_increment_on_fallback 参数 (`51420b4`)
+
+
 ## [1.5.4] - 2026-06-18
 
 ### Chores
