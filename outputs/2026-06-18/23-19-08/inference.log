@@ -1,7 +1,0 @@
-[2026-06-18 23:19:41,149][root][INFO] - download models from model hub: ms
-[2026-06-18 23:19:43,955][root][WARNING] - trust_remote_code: False
-[2026-06-18 23:19:47,716][root][INFO] - Loading pretrained params from C:\Users\guopl\.cache\modelscope\hub\models\iic\speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch\model.pt
-[2026-06-18 23:19:47,724][root][INFO] - ckpt: C:\Users\guopl\.cache\modelscope\hub\models\iic\speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch\model.pt
-[2026-06-18 23:19:50,444][root][INFO] - scope_map: ['module.', 'None']
-[2026-06-18 23:19:50,444][root][INFO] - excludes: None
-[2026-06-18 23:19:50,923][root][INFO] - Loading ckpt: C:\Users\guopl\.cache\modelscope\hub\models\iic\speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch\model.pt, status: <All keys matched successfully>

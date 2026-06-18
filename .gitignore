@@ -12,3 +12,5 @@ output/
 downloads/
 transcoded/
 reports/
+outputs/
+outputs/*/

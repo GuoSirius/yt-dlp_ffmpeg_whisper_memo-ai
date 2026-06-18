@@ -1,5 +1,0 @@
-model: paraformer-zh
-input: C:\Users\guopl\AppData\Local\Temp\funasr_1781796395594\input.wav
-vad_model: fsmn-vad
-punc_model: ct-punc
-language: zh
