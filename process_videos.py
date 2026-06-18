@@ -1625,8 +1625,9 @@ def _transcribe_faster_whisper(
         # VAD 参数
         if WHISPER_VAD_FILTER.lower() in ("true", "1", "yes"):
             transcribe_kwargs["vad_filter"] = True
+            # faster-whisper 的 VadOptions 用 threshold 而非 onset
             transcribe_kwargs["vad_parameters"] = {
-                "onset": float(WHISPER_VAD_ONSET),
+                "threshold": float(WHISPER_VAD_ONSET),
             }
         else:
             transcribe_kwargs["vad_filter"] = False
