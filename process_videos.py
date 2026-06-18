@@ -95,16 +95,16 @@ def _apply_output_dir(new_root: Path, *, log_func=None) -> None:
     注意：必须用 global 声明，否则会创建局部变量导致其他模块看不到。
     """
     global OUTPUT_DIR, DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR
-    global KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR
+    global KEYWORDS_DIR, REPORTS_DIR, PROCESSES_DIR, LOGS_DIR
     OUTPUT_DIR = new_root
     DOWNLOADS_DIR   = OUTPUT_DIR / "downloads"
     TRANSCODED_DIR  = OUTPUT_DIR / "transcoded"
     TRANSCRIPTS_DIR = OUTPUT_DIR / "transcripts"
     KEYWORDS_DIR    = OUTPUT_DIR / "keywords"
     REPORTS_DIR     = OUTPUT_DIR / "reports"
-    PROGRESS_DIR    = OUTPUT_DIR / "progress"
+    PROCESSES_DIR  = OUTPUT_DIR / "processes"
     LOGS_DIR        = OUTPUT_DIR / "logs"
-    for _d in (DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR):
+    for _d in (DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROCESSES_DIR, LOGS_DIR):
         _d.mkdir(parents=True, exist_ok=True)
     if log_func:
         log_func(f"输出根目录覆盖为: {OUTPUT_DIR}")
@@ -398,9 +398,9 @@ def keywords_path(sheet_name: str, stem: str) -> Path:
     return d / f"{stem}.txt"
 
 
-def progress_path(sheet_name: str, stem: str) -> Path:
-    """单任务 progress JSON 路径。"""
-    d = PROGRESS_DIR / sheet_name
+def processes_path(sheet_name: str, stem: str) -> Path:
+    """单任务 processes JSON 路径。"""
+    d = PROCESSES_DIR / sheet_name
     d.mkdir(parents=True, exist_ok=True)
     return d / f"task_{stem}.json"
 
@@ -434,16 +434,16 @@ def validate_keywords_text(text: str | None) -> tuple[bool, str | None]:
     return True, None
 
 
-def load_task_progress(sheet_name: str, stem: str) -> dict | None:
-    """读取 progress JSON。文件不存在/解析失败返回 None。"""
-    p = progress_path(sheet_name, stem)
+def load_task_processes(sheet_name: str, stem: str) -> dict | None:
+    """读取 processes JSON。文件不存在/解析失败返回 None。"""
+    p = processes_path(sheet_name, stem)
     if not p.exists():
         return None
     try:
         with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        log.warning(f"progress JSON 解析失败 {p}: {e}")
+        log.warning(f"processes JSON 解析失败 {p}: {e}")
         return None
 
 
@@ -2075,15 +2075,15 @@ def _transcribe_service(
 
 # ─────────────────────────────── 增量进度写回 ────────────────────────────────
 
-def save_task_progress(result: TaskResult) -> None:
-    """每完成一个任务立即写入 progress JSON，方便用户随时查看中间结果。
+def save_task_processes(result: TaskResult) -> None:
+    """每完成一个任务立即写入 processes JSON，方便用户随时查看中间结果。
 
-    目录结构: output/progress/{sheet}/task_{stem}.json
+    目录结构: output/processes/{sheet}/task_{stem}.json
     文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
     """
-    progress_dir = PROGRESS_DIR / result.sheet
-    progress_dir.mkdir(parents=True, exist_ok=True)
-    progress_file = progress_dir / f"task_{result.stem}.json"
+    processes_dir = PROCESSES_DIR / result.sheet
+    processes_dir.mkdir(parents=True, exist_ok=True)
+    processes_file = processes_dir / f"task_{result.stem}.json"
 
     # 提取 content 和 keywords（StepResult.file 被借用存文本）
     content = result.transcribe.file if (
@@ -2129,11 +2129,11 @@ def save_task_progress(result: TaskResult) -> None:
         "timestamp": datetime.now().isoformat(),
     }
 
-    with open(progress_file, "w", encoding="utf-8") as f:
+    with open(processes_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    # 打印简短提示（使用动态 PROGRESS_DIR 而非硬编码路径）
-    rel_path = os.path.relpath(str(progress_file), str(BASE_DIR)).replace("\\", "/")
+    # 打印简短提示（使用动态 PROCESSES_DIR 而非硬编码路径）
+    rel_path = os.path.relpath(str(processes_file), str(BASE_DIR)).replace("\\", "/")
     info_parts = [result.overall_status]
     if content:
         info_parts.append(f"content({len(content)}字符)")
@@ -2155,12 +2155,12 @@ def save_task_progress(result: TaskResult) -> None:
         try:
             write_excel_cell(result.sheet, str(result.id_val), COL_CONTENT, content)
         except Exception as e:
-            log.warning(f"[{result.stem}] 实时写 Excel content 失败（不影响 progress JSON）: {e}")
+            log.warning(f"[{result.stem}] 实时写 Excel content 失败（不影响 processes JSON）: {e}")
     if keywords:
         try:
             write_excel_cell(result.sheet, str(result.id_val), COL_KEYWORDS, keywords)
         except Exception as e:
-            log.warning(f"[{result.stem}] 实时写 Excel keywords 失败（不影响 progress JSON）: {e}")
+            log.warning(f"[{result.stem}] 实时写 Excel keywords 失败（不影响 processes JSON）: {e}")
 
 
 # ─────────────────────────────── Excel 实时写回 ─────────────────────────────
@@ -2483,7 +2483,7 @@ def process_one_task(
 
     # ── 断点续跑：读取上次 progress，按 status=success 跳过已完成 step ──
     # 规则：success 必须有产物可校验（文件存在 / 内容长度达标），否则视为未完成
-    prior = None if force else load_task_progress(sheet_name, stem)
+    prior = None if force else load_task_processes(sheet_name, stem)
     skip_steps: set[str] = set()
     if prior:
         # download：上次成功时记录了文件路径，校验文件仍存在
@@ -2526,7 +2526,7 @@ def process_one_task(
             with _print_lock:
                 print(
                     c("cyan", f"  ♻️ 断点续跑：跳过已完成步骤 {sorted(skip_steps)}")
-                    + c("dim", f"  [来源: progress JSON]"),
+                    + c("dim", f"  [来源: processes JSON]"),
                     flush=True,
                 )
 
@@ -3011,12 +3011,12 @@ def run(
             backend_info = WHISPER_SERVICE
         log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
 
-    # ── 断点续跑：扫描 progress JSON，统计将跳过的任务/步骤数 ──
+    # ── 断点续跑：扫描 processes JSON，统计将跳过的任务/步骤数 ──
     if not force:
         skipped_tasks = 0
         resume_tasks = 0
         for (row, sn) in tasks:
-            prior = load_task_progress(sn, stem_name(row, sn))
+            prior = load_task_processes(sn, stem_name(row, sn))
             if not prior:
                 continue
             if prior.get("overall_status") == "success":
@@ -3031,7 +3031,7 @@ def run(
     # ── 并发执行 ──
     results: list[TaskResult] = []
     overall = OverallProgress(total=len(tasks))
-    # 提前收集 content / keywords 用于 Excel 回写（save_task_progress 后会释放内存）
+    # 提前收集 content / keywords 用于 Excel 回写（save_task_processes 后会释放内存）
     content_updates: dict[tuple[str, str], str] = {}
     ai_updates: dict[tuple[str, str], str] = {}
 
@@ -3058,7 +3058,7 @@ def run(
                     content_updates[(result.sheet, result.id_val)] = result.transcribe.file
                 if result.analyze.status == "success" and isinstance(result.analyze.file, str):
                     ai_updates[(result.sheet, result.id_val)] = result.analyze.file
-                save_task_progress(result)
+                save_task_processes(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
                 stem = stem_name(row, sheet_name)
@@ -3070,7 +3070,7 @@ def run(
                 )
                 results.append(tr)
                 overall.add_result("failed")
-                save_task_progress(tr)
+                save_task_processes(tr)
 
             # 每次完成打印分隔线 + 总体进度
             with _print_lock:
@@ -3200,7 +3200,7 @@ def run_from_report(
                     content_updates[(result.sheet, result.id_val)] = result.transcribe.file
                 if result.analyze.status == "success" and isinstance(result.analyze.file, str):
                     ai_updates[(result.sheet, result.id_val)] = result.analyze.file
-                save_task_progress(result)
+                save_task_processes(result)
             except Exception as e:
                 row, sheet_name = future_map[future]
                 stem = stem_name(row, sheet_name)
@@ -3212,7 +3212,7 @@ def run_from_report(
                 )
                 results.append(tr)
                 overall.add_result("failed")
-                save_task_progress(tr)
+                save_task_processes(tr)
 
             with _print_lock:
                 print(f"\n{overall.summary_line()}\n", flush=True)

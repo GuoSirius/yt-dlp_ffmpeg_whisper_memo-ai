@@ -100,7 +100,7 @@ cp .env.example .env
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
 | 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
-| 输出 | `OUTPUT_DIR` | 输出根目录（默认 `output`），7 个子目录（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`）由代码自动创建，目录名硬编码。优先级：**CLI `--output <dir>` > env `OUTPUT_DIR` > 默认 `output`** |
+| 输出 | `OUTPUT_DIR` | 输出根目录（默认 `output`），7 个子目录（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `processes/` `logs/`）由代码自动创建，目录名硬编码。优先级：**CLI `--output <dir>` > env `OUTPUT_DIR` > 默认 `output`** |
 | 输出 | `COOKIES_DIR` | Cookie 文件目录（独立于 `OUTPUT_DIR`，不归并到其下） |
 | 校验 | `MIN_TRANSCRIPT_CHARS` / `MIN_KEYWORDS_CHARS` | 断点续跑时的最小长度阈值（字符数）。识别文本/关键词文件低于此值视为残缺产物，会被清理并重做。默认 `50` / `5` |
 | AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
@@ -305,7 +305,7 @@ API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: f
 │   ├── keywords/                 # AI 关键词归纳结果（断点续跑校验依据）
 │   │   ├── youtube/
 │   │   └── bilibili/
-│   ├── progress/                 # 增量进度 JSON（每任务完成即时写入）
+│   ├── processes/                 # 增量进度 JSON（每任务完成即时写入）
 │   │   ├── youtube/
 │   │   └── bilibili/
 │   ├── reports/                 # 执行报告（按 sheet/平台分目录）
@@ -665,7 +665,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 
 ### 跳过判定（每次 `process_one_task` 入口）
 
-1. 读取 `progress/{sheet}/task_{stem}.json`，若 `force=False` 且步骤状态 = `success` 才进入跳过检查
+1. 读取 `processes/{sheet}/task_{stem}.json`，若 `force=False` 且步骤状态 = `success` 才进入跳过检查
 2. **校验产物文件**：存在性 + 长度阈值
 3. **校验通过** → 跳过该步 + 复制之前的产物（避免重复推理）
 4. **校验失败** → 视为"上次的 success 不可信"，**降级为重做该 step**
@@ -687,7 +687,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 
 ### 启动统计
 
-启动时扫描 progress JSON 并打印：
+启动时扫描 processes JSON 并打印：
 
 ```
 ♻️  完整跳过 5 条 / 部分续跑 12 条 / 全量重跑 78 条
@@ -896,7 +896,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 ## 输出结构速查表
 
-五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根，可通过 **`OUTPUT_DIR` 环境变量** 或 **`--output <dir>` CLI 参数** 整体覆盖（CLI > env > 默认 `output`）。子目录名（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`）由代码硬编码，不支持单独覆盖。
+五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根，可通过 **`OUTPUT_DIR` 环境变量** 或 **`--output <dir>` CLI 参数** 整体覆盖（CLI > env > 默认 `output`）。子目录名（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `processes/` `logs/`）由代码硬编码，不支持单独覆盖。
 
 > `{sheet}` = Excel 工作表名（如 `YouTube视频`、`普诺赛中文站`）
 > `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencent`、`youku`）
@@ -910,7 +910,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码 | `output/transcoded/{sheet}/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
 | 识别 | `output/transcripts/{sheet}/{stem}.txt` | 文本 | whisper 识别原文（断点续跑校验依据，< `MIN_TRANSCRIPT_CHARS` 视为残缺） |
 | AI 关键词 | `output/keywords/{sheet}/{stem}.txt` | 文本 | AI 关键词归纳结果（断点续跑校验依据，< `MIN_KEYWORDS_CHARS` 视为残缺） |
-| 进度 | `output/progress/{sheet}/task_{stem}.json` | JSON | 单任务增量进度（每步完成立即写入，断电可续） |
+| 进度 | `output/processes/{sheet}/task_{stem}.json` | JSON | 单任务增量进度（每步完成立即写入，断电可续） |
 | JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 机器可读，含 summary + failed_items，可供 --retry-failed 重跑 |
 | 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 人类可读，含语音识别原文 + AI 关键词分析 |
 | 运行日志 | `output/logs/` | 文本 | console-ui / 步骤日志（按时间戳） |
@@ -925,7 +925,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码 | `output/transcoded/{platform}/{name}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
 | 识别 | `output/transcripts/{platform}/{name}.txt` | 文本 | whisper 识别原文 |
 | AI 关键词 | `output/keywords/{platform}/{name}.txt` | 文本 | AI 关键词归纳结果 |
-| 进度 | `output/progress/{platform}/task_{name}.json` | JSON | 单任务增量进度 |
+| 进度 | `output/processes/{platform}/task_{name}.json` | JSON | 单任务增量进度 |
 | JSON 报告 | `output/reports/{platform}/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
 | 文本报告 | `output/reports/{platform}/tasks/{name}.txt` | 文本 | 含识别原文 + AI 分析 |
 
@@ -939,7 +939,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码 | `output/transcoded/local/{stem}.wav` | 音频 | ffmpeg 转 16kHz mono WAV |
 | 识别 | `output/transcripts/local/{stem}.txt` | 文本 | whisper 识别原文 |
 | AI 关键词 | `output/keywords/local/{stem}.txt` | 文本 | AI 关键词归纳结果 |
-| 进度 | `output/progress/local/task_{stem}.json` | JSON | 单任务增量进度 |
+| 进度 | `output/processes/local/task_{stem}.json` | JSON | 单任务增量进度 |
 | JSON 报告 | `output/reports/local/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
 | 文本报告 | `output/reports/local/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
 
@@ -953,7 +953,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码 | —（跳过） | — | 无需转码 |
 | 识别 | —（跳过） | — | 无需语音识别 |
 | AI 关键词 | `output/keywords/content/{stem}.txt` | 文本 | AI 关键词归纳结果 |
-| 进度 | `output/progress/content/task_{stem}.json` | JSON | 单任务增量进度 |
+| 进度 | `output/processes/content/task_{stem}.json` | JSON | 单任务增量进度 |
 | JSON 报告 | `output/reports/content/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
 | 文本报告 | `output/reports/content/tasks/{stem}.txt` | 文本 | 含源内容 + AI 关键词分析 |
 
@@ -967,7 +967,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码 | —（跳过） | — | 无需转码 |
 | 识别 | —（跳过） | — | 无需语音识别 |
 | AI 关键词 | `output/keywords/{sheet}/{stem}.txt` | 文本 | AI 关键词归纳结果 |
-| 进度 | `output/progress/{sheet}/task_{stem}.json` | JSON | 单任务增量进度 |
+| 进度 | `output/processes/{sheet}/task_{stem}.json` | JSON | 单任务增量进度 |
 | JSON 报告 | `output/reports/{sheet}/report_YYYYMMDD_HHMMSS.json` | JSON | 按 Excel sheet 分目录，格式与 Excel 模式一致 |
 | 文本报告 | `output/reports/{sheet}/tasks/{stem}.txt` | 文本 | 含列文本 + AI 关键词分析 |
 | Excel 写回 | `{EXCEL_FILE}` 的 `keywords` 列 | Excel | AI 关键词写入 Excel |
@@ -989,7 +989,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 转码目录 | `transcoded/{sheet}/` | `transcoded/{platform}/` | `transcoded/local/` | 无 | 无 |
 | 识别目录 | `transcripts/{sheet}/` | `transcripts/{platform}/` | `transcripts/local/` | 无 | 无 |
 | 关键词目录 | `keywords/{sheet}/` | `keywords/{platform}/` | `keywords/local/` | `keywords/content/` | `keywords/{sheet}/` |
-| 进度目录 | `progress/{sheet}/` | `progress/{platform}/` | `progress/local/` | `progress/content/` | `progress/{sheet}/` |
+| 进度目录 | `processes/{sheet}/` | `processes/{platform}/` | `processes/local/` | `processes/content/` | `processes/{sheet}/` |
 | 报告目录 | `reports/{sheet}/` | `reports/{platform}/` | `reports/local/` | `reports/content/` | `reports/{sheet}/` |
 | 分组依据 | Excel sheet 名 | URL 解析的平台名 | 固定 `local` | 固定 `content` | Excel sheet 名 |
 | 并发支持 | ✅ 多线程 | ❌ 单任务 | ❌ 单任务 | ❌ 单任务 | ✅ 多线程 |
