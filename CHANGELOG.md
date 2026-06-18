@@ -22,16 +22,24 @@
 - 修复 JS `whisper-ctranslate2` CLI 参数错误：移除不存在的 `--num_workers`（Python API 专用），将 `--vad_onset` 改为 `--vad_threshold`（CLI 参数名与 Python API 不同）
 - 修复 JS `funasr` CLI Hydra 路径解析错误：Hydra override 解析器不支持非 ASCII 字符（如中文路径 `普诺赛中文站`），路径含中文时自动复制到临时 ASCII 路径再执行
 - 修复 JS `funasr` CLI 结果解析：funasr CLI 把结果 `print()` 到 stdout 而非写文件，原代码找 `{input}.json` 文件必然失败。改为优先从 stdout 解析（JSON / Python dict repr / 纯文本三级回退），文件检测仅作兜底
+- 修复 Python 重复定义 FunASR 参数（150-186 行）：删除重复段落，仅保留 `_SERVICE_MODEL_LOADED` 缓存变量
+- 修复 Python yt-dlp 报 `UnicodeEncodeError: 'latin-1' codec can't encode`：添加 `--no-update` 抑制版本过期警告（该警告含非 ASCII 字符，Windows 默认编码 latin-1 无法处理）
+- 修复 Python yt-dlp 下载腾讯视频等站点报 `Read timed out (read timeout=20.0)`：`--socket-timeout` 默认值 20 秒太短，改为 60 秒
 
 ### Features
 
 - 新增 `AI_DEBUG` 环境变量：设为 `true` 时打印实际发送的 prompt 前 500 字符 + AI 返回内容前 500 字符，用于排查 AI 分析质量问题
+
+### Refactor
+
+- `progress` → `processes` 全局重命名：目录 `output/progress/` → `output/processes/`、变量 `PROGRESS_DIR` → `PROCESSES_DIR`、函数 `progress_path`/`load_task_progress`/`save_task_progress` → `processes_path`/`load_task_processes`/`save_task_processes`（py 和 js 同步），`.env.example` 和 `README.md` 同步更新
 
 ### Documentation
 
 - README「工具预检」章节新增 ASR 后端检测策略表，说明各后端的轻量检测方式和为何不使用 `--help`
 - README AI 配置表新增 `AI_DEBUG` 条目
 - README 提示词章节新增 `{content}` 替换安全性说明
+- README 输出目录章节：`progress/` → `processes/`
 
 
 ## [1.5.0] - 2026-06-16
