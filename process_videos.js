@@ -20,6 +20,7 @@ import readline from 'readline';
 import XLSX from 'xlsx';
 import pLimit from 'p-limit';
 import { fileURLToPath } from 'url';
+import os from 'os';
 import { program } from 'commander';
 import { select, input } from '@inquirer/prompts';
 
@@ -1527,6 +1528,9 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
   const outDir = path.dirname(audioFile);
 
   async function doTranscribe() {
+    // 注意：whisper-ctranslate2 CLI 参数与 faster-whisper Python API 有差异：
+    //   · 没有 --num_workers（Python API 参数，CLI 用 --threads 控制并行）
+    //   · VAD 阈值参数名是 --vad_threshold（Python API 用 vad_parameters.onset）
     const args = [
       audioFile,
       '--task', WHISPER_TASK,
@@ -1536,10 +1540,11 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
       '--beam_size', WHISPER_BEAM_SIZE,
       '--best_of', WHISPER_BEST_OF,
       '--condition_on_previous_text', WHISPER_CONDITION_ON_PREV,
-      '--num_workers', WHISPER_NUM_WORKERS,
       '--vad_filter', WHISPER_VAD_FILTER,
-      '--vad_onset', WHISPER_VAD_ONSET,
     ];
+    if (WHISPER_VAD_FILTER.toLowerCase() === 'true' && WHISPER_VAD_ONSET) {
+      args.push('--vad_threshold', WHISPER_VAD_ONSET);
+    }
     if (WHISPER_MODEL_DIR) args.push('--model_directory', WHISPER_MODEL_DIR);
     if (WHISPER_LANGUAGE) args.push('--language', WHISPER_LANGUAGE);
     args.push('--temperature', WHISPER_TEMPERATURE);
@@ -1605,12 +1610,37 @@ async function transcribeFunasr(audioFile, stem, maxRetries, retryDelay, timeout
 /**
  * FunASR CLI 模式：funasr ++model ++input 直接调用。
  * 首次会自动从 ModelScope 下载模型（~/.cache/modelscope/hub）。
+ *
+ * 注意：funasr CLI 基于 Hydra 框架，其 override 解析器不支持非 ASCII 字符（如中文路径）。
+ * 当音频路径包含非 ASCII 字符时，先复制到临时 ASCII 路径再执行。
  */
 async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, timeout = 0) {
+  // 检测路径是否含非 ASCII 字符，需要时复制到临时路径
+  const hasNonAscii = /[^\x00-\x7F]/.test(audioFile);
+  let actualInput = audioFile;
+  let tempDir = null;
+  let tempInput = null;
+  let tempJson = null;
+  let tempTxt = null;
+  if (hasNonAscii) {
+    tempDir = path.join(os.tmpdir(), `funasr_${Date.now()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    const ext = path.extname(audioFile);
+    tempInput = path.join(tempDir, `input${ext}`);
+    fs.copyFileSync(audioFile, tempInput);
+    actualInput = tempInput;
+    tempJson = `${tempInput}.json`;
+    tempTxt = `${tempInput}.txt`;
+    lockedPrint(`  [${stem}] funasr: 路径含非 ASCII 字符，已复制到临时路径 ${tempInput}`);
+  }
+
+  const jsonFile = hasNonAscii ? tempJson : `${audioFile}.json`;
+  const txtFile = hasNonAscii ? tempTxt : `${audioFile}.txt`;
+
   async function doTranscribe() {
     const args = [
       `++model=${FUNASR_MODEL}`,
-      `++input=${audioFile}`,
+      `++input=${actualInput}`,
     ];
     if (FUNASR_VAD_MODEL)    args.push(`++vad_model=${FUNASR_VAD_MODEL}`);
     if (FUNASR_PUNC_MODEL)   args.push(`++punc_model=${FUNASR_PUNC_MODEL}`);
@@ -1619,26 +1649,26 @@ async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, time
     if (FUNASR_HOTWORD)      args.push(`++hotword=${FUNASR_HOTWORD}`);
     if (FUNASR_LANGUAGE)     args.push(`++language=${FUNASR_LANGUAGE}`);
     if (FUNASR_DEVICE === 'cuda') args.push('++device=cuda');
-    // quantize 在 funasr CLI 中不是 ++ 参数，自动启用是通过 int8 量化模型（paraformer-zh 默认就是 int8）
-    // FUNASR_BATCH_SIZE_S / VAD_MAX_SEGMENT 透传到 generate kwargs 通过 --key=value 无法直接设置，需用 FUNASR_EXTRA_ARGS
 
     // 合并 FUNASR_EXTRA_ARGS（CLI > .env），去重后追加
     const finalArgs = mergeWhisperArgs(args, _resolvedFunasrExtraArgs);
 
-    const { stderr } = await spawnWithTimeout('funasr', finalArgs, timeout, {
+    // funasr CLI 把结果 print 到 stdout（不写文件），格式通常是：
+    //   [{'key': 'value', 'text': '识别文本...'}, ...]  （Python repr 格式，非标准 JSON）
+    // 也可能输出纯文本。优先从 stdout 解析，回退到文件（兼容旧版行为）。
+    const { stdout, stderr } = await spawnWithTimeout('funasr', finalArgs, timeout, {
       onProgress: (_src, line) => {
         if (line.trim()) updateLine(`[${stem}] funasr 加载/识别中... ${line.trim().slice(-40)}`);
       }
     });
-    // funasr CLI 默认输出 JSON 到 {input}.json
-    const jsonFile = `${audioFile}.json`;
-    const txtFile = `${audioFile}.txt`;
+
     let text = '';
-    if (fs.existsSync(jsonFile)) {
-      const raw = fs.readFileSync(jsonFile, 'utf-8').trim();
+    // 1. 优先从 stdout 解析
+    const stdoutTrim = (stdout || '').trim();
+    if (stdoutTrim) {
+      // 尝试 JSON 解析（funasr 输出的 Python repr 可能不是合法 JSON）
       try {
-        const arr = JSON.parse(raw);
-        // funasr JSON 通常是 [ { "text": "...", "timestamp": [...] } ]
+        const arr = JSON.parse(stdoutTrim);
         if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === 'object') {
           text = (arr[0].text || '').trim();
         } else if (typeof arr === 'string') {
@@ -1647,14 +1677,36 @@ async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, time
           text = String(arr).trim();
         }
       } catch {
-        text = raw; // fallback
+        // JSON 解析失败，尝试从 stdout 提取 text 字段（Python dict repr 格式）
+        const m = stdoutTrim.match(/['"]text['"]\s*:\s*['"](.+?)['"]/s);
+        if (m) {
+          text = m[1].trim();
+        } else {
+          // 直接当纯文本用
+          text = stdoutTrim;
+        }
       }
-    } else if (fs.existsSync(txtFile)) {
-      text = fs.readFileSync(txtFile, 'utf-8').trim();
-    } else {
-      throw new Error('funasr 输出文件未生成（既无 .json 也无 .txt）');
     }
-    if (!text) throw new Error('funasr 返回空文本');
+    // 2. 回退：检查输出文件（某些 funasr 版本可能写文件）
+    if (!text && jsonFile && fs.existsSync(jsonFile)) {
+      const raw = fs.readFileSync(jsonFile, 'utf-8').trim();
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length > 0 && typeof arr[0] === 'object') {
+          text = (arr[0].text || '').trim();
+        } else if (typeof arr === 'string') {
+          text = arr.trim();
+        } else {
+          text = String(arr).trim();
+        }
+      } catch {
+        text = raw;
+      }
+    }
+    if (!text && txtFile && fs.existsSync(txtFile)) {
+      text = fs.readFileSync(txtFile, 'utf-8').trim();
+    }
+    if (!text) throw new Error('funasr 返回空文本（stdout 和文件均无内容）');
     return text;
   }
 
@@ -1663,11 +1715,17 @@ async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, time
     if (error) return { text: null, retries: retriesUsed, error };
     return { text, retries: 0, error: null };
   } catch (e) {
-    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
-    // e.message 在 spawnWithTimeout 修复后也已包含 stderr
     const _detail = String(e.stderr || e.message || e).slice(0, 5000);
     logError(_detail);
     return { text: null, retries: maxRetries, error: _detail };
+  } finally {
+    // 清理临时文件（非 ASCII 路径复制场景）
+    if (tempDir) {
+      for (const f of [tempInput, tempJson, tempTxt]) {
+        if (f) { try { fs.unlinkSync(f); } catch { /* ignore */ } }
+      }
+      try { fs.rmdirSync(tempDir); } catch { /* ignore */ }
+    }
   }
 }
 

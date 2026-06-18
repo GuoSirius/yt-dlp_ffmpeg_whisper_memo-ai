@@ -7,6 +7,9 @@
 - 修复 ASR 后端预检误报"不可用"：`whisper` / `whisper-ctranslate2` / `funasr` 等 Python CLI 的 `--help` 触发框架初始化耗时 5-30 秒，超过 5 秒 timeout 被 SIGTERM。改用 `where`/`which`（JS）和 `importlib.util.find_spec` / `shutil.which`（Python）轻量检测，全量 < 0.3 秒
 - 修复 JS `String.replace('{content}', text)` 的 `$` 特殊字符 bug：转录文本含 `$&` / `` $` `` / `$'` / `$$` 时被错误解释，导致发给 AI 的内容损坏、关键词提取异常。改用函数替换 `() => text`
 - 修复 dry-run 环境检测输出中 `backend` 描述不匹配 `WHISPER_BACKEND` 实际值的问题：补全 `faster-whisper` 和 `funasr/cli`、`funasr/service` 四分支（JS + Python 共 7 处）
+- 修复 JS `whisper-ctranslate2` CLI 参数错误：移除不存在的 `--num_workers`（Python API 专用），将 `--vad_onset` 改为 `--vad_threshold`（CLI 参数名与 Python API 不同）
+- 修复 JS `funasr` CLI Hydra 路径解析错误：Hydra override 解析器不支持非 ASCII 字符（如中文路径 `普诺赛中文站`），路径含中文时自动复制到临时 ASCII 路径再执行
+- 修复 JS `funasr` CLI 结果解析：funasr CLI 把结果 `print()` 到 stdout 而非写文件，原代码找 `{input}.json` 文件必然失败。改为优先从 stdout 解析（JSON / Python dict repr / 纯文本三级回退），文件检测仅作兜底
 
 ### Features
 

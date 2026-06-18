@@ -35,6 +35,14 @@
 - `AI_DEBUG=true` 环境变量：打印实际 prompt 和 AI 返回内容（排查关键词质量问题）
 - `\n` 转义：`.env` 中 `\n` 是字面量，`resolvePromptValue`/`_resolve_prompt_value` 负责转真换行
 
+## Whisper/FunASR CLI 参数差异（2026-06-18 修复）
+- **faster-whisper**：JS 用 `whisper-ctranslate2` CLI，Python 用 `WhisperModel` API
+  - CLI 无 `--num_workers`（Python 专用）→ JS 不传
+  - CLI VAD 阈值是 `--vad_threshold`（Python API 用 `vad_parameters.onset`）
+- **funasr CLI**：Hydra override `++input=path` 不支持非 ASCII 路径
+  - 修复：路径含非 ASCII 时自动复制到 `os.tmpdir()` 临时路径
+  - funasr CLI 把结果 `print()` 到 stdout，不写文件 → 从 stdout 解析（JSON → dict repr → 纯文本）
+
 ## ASR 后端预检策略（2026-06-18 统一）
 - **核心问题**：`whisper` / `whisper-ctranslate2` / `funasr` 的 `--help` 或 `import` 均触发框架初始化，耗时 5-30 秒
 - **统一方案**（全量检测 < 0.3 秒）：

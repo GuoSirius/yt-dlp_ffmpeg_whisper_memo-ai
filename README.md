@@ -180,8 +180,13 @@ CTranslate2 重写的 Whisper 推理实现，速度约为 openai-whisper 的 4 �
 | `WHISPER_COMPUTE_TYPE` | `int8` | 计算精度：`int8`（CPU 最优）/`float16`（GPU 推荐）/`int8_float16`/`default`/`auto` |
 | `WHISPER_VAD_FILTER` | `True` | 启用 Silero VAD 静音过滤，减少幻觉、加速推理 |
 | `WHISPER_VAD_ONSET` | `0.5` | VAD 灵敏度阈值（0.0~1.0，越高越严格/只保留高置信语音） |
-| `WHISPER_NUM_WORKERS` | `1` | CTranslate2 并行 worker 数（1=单线程，批处理场景可调大） |
+| `WHISPER_NUM_WORKERS` | `1` | CTranslate2 并行 worker 数（仅 Python 版生效；JS 版 CLI 不支持此参数） |
 
+> **Python vs JS 差异**：
+> - Python 版：使用 `faster_whisper.WhisperModel` Python API（`num_workers` + `vad_parameters.onset`）
+> - Node.js 版：调用 `whisper-ctranslate2` CLI（无 `--num_workers`，VAD 阈值参数名为 `--vad_threshold`）
+> - 两者参数语义一致，CLI 参数名自动映射，用户无需关心差异
+>
 > **依赖**：
 > - Python 版：`pip install faster-whisper`（使用 Python API 模块导入，模型实例全局缓存）
 > - Node.js 版：`pip install whisper-ctranslate2`（脚本以 `whisper-ctranslate2` CLI 方式调用，参数透传）
