@@ -191,6 +191,15 @@ CTranslate2 重写的 Whisper 推理实现，速度约为 openai-whisper 的 4 �
 > - Python 版：`pip install faster-whisper`（使用 Python API 模块导入，模型实例全局缓存）
 > - Node.js 版：`pip install whisper-ctranslate2`（脚本以 `whisper-ctranslate2` CLI 方式调用，参数透传）
 >
+> **HuggingFace 镜像（国内网络必备）**：
+> `faster-whisper` 首次加载模型时需从 `huggingface.co` 下载，国内网络通常无法访问。
+> 在 `.env` 中设置 `HF_ENDPOINT` 使用清华镜像加速：
+> ```
+> HF_ENDPOINT=https://hf-mirror.com
+> ```
+> 此变量对 Python 版（`huggingface-hub` 库自动读取）和 Node.js 版（子进程继承环境变量）均生效。
+> 设置后首次运行会自动从镜像下载模型并缓存到 `~/.cache/huggingface/hub/`，后续运行无需联网。
+>
 > **共享参数复用**：`WHISPER_MODEL` / `WHISPER_LANGUAGE` / `WHISPER_BEAM_SIZE` / `WHISPER_INITIAL_PROMPT` / `WHISPER_EXTRA_ARGS` 等 17 个共享变量在 faster-whisper 模式下同样生效，无需重复配置。
 
 **🔸 funasr 模式独有**（`WHISPER_BACKEND=funasr`）
