@@ -107,6 +107,7 @@ cp .env.example .env
 | AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
 | AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符。支持文件路径（try-file-first），CLI 覆盖：`--ai-prompt <text|path>`（CLI > .env > 内置默认） |
 | AI 分析 | `AI_TEMPERATURE` | AI 推理温度 (0.0~2.0) |
+| AI 分析 | `AI_DEBUG` | `true` 时打印实际发送的 prompt 前 500 字符 + AI 返回内容前 500 字符，用于排查关键词质量问题（默认 `false`） |
 
 ### .env 配置项变更权限
 
@@ -564,8 +565,20 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 |------|--------|-------------|
 | download | yt-dlp 可调用 | 提示用户，输入 `yes` 继续 / 其他取消 |
 | transcode | ffmpeg + ffprobe 可调用 | 同上 |
-| transcribe | whisper 服务/本地 CLI 可连通 | 同上 |
+| transcribe | whisper 后端可用（按 `WHISPER_BACKEND` 分支检测） | 同上 |
 | analyze | AI_ENABLED=true 且 API 配置完整 | 同上 |
+
+**ASR 后端检测策略**（轻量秒级，不实际启动 CLI）：
+
+| 后端 | 检测方式 | 说明 |
+|------|---------|------|
+| `local` | `where`/`which whisper` | 检查 `whisper` 可执行文件是否存在（JS）；`shutil.which()`（Python） |
+| `faster-whisper` | JS: `where`/`which whisper-ctranslate2`；Python: `importlib.util.find_spec("faster_whisper")` | JS 用 CLI，Python 用 Python API |
+| `funasr` (cli) | `where`/`which funasr`（JS）；`importlib.util.find_spec("funasr")`（Python） | 同上 |
+| `funasr` (service) | HTTP GET `FUNASR_SERVICE_URL` | 3 秒超时 |
+| `service` | HTTP GET `WHISPER_SERVICE` | 3 秒超时 |
+
+> **为什么不直接跑 `--help`？** `whisper`、`whisper-ctranslate2`、`funasr` 等 Python CLI 的 `--help` 均会触发框架初始化（Hydra / CTranslate2 / 模型注册），耗时 **5-30 秒**，严重拖慢 dry-run 和预检。改用可执行文件/包存在检测后，全量检测 < 0.3 秒。
 
 - **dry-run** 模式下同样展示检测结果（但不中断执行）
 - 所有模式（正常执行、重跑失败、单步运行）均执行预检
@@ -811,6 +824,8 @@ node process_videos.js --sheet "YouTube视频" --step analyze --concurrency 2
 | CLI 覆盖 | `--ai-prompt ./prompts/custom.txt` | 优先级最高，临试覆盖不修改 .env |
 
 优先级：**CLI 参数 > .env 环境变量 > 内置默认值**
+
+> **`{content}` 替换安全性**：JS 版使用 `replace('{content}', () => text)` 函数替换，避免转录文本中的 `$&`、`` $` ``、`$'`、`$$` 等 JavaScript 特殊模式被错误解释。Python 版 `str.replace()` 天然无此问题。
 
 ```bash
 # 用自定义 prompt 文件跑全量

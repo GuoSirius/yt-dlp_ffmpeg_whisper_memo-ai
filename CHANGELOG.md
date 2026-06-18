@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Bug Fixes
+
+- 修复 ASR 后端预检误报"不可用"：`whisper` / `whisper-ctranslate2` / `funasr` 等 Python CLI 的 `--help` 触发框架初始化耗时 5-30 秒，超过 5 秒 timeout 被 SIGTERM。改用 `where`/`which`（JS）和 `importlib.util.find_spec` / `shutil.which`（Python）轻量检测，全量 < 0.3 秒
+- 修复 JS `String.replace('{content}', text)` 的 `$` 特殊字符 bug：转录文本含 `$&` / `` $` `` / `$'` / `$$` 时被错误解释，导致发给 AI 的内容损坏、关键词提取异常。改用函数替换 `() => text`
+- 修复 dry-run 环境检测输出中 `backend` 描述不匹配 `WHISPER_BACKEND` 实际值的问题：补全 `faster-whisper` 和 `funasr/cli`、`funasr/service` 四分支（JS + Python 共 7 处）
+
+### Features
+
+- 新增 `AI_DEBUG` 环境变量：设为 `true` 时打印实际发送的 prompt 前 500 字符 + AI 返回内容前 500 字符，用于排查 AI 分析质量问题
+
+### Documentation
+
+- README「工具预检」章节新增 ASR 后端检测策略表，说明各后端的轻量检测方式和为何不使用 `--help`
+- README AI 配置表新增 `AI_DEBUG` 条目
+- README 提示词章节新增 `{content}` 替换安全性说明
+
+
 ## [1.5.0] - 2026-06-16
 
 ### Features

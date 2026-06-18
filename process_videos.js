@@ -868,20 +868,27 @@ function which(cmd) {
 }
 
 async function checkWhisperAvailable() {
-  if (WHISPER_BACKEND === 'local') {
+  // whisper / whisper-ctranslate2 / funasr 等 Python CLI 的 --help 均会触发框架初始化
+  // （Hydra / CTranslate2 等），耗时 5-30 秒，不适合用作预检。
+  // 统一改用 where/which 检查可执行文件存在即视为可用（< 0.3 秒）。
+  const cliBinaries = {
+    'local': 'whisper',
+    'faster-whisper': 'whisper-ctranslate2',
+  };
+  if (WHISPER_BACKEND === 'local' || WHISPER_BACKEND === 'faster-whisper') {
+    const binName = cliBinaries[WHISPER_BACKEND];
+    const installHint = WHISPER_BACKEND === 'local'
+      ? 'pip install openai-whisper'
+      : 'pip install whisper-ctranslate2';
     try {
-      execSync('whisper --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-      return true;
-    } catch {
-      logError('本地 whisper CLI 不可用，请确认: pip install openai-whisper');
+      const locateCmd = process.platform === 'win32' ? `where ${binName}` : `which ${binName}`;
+      const binPath = execSync(locateCmd, { stdio: 'pipe', timeout: 3000 })
+        .toString().split('\n')[0].trim();
+      if (binPath && fs.existsSync(binPath)) return true;
+      logError(`${binName} CLI 不可用，请确认: ${installHint}`);
       return false;
-    }
-  } else if (WHISPER_BACKEND === 'faster-whisper') {
-    try {
-      execSync('whisper-ctranslate2 --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-      return true;
     } catch {
-      logError('whisper-ctranslate2 CLI 不可用，请确认: pip install whisper-ctranslate2');
+      logError(`${binName} CLI 不可用，请确认: ${installHint}`);
       return false;
     }
   } else if (WHISPER_BACKEND === 'funasr') {
@@ -890,12 +897,18 @@ async function checkWhisperAvailable() {
         await fetch(FUNASR_SERVICE_URL, { signal: AbortSignal.timeout(3000) });
         return true;
       } catch {
+        logError(`funasr-server 不可用（${FUNASR_SERVICE_URL}），请确认服务已启动: funasr-server`);
         return false;
       }
     }
+    // funasr 同理：--help / import 均需 15-30 秒，改用 where/which 检测可执行文件。
     try {
-      execSync('funasr --help', { stdio: 'pipe', timeout: 5000, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-      return true;
+      const locateCmd = process.platform === 'win32' ? 'where funasr' : 'which funasr';
+      const funasrPath = execSync(locateCmd, { stdio: 'pipe', timeout: 3000 })
+        .toString().split('\n')[0].trim();
+      if (funasrPath && fs.existsSync(funasrPath)) return true;
+      logError('funasr CLI 不可用，请确认: pip install funasr modelscope');
+      return false;
     } catch {
       logError('funasr CLI 不可用，请确认: pip install funasr modelscope');
       return false;
@@ -962,8 +975,11 @@ async function checkEnvironmentAsync(steps) {
       let backend;
       if (WHISPER_BACKEND === 'local') backend = 'local CLI';
       else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-      else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-      else backend = `service ${WHISPER_SERVICE}`;
+      else if (WHISPER_BACKEND === 'funasr') {
+        backend = FUNASR_MODE === 'service'
+          ? `funasr/service (${FUNASR_SERVICE_URL})`
+          : `funasr/cli (${FUNASR_MODEL})`;
+      } else backend = `service ${WHISPER_SERVICE}`;
       result.issues.push(`whisper not available (${backend})`);
     }
   }
@@ -1038,13 +1054,22 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     return { text: null, retries: 0, error: 'AI config incomplete' };
   }
 
-  const prompt = promptTpl.replace('{content}', text);
+  // 注意：不能用 replace('{content}', text)，因为 text 中的 $& $` $' $$ 会被特殊解释，
+  // 导致发给 AI 的转录文本被损坏。改用函数替换，规避 $ 特殊语义。
+  const prompt = promptTpl.replace('{content}', () => text);
   const apiUrl = `${baseUrl}/chat/completions`;
   const payload = JSON.stringify({
     model,
     messages: [{ role: 'user', content: prompt }],
     temperature: aiTemperature,
   });
+
+  // AI_DEBUG=true 时打印实际发送的 prompt 和返回内容，排查关键词质量问题
+  const aiDebug = (process.env.AI_DEBUG || '').toLowerCase() === 'true';
+  if (aiDebug) {
+    lockedPrint(`  [${label}] 🔍 AI_DEBUG prompt(${prompt.length} chars): ${prompt.slice(0, 500)}...`);
+    lockedPrint(`  [${label}] 🔍 AI_DEBUG transcript(${text.length} chars): ${text.slice(0, 200)}...`);
+  }
 
   lockedPrint(`  [${label}] AI 请求 URL: ${apiUrl}`);
   startSpinner(`[${label}] AI 分析中`);
@@ -1086,6 +1111,9 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
     const aiText = (fnResult && fnResult.text) ? String(fnResult.text) : '';
     if (aiText) {
       result = { text: aiText, retries: ret.retriesUsed, error: null };
+      if (aiDebug) {
+        lockedPrint(`  [${label}] 🔍 AI_DEBUG response(${aiText.length} chars): ${aiText.slice(0, 500)}`);
+      }
     } else {
       result = { text: null, retries: ret.retriesUsed, error: 'AI returned empty content, possible API error or invalid response format' };
     }
@@ -3021,7 +3049,14 @@ function printDryRun(tasks, steps, env) {
     console.log(`  ${c('dim', '⏭ ffmpeg/ffprobe: 未启用（步骤不含 transcode）')}`);
   }
   if (steps.includes('transcribe')) {
-    const backend = WHISPER_BACKEND === 'local' ? 'local CLI' : `service ${WHISPER_SERVICE}`;
+    let backend;
+    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+    else if (WHISPER_BACKEND === 'funasr') {
+      backend = FUNASR_MODE === 'service'
+        ? `funasr/service (${FUNASR_SERVICE_URL})`
+        : `funasr/cli (${FUNASR_MODEL})`;
+    } else backend = `service ${WHISPER_SERVICE}`;
     console.log(`  ${env.whisper ? c('green', `✅ whisper (${backend})`) : c('red', `❌ whisper (${backend})`)}`);
   } else {
     console.log(`  ${c('dim', '⏭ whisper: 未启用（步骤不含 transcribe）')}`);

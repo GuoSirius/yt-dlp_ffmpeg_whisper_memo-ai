@@ -29,6 +29,20 @@
 - **禁止硬截断** `[:120]` / `[:200]` —— 用 `_print_long`(Py line 437-451) / `printLong`(JS line 380-389)
 - 位置：`spawnWithTimeout` line 984-991
 
+## AI 分析 prompt 注意事项（2026-06-18 修复）
+- **JS 陷阱**：`String.replace('{content}', text)` 中 `text` 含 `$&` `` $` `` `$'` `$$` 时会被特殊解释，必须用 `() => text` 函数替换
+- Python `str.replace` 无此问题，保持原样
+- `AI_DEBUG=true` 环境变量：打印实际 prompt 和 AI 返回内容（排查关键词质量问题）
+- `\n` 转义：`.env` 中 `\n` 是字面量，`resolvePromptValue`/`_resolve_prompt_value` 负责转真换行
+
+## ASR 后端预检策略（2026-06-18 统一）
+- **核心问题**：`whisper` / `whisper-ctranslate2` / `funasr` 的 `--help` 或 `import` 均触发框架初始化，耗时 5-30 秒
+- **统一方案**（全量检测 < 0.3 秒）：
+  - JS：全部 CLI 后端用 `where`/`which` 检查可执行文件存在（`local`→`whisper`、`faster-whisper`→`whisper-ctranslate2`、`funasr`→`funasr`）
+  - Python：CLI 后端用 `shutil.which()`；Python API 后端用 `importlib.util.find_spec()`（`faster_whisper`/`funasr`）
+  - `service` / `funasr/service`：HTTP GET 3 秒超时（不变）
+- 关键代码：JS `checkWhisperAvailable` line 870；Python `_check_whisper_available` line 1297
+
 ## README 同步规范（2026-06-16 教训）
 - **代码变更 + 文档同步必须同 commit 提交**，否则用户拉代码看 README 找不到对应功能
 - commitlint 拦截：`v1.4` 出现在行首被判 start-case → 改写为「同步 v1.4 的」才过

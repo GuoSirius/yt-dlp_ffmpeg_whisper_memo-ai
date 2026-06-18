@@ -38,6 +38,7 @@ import os
 import sys
 import re
 import shutil
+import importlib.util
 import argparse
 import subprocess
 import logging
@@ -1033,8 +1034,15 @@ def step_analyze(
     if not api_key or not base_url or not model:
         return None, 0, "AI 配置不完整（缺少 AI_API_KEY / AI_BASE_URL / AI_MODEL）"
 
-    # 组装提示词
+    # 组装提示词（Python str.replace 不存在 JS 的 $ 特殊字符问题）
     prompt = prompt_tpl.replace("{content}", text)
+
+    # AI_DEBUG=true 时打印实际发送的 prompt 和返回内容，排查关键词质量问题
+    ai_debug = os.getenv("AI_DEBUG", "").lower() == "true"
+    if ai_debug:
+        with _print_lock:
+            print(f"  [{label}] 🔍 AI_DEBUG prompt({len(prompt)} chars): {prompt[:500]}...", flush=True)
+            print(f"  [{label}] 🔍 AI_DEBUG transcript({len(text)} chars): {text[:200]}...", flush=True)
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -1074,6 +1082,9 @@ def step_analyze(
                 content = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
                 result = content.strip(), attempt - 1, None
                 spinner.stop()
+                if ai_debug and result[0]:
+                    with _print_lock:
+                        print(f"  [{label}] 🔍 AI_DEBUG response({len(result[0])} chars): {result[0][:500]}", flush=True)
                 with _print_lock:
                     elapsed = time.monotonic() - ai_start
                     m, s = divmod(int(elapsed), 60)
@@ -1285,34 +1296,36 @@ def step_transcode(
 
 
 def _check_whisper_available() -> bool:
-    """检测 whisper 是否可用（按 WHISPER_BACKEND 判断）"""
+    """检测 whisper 是否可用（按 WHISPER_BACKEND 判断）。
+
+    注意：whisper / whisper-ctranslate2 / funasr 等 Python CLI 的 --help 或 import
+    均会触发框架初始化（Hydra / CTranslate2 / 模型注册），耗时 5-30 秒，
+    不适合用作预检。改用轻量检测：
+      - CLI 后端 → shutil.which() 检查可执行文件是否存在（< 0.3 秒）
+      - Python API 后端 → importlib.util.find_spec() 检查包是否已安装（< 0.3 秒）
+    """
     if WHISPER_BACKEND == "local":
-        try:
-            subprocess.run(["whisper", "--help"], capture_output=True, timeout=5, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        if shutil.which("whisper"):
             return True
-        except Exception:
-            log.error("本地 whisper CLI 不可用，请确认: pip install openai-whisper")
-            return False
+        log.error("本地 whisper CLI 不可用，请确认: pip install openai-whisper")
+        return False
     elif WHISPER_BACKEND == "faster-whisper":
-        try:
-            from faster_whisper import WhisperModel  # noqa: F401
+        if importlib.util.find_spec("faster_whisper") is not None:
             return True
-        except ImportError:
-            log.error("faster-whisper 不可用，请确认: pip install faster-whisper")
-            return False
+        log.error("faster-whisper 不可用，请确认: pip install faster-whisper")
+        return False
     elif WHISPER_BACKEND == "funasr":
         if FUNASR_MODE == "service":
             try:
-                r = requests.get(FUNASR_SERVICE_URL, timeout=3)
+                requests.get(FUNASR_SERVICE_URL, timeout=3)
                 return True
             except Exception:
+                log.error(f"funasr-server 不可用（{FUNASR_SERVICE_URL}），请确认服务已启动: funasr-server")
                 return False
-        try:
-            from funasr import AutoModel  # noqa: F401
+        if importlib.util.find_spec("funasr") is not None:
             return True
-        except ImportError:
-            log.error("funasr 不可用，请确认: pip install funasr")
-            return False
+        log.error("funasr 不可用，请确认: pip install funasr modelscope")
+        return False
     else:
         try:
             r = requests.get(WHISPER_SERVICE, timeout=3)
@@ -1346,7 +1359,17 @@ def check_environment(steps: list[str]) -> dict:
         if not _check_whisper_available():
             result["whisper"] = False
             result["all_ok"] = False
-            backend = f"本地CLI" if WHISPER_BACKEND == "local" else f"服务 {WHISPER_SERVICE}"
+            if WHISPER_BACKEND == "local":
+                backend = "本地 whisper CLI"
+            elif WHISPER_BACKEND == "faster-whisper":
+                backend = "faster-whisper (faster_whisper)"
+            elif WHISPER_BACKEND == "funasr":
+                if FUNASR_MODE == "service":
+                    backend = f"funasr/service ({FUNASR_SERVICE_URL})"
+                else:
+                    backend = f"funasr/cli ({FUNASR_MODEL})"
+            else:
+                backend = f"service {WHISPER_SERVICE}"
             result["issues"].append(f"whisper 不可用 ({backend})")
 
     if "analyze" in steps:
@@ -1378,8 +1401,13 @@ def step_transcribe(
             backend_info = "本地 whisper CLI"
         elif WHISPER_BACKEND == "faster-whisper":
             backend_info = "faster-whisper (faster_whisper)"
+        elif WHISPER_BACKEND == "funasr":
+            if FUNASR_MODE == "service":
+                backend_info = f"funasr/service ({FUNASR_SERVICE_URL})"
+            else:
+                backend_info = f"funasr/cli ({FUNASR_MODEL})"
         else:
-            backend_info = WHISPER_SERVICE
+            backend_info = f"service {WHISPER_SERVICE}"
         msg = f"whisper 不可用 ({backend_info})"
         log.warning(f"[{stem}] {msg}")
         return None, 0, msg
@@ -2302,13 +2330,16 @@ def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) ->
         # whisper
         if "transcribe" in steps:
             if WHISPER_BACKEND == "local":
-                backend_info = "本地CLI"
+                backend_info = "本地 whisper CLI"
             elif WHISPER_BACKEND == "faster-whisper":
                 backend_info = "faster-whisper (faster_whisper)"
             elif WHISPER_BACKEND == "funasr":
-                backend_info = f"funasr/{FUNASR_MODE} ({FUNASR_MODEL})"
+                if FUNASR_MODE == "service":
+                    backend_info = f"funasr/service ({FUNASR_SERVICE_URL})"
+                else:
+                    backend_info = f"funasr/cli ({FUNASR_MODEL})"
             else:
-                backend_info = WHISPER_SERVICE
+                backend_info = f"service {WHISPER_SERVICE}"
             if env["whisper"]:
                 print(f"  ✅ whisper ({backend_info}): 可用")
             else:
