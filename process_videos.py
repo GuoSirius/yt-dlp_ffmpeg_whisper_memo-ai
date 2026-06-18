@@ -1598,7 +1598,22 @@ def _transcribe_faster_whisper(
             "temperature": float(WHISPER_TEMPERATURE),
         }
         if WHISPER_TEMPERATURE_INC:
-            transcribe_kwargs["temperature_increment_on_fallback"] = float(WHISPER_TEMPERATURE_INC)
+            # faster-whisper 不支持 temperature_increment_on_fallback（原始 whisper 参数）
+            # 改为构建 temperature 列表实现相同效果，如 [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+            try:
+                base_temp = float(WHISPER_TEMPERATURE)
+            except (ValueError, TypeError):
+                base_temp = 0.0
+            try:
+                inc = float(WHISPER_TEMPERATURE_INC)
+            except (ValueError, TypeError):
+                inc = 0.2
+            if inc > 0:
+                temps = [round(base_temp + i * inc, 2) for i in range(6)]
+                # 去重并限制在 [0, 1] 范围内
+                temps = sorted(set(max(0.0, min(1.0, t)) for t in temps))
+                transcribe_kwargs["temperature"] = temps
+            # inc == 0 时不做处理，使用原 base_temp 单值
         if WHISPER_LANGUAGE:
             transcribe_kwargs["language"] = WHISPER_LANGUAGE
         if WHISPER_TASK:
@@ -1619,6 +1634,8 @@ def _transcribe_faster_whisper(
         # 从 WHISPER_EXTRA_ARGS 解析额外参数（支持 CLI 覆盖）
         if _resolved_whisper_extra_args:
             transcribe_kwargs = _apply_fw_extra_args(transcribe_kwargs, _resolved_whisper_extra_args)
+        # faster-whisper 不支持 temperature_increment_on_fallback，清理掉（已由上面的 WHISPER_TEMPERATURE_INC 逻辑转换为 temperature 列表）
+        transcribe_kwargs.pop("temperature_increment_on_fallback", None)
 
         segments_iter, info = model.transcribe(str(audio_file), **transcribe_kwargs)
 
