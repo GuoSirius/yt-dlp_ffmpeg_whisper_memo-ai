@@ -4,8 +4,7 @@
 
 ### Bug Fixes
 
-- 修复 Windows 下 Python 版 yt-dlp 报 UnicodeEncodeError (latin-1 编码) (`26063cc`)
-- 修复 Windows 下 yt-dlp 报 UnicodeEncodeError (latin-1 编码) (`ebbdd2c`)
+- 修复 Python 版 .env 加载时行内注释被读入环境变量值中（如 WHISPER_MODEL_DIR 创建含注释的目录）
 - 还原 progress（原意是进度），删除错误的 processes 拼写 (`f2f95eb`)
 - 删除 py 重复的 FunASR 参数定义; yt-dlp 加 --no-update 和 --socket-timeout 60 修复编码报错和超时 (`2031fb8`)
 
