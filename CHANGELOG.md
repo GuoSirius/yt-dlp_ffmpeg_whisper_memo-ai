@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.4] - 2026-06-18
+
+### Chores
+
+- update before release (`5048c9a`)
+
+
 ## [1.5.3] - 2026-06-18
 
 ### Bug Fixes
