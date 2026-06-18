@@ -60,7 +60,7 @@ let TRANSCODED_DIR   = path.join(OUTPUT_DIR, 'transcoded');  // ffmpeg 转出的
 let TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts'); // whisper 识别文本（断点续跑校验依据）
 let KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');    // AI 关键词
 let REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');     // 执行报告 JSON
-let PROCESSES_DIR   = path.join(OUTPUT_DIR, 'processes'); // 增量进度 JSON
+let PROGRESS_DIR   = path.join(OUTPUT_DIR, 'progress'); // 增量进度 JSON
 let LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');        // 运行日志/console-ui 输出
 
 /**
@@ -74,9 +74,9 @@ function applyOutputDir(newRoot, logFn) {
   TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts');
   KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');
   REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');
-  PROCESSES_DIR   = path.join(OUTPUT_DIR, 'processes');
+  PROGRESS_DIR   = path.join(OUTPUT_DIR, 'progress');
   LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');
-  for (const d of [DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROCESSES_DIR, LOGS_DIR]) {
+  for (const d of [DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   if (logFn) logFn(`输出根目录覆盖为: ${OUTPUT_DIR}`);
@@ -518,8 +518,8 @@ function keywordsPath(sheetName, stem) {
   return path.join(d, `${stem}.txt`);
 }
 
-function processesPath(sheetName, stem) {
-  const d = path.join(PROCESSES_DIR, sheetName);
+function progressPath(sheetName, stem) {
+  const d = path.join(PROGRESS_DIR, sheetName);
   fs.mkdirSync(d, { recursive: true });
   return path.join(d, `task_${stem}.json`);
 }
@@ -546,12 +546,12 @@ function validateKeywordsText(text) {
 }
 
 function loadTaskProgress(sheetName, stem) {
-  const p = processesPath(sheetName, stem);
+  const p = progressPath(sheetName, stem);
   if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
   } catch (e) {
-    logWarn(`processes JSON 解析失败 ${p}: ${e.message}`);
+    logWarn(`progress JSON 解析失败 ${p}: ${e.message}`);
     return null;
   }
 }
@@ -1834,15 +1834,15 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
 // ============================== 增量进度写回 ==============================
 
 /**
- * 每完成一个任务立即写入 processes JSON + 实时回写 Excel。
+ * 每完成一个任务立即写入 progress JSON + 实时回写 Excel。
  *
- * 目录结构: output/processes/{sheet}/task_{stem}.json
+ * 目录结构: output/progress/{sheet}/task_{stem}.json
  * 文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
  */
 async function saveTaskProgress(result) {
-  const processesDir = path.join(PROCESSES_DIR, result.sheet);
-  fs.mkdirSync(processesDir, { recursive: true });
-  const processesFile = path.join(processesDir, `task_${result.stem}.json`);
+  const progressDir = path.join(PROGRESS_DIR, result.sheet);
+  fs.mkdirSync(progressDir, { recursive: true });
+  const progressFile = path.join(progressDir, `task_${result.stem}.json`);
 
   const content = (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string')
     ? result.transcribe.file : null;
@@ -1885,10 +1885,10 @@ async function saveTaskProgress(result) {
     timestamp: new Date().toISOString(),
   };
 
-  fs.writeFileSync(processesFile, JSON.stringify(data, null, 2), 'utf-8');
+  fs.writeFileSync(progressFile, JSON.stringify(data, null, 2), 'utf-8');
 
-  // 打印简短提示（使用动态 PROCESSES_DIR 而非硬编码路径）
-  const relPath = path.relative(BASE_DIR, processesFile).replace(/\\/g, '/');
+  // 打印简短提示（使用动态 PROGRESS_DIR 而非硬编码路径）
+  const relPath = path.relative(BASE_DIR, progressFile).replace(/\\/g, '/');
   const infoParts = [result.overall_status];
   if (content) infoParts.push(`content(${content.length} chars)`);
   if (keywords) infoParts.push(`keywords(${keywords.length} chars)`);
@@ -1908,7 +1908,7 @@ async function saveTaskProgress(result) {
       try { writeExcelCellByKey(result.sheet, String(result.id_val), COL_CONTENT, content); }
       finally { release(); }
     } catch (e) {
-      logWarn(`[${result.stem}] 实时写 Excel content 失败（不影响 processes JSON）: ${e.message}`);
+      logWarn(`[${result.stem}] 实时写 Excel content 失败（不影响 progress JSON）: ${e.message}`);
     }
   }
   if (keywords) {
@@ -1917,7 +1917,7 @@ async function saveTaskProgress(result) {
       try { writeExcelCellByKey(result.sheet, String(result.id_val), COL_KEYWORDS, keywords); }
       finally { release(); }
     } catch (e) {
-      logWarn(`[${result.stem}] 实时写 Excel keywords 失败（不影响 processes JSON）: ${e.message}`);
+      logWarn(`[${result.stem}] 实时写 Excel keywords 失败（不影响 progress JSON）: ${e.message}`);
     }
   }
 }
@@ -2197,7 +2197,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
     }
     if (skipSteps.size) {
       lockedPrint(c('cyan', `  ♻️ 断点续跑：跳过已完成步骤 ${[...skipSteps].sort()}`)
-        + c('dim', `  [来源: processes JSON]`));
+        + c('dim', `  [来源: progress JSON]`));
     }
   }
 
@@ -3017,7 +3017,7 @@ async function run({
     }
   }
 
-  // ── 断点续跑：扫描 processes JSON，统计将跳过的任务/步骤数 ──
+  // ── 断点续跑：扫描 progress JSON，统计将跳过的任务/步骤数 ──
   if (!force) {
     let skippedTasks = 0, resumeTasks = 0;
     for (const { row, sheetName } of tasks) {
@@ -3333,7 +3333,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
     .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）')
-    .option('--output <dir>', '指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/processes/logs 自动创建）')
+    .option('--output <dir>', '指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/progress/logs 自动创建）')
     .option('--whisper-initial-prompt <text|path>', 'Whisper 初始提示词（文本或文件路径，CLI 优先级最高）')
     .option('--ai-prompt <text|path>', 'AI 分析提示词模板（文本或文件路径，CLI 优先级最高）')
     .option('--whisper-extra-args <args>', 'Whisper 额外参数（shell 字符串，如 "--beam_size 5 --best_of 5"，最高优先级且自动去重）')
