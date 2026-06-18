@@ -72,43 +72,7 @@ if "--env-file" in sys.argv:
     _idx = sys.argv.index("--env-file")
     if _idx + 1 < len(sys.argv):
         _env_file = sys.argv[_idx + 1]
-
-# 自定义 .env 加载：正确剥离行内注释（# 及之后内容，仅当 # 前有空白字符时）
-# 原生 python-dotenv 不处理行内注释，导致空值变量把注释读入值中（如创建含注释的目录）
-def _load_env_with_inline_comment_support(filepath):
-    if not os.path.exists(filepath):
-        return
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    # 逐行处理：去掉「空白字符 + #」后面的行内注释（不处理值本身含 # 的情况）
-    lines = content.split('\n')
-    cleaned_lines = []
-    for line in lines:
-        # 只处理 key=value 行
-        if '=' in line and not line.strip().startswith('#'):
-            # 找到第一个「空白 + #」的位置（行内注释标记）
-            # 简单处理：查找 " #" 的位置（空格 + #）
-            comment_pos = line.find(' #')
-            if comment_pos != -1:
-                line = line[:comment_pos]
-        cleaned_lines.append(line)
-    cleaned_content = '\n'.join(cleaned_lines)
-    # 简单解析 KEY=VALUE（不依赖 dotenv.parse）
-    for line in cleaned_content.split('\n'):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if '=' in line:
-            key, value = line.split('=', 1)
-            key = key.strip()
-            value = value.strip()
-            # 去掉值两端的引号（如果有）
-            if (value.startswith('"') and value.endswith('"')) or \
-               (value.startswith("'") and value.endswith("'")):
-                value = value[1:-1]
-            os.environ[key] = value
-
-_load_env_with_inline_comment_support(_env_file)
+load_dotenv(dotenv_path=_env_file, override=True)
 
 # ─────────────────────────────── 路径配置 ───────────────────────────────────
 
