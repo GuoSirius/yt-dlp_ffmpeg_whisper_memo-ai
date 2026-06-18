@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.1] - 2026-06-18
+
+### Bug Fixes
+
+- 修复 faster-whisper 和 funasr CLI 实际识别参数错误 (`c43435a`)
+- 修复 ASR 后端预检误报不可用及 JS replace 特殊字符 bug (`5239326`)
+
+### Chores
+
+- 添加 outputs/ 到 .gitignore（funasr Hydra 自动生成） (`a3609d4`)
+
+
 ## [Unreleased]
 
 ### Bug Fixes
