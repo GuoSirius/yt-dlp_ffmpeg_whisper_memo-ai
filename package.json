@@ -1,6 +1,6 @@
 {
   "name": "video-pipeline",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "视频下载、转码、文本识别、AI 关键词分析一体化流程 CLI 工具",
   "keywords": [
     "video",

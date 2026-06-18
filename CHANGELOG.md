@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.5.2] - 2026-06-18
+
+### Bug Fixes
+
+- 修复 Windows 下 Python 版 yt-dlp 报 UnicodeEncodeError (latin-1 编码) (`26063cc`)
+- 修复 Windows 下 yt-dlp 报 UnicodeEncodeError (latin-1 编码) (`ebbdd2c`)
+- 还原 progress（原意是进度），删除错误的 processes 拼写 (`f2f95eb`)
+- 删除 py 重复的 FunASR 参数定义; yt-dlp 加 --no-update 和 --socket-timeout 60 修复编码报错和超时 (`2031fb8`)
+
+### Refactoring
+
+- 将 yt-dlp --user-agent 从硬编码改为可配置 (`82587cc`)
+- 将 progress 目录/变量/函数统一重命名为 processes (`f41cba8`)
+
+### Documentation
+
+- 新增 HF_ENDPOINT 配置项，解决 faster-whisper/funasr 国内网络下载 HuggingFace 模型失败问题 (`f833e6b`)
+
+### Chores
+
+- update before release (`bdd5d3f`)
+- update before release (`531dcc0`)
+- 更新 CHANGELOG [Unreleased] 记录 progress→processes 重命名及 yt-dlp 修复 (`2db96bf`)
+
+
 ## [1.5.1] - 2026-06-18
 
 ### Bug Fixes
