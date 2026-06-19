@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.7] - 2026-06-19
+
+### Bug Fixes
+
+- 统一各步骤 else 回退，支持任意 --step 组合 + --force (`af285fb`)
+- --step analyze --force 单独执行时从磁盘回退加载 transcript (`24d2fa5`)
+
+### Refactoring
+
+- lean-coding skill v2 极简重写 (`e912290`)
+
+### Chores
+
+- update before release (`69a08f1`)
+
+
 ## [1.5.6] - 2026-06-19
 
 ### Bug Fixes
