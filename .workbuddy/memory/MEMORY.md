@@ -15,10 +15,11 @@
 - **7 个固定子目录**（代码内写死）：`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`
 - **COOKIES_DIR 独立**（`data/cookies`），启动时一次性 `mkdir` 7 个子目录
 
-## 断点续跑（Resume）机制（2026-06-16 实施）
+## 断点续跑（Resume）机制（2026-06-16 实施，2026-06-19 统一 else 回退）
 **核心原则**：transcribe/analyze 不允许"半成功"——要么完整产物落盘 + 校验通过，要么清理掉。
 - 产物路径：下载 `downloads/{sheet}/{stem}.mp4` / 转码 `transcoded/{sheet}/{stem}_transcoded.mp4` / **识别文本** `transcripts/{sheet}/{stem}.txt` / **关键词** `keywords/{sheet}/{stem}.txt` / 进度 `progress/{sheet}/task_{stem}.json`
 - 跳过判定：download/transcode 看 file 存在+size>0；transcribe 看 transcript ≥ `MIN_TRANSCRIPT_CHARS`(50)；analyze 看 keywords ≥ `MIN_KEYWORDS_CHARS`(5)；校验失败 → 降级重做
+- **else 回退（2026-06-19 统一）**：每个步骤不在 `--step` 列表时，从磁盘加载前序产物（download→find_downloaded_file / transcode→TRANSCODED_DIR / transcribe→transcript_path），支持 `--step <任意组合> --force`
 - 失败不留尾巴：download 清理 `*.part`/`.ytdl`；transcode 清理 0 字节；transcribe/analyze 清理落盘文件
 - Excel 实时写回：每条完成立即 `write_excel_cell`(Py) / `writeExcelCellByKey`(JS)；Py `_excel_lock` 串行；JS `acquireExcelLock()` 队列
 
