@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.6] - 2026-06-19
+
+### Bug Fixes
+
+- 限制关键词最多 30 个，禁止 AI 联想扩展 (`e12074e`)
+- excel 写入前截断超过 32767 字符的内容 (`cd36a87`)
+
+### Refactoring
+
+- 统一优化五处 AI 提示词，对齐 sshk.md 结构 (`1659200`)
+
+### Chores
+
+- optimize prompt (`71244c1`)
+
+
 ## [1.5.5] - 2026-06-18
 
 ### Bug Fixes
