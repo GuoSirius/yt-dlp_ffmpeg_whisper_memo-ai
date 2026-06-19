@@ -2899,7 +2899,7 @@ def _generate_report_for_result(result, config, sheet_name=None):
 
 def run(
     target_sheet: str | None,
-    target_id: str | None,
+    target_ids: list[str] | None,
     steps: list[str],
     max_retries: int,
     retry_delay: float,
@@ -2927,20 +2927,21 @@ def run(
     tasks = []
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
-        if target_id:
+        if target_ids:
             mask = pd.Series([False] * len(df))
-            if COL_ID in df.columns:
-                try:
-                    mask = mask | (df[COL_ID].apply(
-                        lambda x: str(int(float(x))) if pd.notna(x) else ""
-                    ) == str(target_id))
-                except Exception:
-                    pass
-            if COL_TITLE in df.columns:
-                mask = mask | (df[COL_TITLE].astype(str) == str(target_id))
+            for _tid in target_ids:
+                if COL_ID in df.columns:
+                    try:
+                        mask = mask | (df[COL_ID].apply(
+                            lambda x: str(int(float(x))) if pd.notna(x) else ""
+                        ) == str(_tid))
+                    except Exception:
+                        pass
+                if COL_TITLE in df.columns:
+                    mask = mask | (df[COL_TITLE].astype(str) == str(_tid))
             df = df[mask]
             if df.empty:
-                log.error(f"Sheet [{sheet_name}] 中找不到 id/title = {target_id}")
+                log.error(f"Sheet [{sheet_name}] 中找不到 id/title = {target_ids}")
                 continue
         # 预计算 stems（同 sheet 内去重）
         precompute_stems(df, sheet_name)
@@ -3642,7 +3643,8 @@ if __name__ == "__main__":
         """,
     )
     parser.add_argument("--sheet", help="指定 sheet 名称（默认全部视频 sheet）")
-    parser.add_argument("--id", dest="vid_id", help="指定 extra.id 或 title（单条测试）")
+    parser.add_argument("--id", dest="vid_ids", action="append", default=[],
+                        help="指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）")
     parser.add_argument("--offset", type=int, default=0, help="跳过前 N 条任务（从 0 开始），默认 0")
     parser.add_argument("--limit", type=int, default=0, help="最多处理 N 条任务，默认 0 表示无限制")
     parser.add_argument(
@@ -4014,7 +4016,7 @@ if __name__ == "__main__":
 
     run(
         target_sheet=args.sheet,
-        target_id=args.vid_id,
+        target_ids=[s for v in (args.vid_ids or []) for s in str(v).split(",")] or None,
         steps=steps,
         offset=args.offset,
         limit=args.limit,

@@ -2984,7 +2984,7 @@ async function runUrlTask(opts) {
 }
 
 async function run({
-  targetSheet, targetId, contentColumn, steps, maxRetries, retryDelay,
+  targetSheet, targetIds, contentColumn, steps, maxRetries, retryDelay,
   concurrency, force, dryRun, retryFailed,
   downloadTimeout, transcodeTimeout, transcribeTimeout, analyzeTimeout,
   offset = 0, rowLimit = 0,
@@ -3000,18 +3000,19 @@ async function run({
   let tasks = [];
   for (const sheetName of sheets) {
     let rows = readExcelSheet(sheetName);
-    if (targetId) {
+    if (targetIds && targetIds.length) {
+      const idSet = targetIds.map(String);
       rows = rows.filter(row => {
         if (row[COL_ID] != null) {
           try {
-            if (String(Math.floor(Number(row[COL_ID]))) === String(targetId)) return true;
+            if (idSet.includes(String(Math.floor(Number(row[COL_ID]))))) return true;
           } catch { }
         }
-        if (String(row[COL_TITLE]) === String(targetId)) return true;
+        if (idSet.includes(String(row[COL_TITLE]))) return true;
         return false;
       });
       if (!rows.length) {
-        logError(`Sheet [${sheetName}] no match for id/title = ${targetId}`);
+        logError(`Sheet [${sheetName}] no match for id/title = ${idSet.join(', ')}`);
         continue;
       }
     }
@@ -3128,7 +3129,7 @@ async function run({
 
   // ── 生成报告 ──
   const config = {
-    sheets, target_id: targetId, steps, max_retries: maxRetries,
+    sheets, target_ids: targetIds, steps, max_retries: maxRetries,
     retry_delay: retryDelay, concurrency, force,
   };
   const reportPaths = generateReport(results, config);
@@ -3351,7 +3352,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .name('process_videos')
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .option('--sheet <name>', '指定 sheet 名称')
-    .option('--id <id>', '指定 extra.id 或 title（单条测试）')
+    .option('--id <id>', '指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）', (val, prev) => {
+      const parts = String(val).split(',').map(s => s.trim()).filter(Boolean);
+      return [...(prev || []), ...parts];
+    }, [])
     .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', v => parseInt(v, 10), 0)
     .option('--limit <n>', '最多处理 N 条任务，默认无限制', v => parseInt(v, 10), 0)
     .option('--step <step>', '指定执行步骤（可多次指定），如 --step transcode --step transcribe', (val, prev) => {
@@ -3704,7 +3708,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
   run({
     targetSheet: opts.sheet || null,
-    targetId: opts.id || null,
+    targetIds: opts.id || [],
     contentColumn: opts.contentColumn || null,
     steps,
     offset: opts.offset || 0,
