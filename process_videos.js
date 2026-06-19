@@ -2333,12 +2333,8 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
     // 落盘 transcript（断点续跑校验依据）
     try { fs.writeFileSync(transcriptPath(sheetName, stem), result.transcribe.file, 'utf-8'); }
     catch (e) { logWarn(`[${stem}] 写入 transcript 失败: ${e.message}`); }
-  }
-
-  // ── AI analyze ──
-  // 当只指定 --step analyze 时，transcribe 本轮未执行（status='skipped'），
-  // 需要回退读取已落盘的 transcript 文件，以支持单独重跑 analyze。
-  if (steps.includes('analyze') && result.transcribe.status === 'skipped' && result.transcribe.file === null) {
+  } else {
+    // 回退：transcribe 不在 steps 中（或无音频文件）时，从磁盘加载已落盘的 transcript
     const _tp = transcriptPath(sheetName, stem);
     if (fs.existsSync(_tp)) {
       try {
@@ -2346,11 +2342,13 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
         const v = validateTranscriptText(_cached);
         if (v.ok) {
           result.transcribe = new StepResult('success', _cached, null, 0);
-          logInfo(`[${stem}] analyze 回退：从磁盘加载 transcript (${_cached.length} 字符)`);
+          logInfo(`[${stem}] transcribe 未执行，从磁盘加载 transcript (${_cached.length} 字符)`);
         }
       } catch (e) { /* ignore */ }
     }
   }
+
+  // ── AI analyze ──
   if (steps.includes('analyze') && result.transcribe.status === 'success') {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
@@ -2650,7 +2648,23 @@ async function runInputTask(opts) {
       }
     }
   } else {
-    result.transcribe = new StepResult('skipped');
+    // 回退：transcribe 不在 steps 中时，从磁盘加载已落盘的 transcript
+    const _tp = transcriptPath(sheetName, usedStem);
+    if (fs.existsSync(_tp)) {
+      try {
+        const _cached = fs.readFileSync(_tp, 'utf-8');
+        const v = validateTranscriptText(_cached);
+        if (v.ok) {
+          transcribeText = _cached;
+          result.transcribe = new StepResult('success', _cached, null, 0);
+          logInfo(`[${usedStem}] transcribe 未执行，从磁盘加载 transcript (${_cached.length} 字符)`);
+        } else {
+          result.transcribe = new StepResult('skipped');
+        }
+      } catch (e) { result.transcribe = new StepResult('skipped'); }
+    } else {
+      result.transcribe = new StepResult('skipped');
+    }
   }
 
   // ── AI analyze ──

@@ -2684,26 +2684,20 @@ def process_one_task(
             tp.write_text(result.transcribe.file, encoding="utf-8")
         except OSError as e:
             log.warning(f"[{stem}] 写入 transcript 失败: {e}")
+    else:
+        # 回退：transcribe 不在 steps 中（或无音频文件）时，从磁盘加载已落盘的 transcript
+        _tp = transcript_path(sheet_name, stem)
+        if _tp.exists():
+            try:
+                _cached = _tp.read_text(encoding="utf-8")
+                ok, _ = validate_transcript_text(_cached)
+                if ok:
+                    result.transcribe = StepResult("success", file=_cached)
+                    log.info(f"[{stem}] transcribe 未执行，从磁盘加载 transcript ({len(_cached)} 字符)")
+            except OSError:
+                pass
 
     # ── AI 分析（transcribe 之后执行）──
-    # 当只指定 --step analyze 时，transcribe 本轮未执行（status="skipped"），
-    # 需要回退读取已落盘的 transcript 文件，以支持单独重跑 analyze。
-    if "analyze" in steps and result.transcribe.status in ("success", "skipped"):
-        # 优先用本轮 transcribe 结果，否则从磁盘加载已有 transcript
-        if result.transcribe.status == "skipped" and result.transcribe.file is None:
-            _tp = transcript_path(sheet_name, stem)
-            if _tp.exists():
-                try:
-                    _cached = _tp.read_text(encoding="utf-8")
-                    ok, _ = validate_transcript_text(_cached)
-                    if ok:
-                        result.transcribe = StepResult("success", file=_cached)
-                        log.info(f"[{stem}] analyze 回退：从磁盘加载 transcript ({len(_cached)} 字符)")
-                except OSError:
-                    pass
-        # 如果仍然没有可用文本，跳过
-        if result.transcribe.status != "success":
-            result.analyze = StepResult("skipped", error="无可用 transcript（transcribe 未执行且磁盘无缓存）")
     if "analyze" in steps and result.transcribe.status == "success":
         ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
         if ai_enabled:
@@ -3450,12 +3444,22 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             result.error = f'转码成功但识别失败: {err}'
             return result
     else:
-        result.transcribe = StepResult('skipped')
+        # 回退：transcribe 不在 steps 中时，从磁盘加载已落盘的 transcript
+        _tp = transcript_path(sheet_name, result.stem)
+        if _tp.exists():
+            try:
+                _cached = _tp.read_text(encoding="utf-8")
+                ok, _ = validate_transcript_text(_cached)
+                if ok:
+                    result.transcribe = StepResult("success", file=_cached)
+                    log.info(f"[{result.stem}] transcribe 未执行，从磁盘加载 transcript ({len(_cached)} 字符)")
+            except OSError:
+                pass
 
     # ── AI 分析 ──
     if 'analyze' in steps:
         if result.transcribe.status != 'success':
-            result.analyze = StepResult('skipped', error='识别步骤未成功，跳过 AI 分析')
+            result.analyze = StepResult('skipped', error='无可用 transcript（transcribe 未执行且磁盘无缓存）')
         else:
             try:
                 ai_start = time.monotonic()
