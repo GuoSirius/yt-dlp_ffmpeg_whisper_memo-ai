@@ -55,13 +55,13 @@ const COOKIES_DIR = envPath('COOKIES_DIR', 'data/cookies');
 
 // ── 输出根目录 + 7 个固定子目录（子目录名不可通过 env 覆盖）──
 let OUTPUT_DIR = envPath('OUTPUT_DIR', 'output');
-let DOWNLOADS_DIR    = path.join(OUTPUT_DIR, 'downloads');   // yt-dlp 原始下载
-let TRANSCODED_DIR   = path.join(OUTPUT_DIR, 'transcoded');  // ffmpeg 转出的音频
-let TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts'); // whisper 识别文本（断点续跑校验依据）
-let KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');    // AI 关键词
-let REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');     // 执行报告 JSON
-let PROGRESS_DIR   = path.join(OUTPUT_DIR, 'progress'); // 增量进度 JSON
-let LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');        // 运行日志/console-ui 输出
+let DOWNLOADS_DIR = path.join(OUTPUT_DIR, 'downloads');   // yt-dlp 原始下载
+let TRANSCODED_DIR = path.join(OUTPUT_DIR, 'transcoded');  // ffmpeg 转出的音频
+let TRANSCRIPTS_DIR = path.join(OUTPUT_DIR, 'transcripts'); // whisper 识别文本（断点续跑校验依据）
+let KEYWORDS_DIR = path.join(OUTPUT_DIR, 'keywords');    // AI 关键词
+let REPORTS_DIR = path.join(OUTPUT_DIR, 'reports');     // 执行报告 JSON
+let PROGRESS_DIR = path.join(OUTPUT_DIR, 'progress'); // 增量进度 JSON
+let LOGS_DIR = path.join(OUTPUT_DIR, 'logs');        // 运行日志/console-ui 输出
 
 /**
  * 用 --output / OUTPUT_DIR 指定的根目录覆盖所有 7 个子目录常量。
@@ -69,13 +69,13 @@ let LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');        // 运行日志/con
  */
 function applyOutputDir(newRoot, logFn) {
   OUTPUT_DIR = newRoot;
-  DOWNLOADS_DIR    = path.join(OUTPUT_DIR, 'downloads');
-  TRANSCODED_DIR   = path.join(OUTPUT_DIR, 'transcoded');
-  TRANSCRIPTS_DIR  = path.join(OUTPUT_DIR, 'transcripts');
-  KEYWORDS_DIR     = path.join(OUTPUT_DIR, 'keywords');
-  REPORTS_DIR      = path.join(OUTPUT_DIR, 'reports');
-  PROGRESS_DIR   = path.join(OUTPUT_DIR, 'progress');
-  LOGS_DIR         = path.join(OUTPUT_DIR, 'logs');
+  DOWNLOADS_DIR = path.join(OUTPUT_DIR, 'downloads');
+  TRANSCODED_DIR = path.join(OUTPUT_DIR, 'transcoded');
+  TRANSCRIPTS_DIR = path.join(OUTPUT_DIR, 'transcripts');
+  KEYWORDS_DIR = path.join(OUTPUT_DIR, 'keywords');
+  REPORTS_DIR = path.join(OUTPUT_DIR, 'reports');
+  PROGRESS_DIR = path.join(OUTPUT_DIR, 'progress');
+  LOGS_DIR = path.join(OUTPUT_DIR, 'logs');
   for (const d of [DOWNLOADS_DIR, TRANSCODED_DIR, TRANSCRIPTS_DIR, KEYWORDS_DIR, REPORTS_DIR, PROGRESS_DIR, LOGS_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
@@ -1053,7 +1053,7 @@ async function stepAnalyze(text, maxRetries, retryDelay, timeout = 300, label = 
   // CLI > .env > 内置默认；resolvePromptValue 自动处理文件路径和 \n 转义
   const promptTpl = _cliAiPrompt
     || resolvePromptValue(process.env.AI_PROMPT_TPL)
-    || '你是生物医药多语言内容分析与ASR纠错专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正与术语消歧】语音识别（Whisper）在处理专业内容时极易出错。请在理解上下文的基础上，激活生物医药专业词典进行以下修正（仅内部推理使用，不改变原文语义，不添加新内容）：\n- 同音/近音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"、"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"、"质粒"误为"智力"、"表达量"误为"表大量"。\n- 形近字混淆：如"印迹"误为"印记"、"缓冲液"误为"缓冲夜"、"核酸"误为"核算"、"测序"误为"侧序"。\n- 英文缩写与发音误判：如将"PCR"误识为中文或乱码，将"CRISPR"误识为"克里斯普"，需根据上下文还原为标准英文缩写。\n边界约束：仅修正确实存在明显错误的词汇，保持原文行文逻辑不变。\n\n【第二步：关键词提取规则】基于修正后的文本，严格遵循以下语言判定与提取规则：\n\n【语言判定】\n- 统计文本中的中文字符数与英文字母数\n- 中文占比 > 60% → 按纯中文规则处理\n- 英文占比 > 60% → 按纯英文规则处理\n- 两者均不满足 → 按中英混合规则处理\n\n【纯中文内容】\n- 只提取文本中明确出现或直接体现的关键词，最多 30 个，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的专有名词、技术短语或核心概念\n- 过滤单字及无意义泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 只提取文本中明确出现或直接体现的关键词，最多 30 个，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的专业术语、基因/蛋白名称或实验方法等\n- 过滤单字及无意义泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 只提取文本中明确出现或直接体现的关键词，最多 30 个\n- 语种隔离原则：中文关键词必须是中文，英文关键词必须是英文，互不翻译且严禁中英混杂\n- 排序原则：中文关键词置于前，英文关键词置于后，统一用英文逗号分隔\n\n通用规则：严禁凭空联想、扩展或编造文本中未出现的概念，宁少勿多。最终只输出以英文逗号分隔的关键词列表，不包含任何解释性文字。这是内容：{content}';
+    || '你是生物医药多语言内容分析与ASR纠错专家。对以下视频转录文本提取搜索关键词。\n\n【第一步：语义修正与术语消歧】语音识别（Whisper）在处理专业内容时极易出错。请在理解上下文的基础上，激活生物医药专业词典进行以下修正（仅内部推理使用，不改变原文语义，不添加新内容）：\n- 同音/近音错字：如"冻存"误为"洞存"、"储存"误为"铸存"、"传代"误为"传带"、"复苏"误为"复舒"、"抗体"误为"康体"、"细胞株"误为"细胞珠"、"培养基"误为"培养鸡"、"质粒"误为"智力"、"表达量"误为"表大量"。\n- 形近字混淆：如"印迹"误为"印记"、"缓冲液"误为"缓冲夜"、"核酸"误为"核算"、"测序"误为"侧序"。\n- 英文缩写与发音误判：如将"PCR"误识为中文或乱码，将"CRISPR"误识为"克里斯普"，需根据上下文还原为标准英文缩写。\n边界约束：仅修正确实存在明显错误的词汇，保持原文行文逻辑不变。\n\n【第二步：关键词提取规则】基于修正后的文本，严格遵循以下语言判定与提取规则：\n\n【语言判定】\n- 统计文本中的中文字符数与英文字母数\n- 中文占比 > 60% → 按纯中文规则处理\n- 英文占比 > 60% → 按纯英文规则处理\n- 两者均不满足 → 按中英混合规则处理\n\n【纯中文内容】\n- 只提取文本中明确出现或直接体现的、具备实际搜索价值的关键词，数量不限，但是不能重复和凭空捏造、联想、扩展，用英文逗号分隔\n- 关键词必须全部是中文，绝对不能翻译成英文\n- 优先提取 2-8 字的专有名词、技术短语或核心概念\n- 过滤单字及无意义泛词（如"的""是""这个""一个"等）\n\n【纯英文内容】\n- 只提取文本中明确出现或直接体现的、具备实际搜索价值的关键词，数量不限，但是不能重复和凭空捏造、联想、扩展，用英文逗号分隔\n- 关键词必须全部是英文，绝对不能翻译成中文\n- 优先提取 2-8 词的专业术语、基因/蛋白名称或实验方法等\n- 过滤单字及无意义泛词（如"the""this""is""a"等）\n\n【中英混合内容】\n- 只提取文本中明确出现或直接体现的、具备实际搜索价值的关键词，数量不限，但是不能重复和凭空捏造、联想、扩展\n- 语种隔离原则：中文关键词必须是中文，英文关键词必须是英文，互不翻译且严禁中英混杂\n- 排序原则：中文关键词置于前，英文关键词置于后，统一用英文逗号分隔\n\n通用规则：严禁凭空联想、扩展或编造文本中未出现的概念，宁少勿多。最终只输出以英文逗号分隔的关键词列表，不包含任何解释性文字。这是内容：{content}';
   const aiTemperature = parseFloat(process.env.AI_TEMPERATURE || '0.3');
   const aiTimeout = timeout;
 
@@ -1402,7 +1402,7 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   const transcribeStart = Date.now();
 
   const whisperOk = await checkWhisperAvailable();
-    if (!whisperOk) {
+  if (!whisperOk) {
     let backend;
     if (WHISPER_BACKEND === 'local') backend = 'local CLI';
     else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
@@ -1430,7 +1430,7 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
       modelLabel = path.basename(FUNASR_SERVICE_MODEL) || '(server default)';
     } else {
       const _m = [FUNASR_MODEL];
-      if (FUNASR_VAD_MODEL)  _m.push(FUNASR_VAD_MODEL);
+      if (FUNASR_VAD_MODEL) _m.push(FUNASR_VAD_MODEL);
       if (FUNASR_PUNC_MODEL) _m.push(FUNASR_PUNC_MODEL);
       modelLabel = _m.join('+');
     }
@@ -1654,12 +1654,12 @@ async function transcribeFunasrCli(audioFile, stem, maxRetries, retryDelay, time
       `++model=${FUNASR_MODEL}`,
       `++input=${actualInput}`,
     ];
-    if (FUNASR_VAD_MODEL)    args.push(`++vad_model=${FUNASR_VAD_MODEL}`);
-    if (FUNASR_PUNC_MODEL)   args.push(`++punc_model=${FUNASR_PUNC_MODEL}`);
-    if (FUNASR_SPK_MODEL)    args.push(`++spk_model=${FUNASR_SPK_MODEL}`);
+    if (FUNASR_VAD_MODEL) args.push(`++vad_model=${FUNASR_VAD_MODEL}`);
+    if (FUNASR_PUNC_MODEL) args.push(`++punc_model=${FUNASR_PUNC_MODEL}`);
+    if (FUNASR_SPK_MODEL) args.push(`++spk_model=${FUNASR_SPK_MODEL}`);
     if (FUNASR_EMOTION_MODEL) args.push(`++emotion_model=${FUNASR_EMOTION_MODEL}`);
-    if (FUNASR_HOTWORD)      args.push(`++hotword=${FUNASR_HOTWORD}`);
-    if (FUNASR_LANGUAGE)     args.push(`++language=${FUNASR_LANGUAGE}`);
+    if (FUNASR_HOTWORD) args.push(`++hotword=${FUNASR_HOTWORD}`);
+    if (FUNASR_LANGUAGE) args.push(`++language=${FUNASR_LANGUAGE}`);
     if (FUNASR_DEVICE === 'cuda') args.push('++device=cuda');
 
     // 合并 FUNASR_EXTRA_ARGS（CLI > .env），去重后追加
@@ -2184,12 +2184,12 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   const skipSteps = new Set();
   if (prior) {
     if (prior.download && prior.download.status === 'success' && prior.download.file
-        && fs.existsSync(prior.download.file) && fs.statSync(prior.download.file).size > 0) {
+      && fs.existsSync(prior.download.file) && fs.statSync(prior.download.file).size > 0) {
       skipSteps.add('download');
       result.download = new StepResult('success', prior.download.file, null, 0);
     }
     if (prior.transcode && prior.transcode.status === 'success' && prior.transcode.file
-        && fs.existsSync(prior.transcode.file) && fs.statSync(prior.transcode.file).size > 0) {
+      && fs.existsSync(prior.transcode.file) && fs.statSync(prior.transcode.file).size > 0) {
       skipSteps.add('transcode');
       result.transcode = new StepResult('success', prior.transcode.file, null, 0);
     }
@@ -3027,10 +3027,10 @@ async function run({
     whisperAvailable = await checkWhisperAvailable();
     if (!whisperAvailable) {
       let backend;
-    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
-    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-    else backend = WHISPER_SERVICE;
+      if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+      else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+      else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+      else backend = WHISPER_SERVICE;
       logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
     }
   }
@@ -3094,7 +3094,7 @@ async function run({
   // ── 批量写回 Excel ──
   if (steps.includes('transcribe') || contentColumn) {
     writeAllContentsToExcel(results, kwMap.size ? kwMap : null,
-                            contentMap.size ? contentMap : null);
+      contentMap.size ? contentMap : null);
   }
 
   // ── 生成报告 ──
@@ -3304,7 +3304,7 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
 
   if (steps.includes('transcribe')) {
     writeAllContentsToExcel(results, kwMap.size ? kwMap : null,
-                            contentMap.size ? contentMap : null);
+      contentMap.size ? contentMap : null);
   }
 
   const config = {
@@ -3493,10 +3493,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       whisperAvailable = await checkWhisperAvailable();
       if (!whisperAvailable) {
         let backend;
-    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
-    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-    else backend = WHISPER_SERVICE;
+        if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+        else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+        else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+        else backend = WHISPER_SERVICE;
         logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
       }
     }
@@ -3624,10 +3624,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       whisperAvailable = await checkWhisperAvailable();
       if (!whisperAvailable) {
         let backend;
-    if (WHISPER_BACKEND === 'local') backend = 'local CLI';
-    else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-    else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-    else backend = WHISPER_SERVICE;
+        if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+        else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+        else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+        else backend = WHISPER_SERVICE;
         logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
       }
     }
