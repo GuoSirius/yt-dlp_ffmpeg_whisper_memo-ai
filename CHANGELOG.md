@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.8] - 2026-06-19
+
+### Features
+
+- --id 支持多值批量指定 (`f39c7d2`)
+
+### Chores
+
+- update before release (`4527909`)
+
+
 ## [1.5.7] - 2026-06-19
 
 ### Bug Fixes
