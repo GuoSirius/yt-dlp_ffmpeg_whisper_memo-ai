@@ -2336,6 +2336,21 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   }
 
   // ── AI analyze ──
+  // 当只指定 --step analyze 时，transcribe 本轮未执行（status='skipped'），
+  // 需要回退读取已落盘的 transcript 文件，以支持单独重跑 analyze。
+  if (steps.includes('analyze') && result.transcribe.status === 'skipped' && result.transcribe.file === null) {
+    const _tp = transcriptPath(sheetName, stem);
+    if (fs.existsSync(_tp)) {
+      try {
+        const _cached = fs.readFileSync(_tp, 'utf-8');
+        const v = validateTranscriptText(_cached);
+        if (v.ok) {
+          result.transcribe = new StepResult('success', _cached, null, 0);
+          logInfo(`[${stem}] analyze 回退：从磁盘加载 transcript (${_cached.length} 字符)`);
+        }
+      } catch (e) { /* ignore */ }
+    }
+  }
   if (steps.includes('analyze') && result.transcribe.status === 'success') {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
@@ -2380,7 +2395,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       result.analyze = new StepResult('skipped');
     }
   } else if (steps.includes('analyze') && result.transcribe.status !== 'success') {
-    result.analyze = new StepResult('skipped', null, 'transcribe not successful, skip AI analysis');
+    result.analyze = new StepResult('skipped', null, 'no transcript available (transcribe not run and no cached file)');
   }
 
   // ── 统一判定整体状态（和本地文件模式一致）──
