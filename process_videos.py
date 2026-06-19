@@ -2230,7 +2230,12 @@ def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bo
                     if str(title_val) == str(key):
                         matched = True
                 if matched:
-                    row[target_col - 1].value = value
+                    # Excel 单元格字符上限 32767，超出需截断
+                    EXCEL_MAX_CHARS = 32767
+                    safe_value = value[:EXCEL_MAX_CHARS] if len(value) > EXCEL_MAX_CHARS else value
+                    if len(value) > EXCEL_MAX_CHARS:
+                        log.warning(f"[{sheet_name}/{key}] {col_name} 截断 {len(value)} -> {EXCEL_MAX_CHARS} 字符 (Excel 限制)")
+                    row[target_col - 1].value = safe_value
                     return True
 
             log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")

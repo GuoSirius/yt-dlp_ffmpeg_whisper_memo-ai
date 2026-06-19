@@ -591,7 +591,13 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
       if (String(row[titleIdx]) === String(key)) matched = true;
     }
     if (matched) {
-      aoa[r][colIdx] = value;
+      // Excel 单元格字符上限 32767，超出需截断
+      const EXCEL_MAX_CHARS = 32767;
+      const safeValue = String(value).length > EXCEL_MAX_CHARS ? String(value).slice(0, EXCEL_MAX_CHARS) : value;
+      if (String(value).length > EXCEL_MAX_CHARS) {
+        logWarn(`[${sheetName}/${key}] ${colName} truncated ${String(value).length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
+      }
+      aoa[r][colIdx] = safeValue;
       const newWs = XLSX.utils.aoa_to_sheet(aoa);
       wb.Sheets[sheetName] = newWs;
       XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
@@ -1978,9 +1984,15 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
         if (!matched && titleCol !== -1 && String(row[titleCol]) === String(key)) matched = true;
         if (matched) {
           // Write directly to cell to preserve formatting of other cells
+          // Excel 单元格字符上限 32767，超出需截断
+          const EXCEL_MAX_CHARS = 32767;
+          const safeText = text.length > EXCEL_MAX_CHARS ? text.slice(0, EXCEL_MAX_CHARS) : text;
           const cellRef = XLSX.utils.encode_cell({ r, c: targetCol });
-          ws[cellRef] = { t: 's', v: text };
-          logInfo(`[${sheetName}/${key}] ${colName} written (${text.length} chars)`);
+          ws[cellRef] = { t: 's', v: safeText };
+          if (text.length > EXCEL_MAX_CHARS) {
+            logWarn(`[${sheetName}/${key}] ${colName} truncated ${text.length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
+          }
+          logInfo(`[${sheetName}/${key}] ${colName} written (${safeText.length} chars)`);
           break;
         }
       }
