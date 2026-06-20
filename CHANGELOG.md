@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.13] - 2026-06-20
+
+### Bug Fixes
+
+- --id 兼容 PowerShell 逗号为空格的展开问题（js/python 均修） (`8df554f`)
+
+### Chores
+
+- update before release (`84795b9`)
+
+
 ## [1.5.12] - 2026-06-20
 
 ### Bug Fixes
