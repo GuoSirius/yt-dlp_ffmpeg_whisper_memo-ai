@@ -4006,7 +4006,7 @@ if __name__ == "__main__":
 
         sys.exit(0)
 
-    # ── --input 模式：直接处理本地视频文件（支持多个） ──
+    # ── --input 模式：直接处理本地视频文件（支持多个，支持并发） ──
     if args.input:
         # 多文件时忽略 --name（每个文件用自己的文件名）
         if args.name and len(args.input) > 1:
@@ -4024,6 +4024,8 @@ if __name__ == "__main__":
             sys.exit(0)
 
         input_results = []
+        input_tasks = []  # 收集任务参数，用于并发执行
+
         for file_idx, input_arg in enumerate(args.input):
             input_path = Path(input_arg).resolve()
             # 创建 steps 副本，避免修改主流程的 steps 变量
@@ -4091,9 +4093,24 @@ if __name__ == "__main__":
             if "transcode" in file_steps:
                 (TRANSCODED_DIR / "local").mkdir(parents=True, exist_ok=True)
 
-            # 检查 whisper 可用性
-            whisper_available = True
-            if "transcribe" in file_steps:
+            # 收集任务参数
+            input_tasks.append({
+                "input_path": input_path,
+                "sheet_name": "local",
+                "steps": file_steps,
+                "max_retries": args.retry,
+                "retry_delay": args.retry_delay,
+                "force": args.force,
+                "transcode_timeout": args.transcode_timeout,
+                "transcribe_timeout": args.transcribe_timeout,
+                "analyze_timeout": args.analyze_timeout,
+                "custom_name": stem if len(args.input) == 1 and args.name else None,
+            })
+
+        # 检查 whisper 可用性（只需要检查一次）
+        whisper_available = True
+        for task in input_tasks:
+            if "transcribe" in task["steps"]:
                 whisper_available = _check_whisper_available()
                 if not whisper_available:
                     if WHISPER_BACKEND == "local":
@@ -4105,40 +4122,51 @@ if __name__ == "__main__":
                     else:
                         backend = WHISPER_SERVICE
                     log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+                break
 
-            # 执行流水线
-            try:
-                result = run_input_task(
-                    input_path=input_path,
-                    sheet_name="local",
-                    steps=file_steps,
-                    max_retries=args.retry,
-                    retry_delay=args.retry_delay,
-                    force=args.force,
-                    transcode_timeout=args.transcode_timeout,
-                    transcribe_timeout=args.transcribe_timeout,
-                    analyze_timeout=args.analyze_timeout,
-                    custom_name=stem if len(args.input) == 1 and args.name else None,
-                    whisper_available=whisper_available,
-                )
+        # 并发或串行执行任务
+        if len(input_tasks) == 0:
+            sys.exit(0)
 
-                # 收集结果
-                if result:
-                    input_results.append(result)
-            except Exception as e:
-                print(c("red", f"\n❌ 处理文件 {input_path} 时出错: {str(e)[:200]}"))
-                import traceback
-                print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
-                print(c("yellow", "\n  跳过，继续处理下一个文件...\n"))
-                continue
+        print(c("dim", f"\n── 开始处理 {len(input_tasks)} 个文件（并发数: {min(args.concurrency, len(input_tasks))}）──\n"))
+
+        if args.concurrency > 1 and len(input_tasks) > 1:
+            # 并发执行
+            with ThreadPoolExecutor(max_workers=min(args.concurrency, len(input_tasks))) as executor:
+                future_to_task = {}
+                for task in input_tasks:
+                    future = executor.submit(_run_input_task_wrapper, task, whisper_available)
+                    future_to_task[future] = task
+
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            input_results.append(result)
+                    except Exception as e:
+                        print(c("red", f"\n❌ 处理文件 {task['input_path']} 时出错: {str(e)[:200]}"))
+                        import traceback
+                        print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
+        else:
+            # 串行执行
+            for task in input_tasks:
+                try:
+                    result = _run_input_task_wrapper(task, whisper_available)
+                    if result:
+                        input_results.append(result)
+                except Exception as e:
+                    print(c("red", f"\n❌ 处理文件 {task['input_path']} 时出错: {str(e)[:200]}"))
+                    import traceback
+                    print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
 
         # 所有文件处理完毕后，生成汇总报告
         if input_results:
             config = {
-                "steps": file_steps,
+                "steps": steps,
                 "max_retries": args.retry,
                 "retry_delay": args.retry_delay,
-                "concurrency": 1,
+                "concurrency": args.concurrency,
                 "force": args.force,
             }
             report_path = generate_report(input_results, config, sheet_name="local")
@@ -4156,9 +4184,7 @@ if __name__ == "__main__":
                     print(f"  {'分析'}: {r['analyze']['status']}")
                 if r.get("error"):
                     print(f"  错误: {r['error']}")
-
-        sys.exit(0)
-
+            sys.exit(0)
     # ── --content 模式：纯文本 AI 分析 ──
     if args.content:
         result = run_content_task(
