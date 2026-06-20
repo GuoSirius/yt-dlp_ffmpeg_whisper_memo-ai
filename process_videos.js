@@ -3510,6 +3510,9 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
   // ── --url 模式：直接处理视频链接（支持多个） ──
   if (opts.url?.length) {
     const urlResults = [];
+    const urlTasks = [];
+
+    // 第一遍：校验所有 URL，收集任务
     for (const singleUrl of opts.url) {
       const parsed = parseUrl(singleUrl);
       if (!parsed) {
@@ -3520,38 +3523,49 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
         console.error(c('dim', '  https://www.youtube.com/watch?v=xxxxxxxxxxx'));
         console.error(c('dim', '  https://v.qq.com/x/page/x0000xxxxx.html'));
         console.error(c('dim', '  https://v.youku.com/v_show/id_XXXXXXX.html'));
-        continue;
+        if (opts.url.length > 1) continue;
+        process.exit(1);
       }
-
-      console.log(c('dim', `\n── URL 任务: ${singleUrl} ──`));
-      console.log(`  平台: ${c('cyan', parsed.platform)}`);
-      console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
-      console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
 
       // dry-run 模式
       if (opts.dryRun) {
+        console.log(c('dim', `\n── URL 任务: ${singleUrl} ──`));
+        console.log(`  平台: ${c('cyan', parsed.platform)}`);
+        console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
+        console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
         console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
         console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
         console.log(`  输出名称: ${c('cyan', opts.name || parsed.videoId)}`);
-        continue;
+        if (opts.url.length > 1) continue;
+        process.exit(0);
       }
 
       // 构建文件路径: output/downloads/<platform>/<name>.mp4
       fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
       const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
       fs.mkdirSync(dlDir, { recursive: true });
-      const fileName = safeFilename(opts.name || parsed.videoId);
+      const fileName = safeFilename(opts.name && opts.url.length === 1 ? opts.name : parsed.videoId);
       const proposedPath = path.join(dlDir, `${fileName}.mp4`);
 
-      // 冲突处理（--force 时直接覆盖）
+      // 冲突处理（--force 时直接覆盖；非 force 时串行处理）
       let finalPath, finalStem;
       if (opts.force) {
         finalPath = proposedPath;
         finalStem = fileName;
-      } else {
+      } else if (opts.url.length === 1) {
         const conflict = await resolveUrlConflict(proposedPath);
         if (conflict.action === 'skip') {
           console.log(c('yellow', `\n⏭️  ${singleUrl} 已跳过\n`));
+          process.exit(0);
+        }
+        finalPath = conflict.path;
+        finalStem = path.basename(finalPath, '.mp4');
+      } else {
+        // 多 URL 且非 force：提示用户
+        console.log(c('yellow', `\n⚠️  处理多个 URL 时建议使用 --force 跳过冲突确认，避免交互阻塞`));
+        const conflict = await resolveUrlConflict(proposedPath);
+        if (conflict.action === 'skip') {
+          console.log(c('yellow', `\n⏭️  ${singleUrl} 已跳过`));
           continue;
         }
         finalPath = conflict.path;
@@ -3560,43 +3574,70 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
       console.log(`  文件: ${c('green', finalPath)}`);
 
-      // 检查 whisper 可用性
-      let whisperAvailable = false;
-      if (steps.includes('transcribe')) {
-        whisperAvailable = await checkWhisperAvailable();
-        if (!whisperAvailable) {
-          let backend;
-          if (WHISPER_BACKEND === 'local') backend = 'local CLI';
-          else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-          else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-          else backend = WHISPER_SERVICE;
-          logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
-        }
-      }
-
-      // 执行流水线
-      const urlResult = await runUrlTask({
-        watchUrl: parsed.watchUrl,
-        platform: parsed.platform,
-        pkey: parsed.pkey,
-        videoId: parsed.videoId,
-        stem: finalStem,
+      // 收集任务
+      urlTasks.push({
+        parsed,
+        finalPath,
+        finalStem,
         dlDir,
-        steps,
-        maxRetries: opts.retry,
-        retryDelay: opts.retryDelay,
-        force: opts.force || false,
-        downloadTimeout: opts.downloadTimeout,
-        transcodeTimeout: opts.transcodeTimeout,
-        transcribeTimeout: opts.transcribeTimeout,
-        analyzeTimeout: opts.analyzeTimeout,
-        whisperAvailable,
       });
+    }
 
-      // 生成标准报告 JSON（与 Excel 模式格式一致）
-      if (urlResult) {
-        urlResults.push(urlResult);
+    // dry-run 已在上方面处理，这里直接执行
+    if (opts.dryRun) {
+      process.exit(0);
+    }
+
+    // 检查 whisper 可用性（只需检查一次）
+    let whisperAvailable = false;
+    if (steps.includes('transcribe')) {
+      whisperAvailable = await checkWhisperAvailable();
+      if (!whisperAvailable) {
+        let backend;
+        if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+        else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+        else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+        else backend = WHISPER_SERVICE;
+        logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
       }
+    }
+
+    // 执行任务：根据 concurrency 决定串行或并发
+    const urlLimit = pLimit(Math.max(1, opts.concurrency || 1));
+    const urlTaskFns = urlTasks.map((task, idx) => {
+      return urlLimit(async () => {
+        const { parsed, finalPath, finalStem } = task;
+        try {
+          const urlResult = await runUrlTask({
+            watchUrl: parsed.watchUrl,
+            platform: parsed.platform,
+            pkey: parsed.pkey,
+            videoId: parsed.videoId,
+            stem: finalStem,
+            dlDir: task.dlDir,
+            steps,
+            maxRetries: opts.retry,
+            retryDelay: opts.retryDelay,
+            force: opts.force || false,
+            downloadTimeout: opts.downloadTimeout,
+            transcodeTimeout: opts.transcodeTimeout,
+            transcribeTimeout: opts.transcribeTimeout,
+            analyzeTimeout: opts.analyzeTimeout,
+            whisperAvailable,
+          });
+          if (urlResult) {
+            return urlResult;
+          }
+        } catch (err) {
+          console.error(c('red', `\n❌ 处理 ${parsed.watchUrl} 时出错: ${err.message}`));
+        }
+        return null;
+      });
+    });
+
+    const urlResultsRaw = await Promise.all(urlTaskFns);
+    for (const r of urlResultsRaw) {
+      if (r) urlResults.push(r);
     }
 
     // 所有 URL 处理完毕后，生成汇总报告
@@ -3619,13 +3660,104 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       logWarn(`--name 在指定多个 --input 时被忽略，每个文件将使用自己的文件名`);
     }
     const inputResults = [];
-    // dry-run 模式：收集所有文件信息后统一打印
+    const inputTasks = [];
+
+    // 第一遍：校验所有文件，收集任务
+    for (const [fileIdx, inputArg] of opts.input.entries()) {
+      const inputPath = path.resolve(inputArg);
+      console.log(c('dim', `\n── 文件校验 [${fileIdx + 1}/${opts.input.length}] ──`));
+      console.log(`  文件: ${c('cyan', inputPath)}`);
+
+      const fileInfo = validateInputFile(inputPath);
+      if (!fileInfo.valid) {
+        console.log(c('red', `\n❌ 无法处理该文件:`));
+        for (const e of fileInfo.errors) {
+          console.log(c('red', `   ${e}`));
+        }
+        if (opts.input.length > 1) {
+          console.log(c('yellow', '  跳过，继续处理下一个文件...\n'));
+          continue;
+        }
+        process.exit(1);
+      }
+
+      // 展示文件信息
+      console.log(`  格式: ${c('cyan', fileInfo.format || 'unknown')}`);
+      if (fileInfo.hasVideo) {
+        console.log(`  视频: ${c('cyan', fileInfo.videoCodec)} ${fileInfo.width}x${fileInfo.height}`);
+      }
+      if (fileInfo.hasAudio) {
+        console.log(`  音频: ${c('cyan', fileInfo.audioCodec)}`);
+      }
+      if (fileInfo.duration > 0) {
+        const dur = fileInfo.duration;
+        const mm = Math.floor(dur / 60);
+        const ss = Math.floor(dur % 60);
+        console.log(`  时长: ${c('cyan', `${mm}:${String(ss).padStart(2, '0')}`)} (${dur.toFixed(1)}s)`);
+      }
+      if (fileInfo.errors.length > 0) {
+        console.log('');
+        for (const e of fileInfo.errors) {
+          console.log(c('yellow', `  ⚠️  ${e}`));
+        }
+      }
+
+      // 展示可执行步骤
+      const defaultSteps = fileInfo.feasibleSteps;
+      // 用户可通过 --step 指定步骤，但只保留可行的
+      let fileSteps;
+      if (opts.step?.length) {
+        fileSteps = opts.step.filter(s => defaultSteps.includes(s));
+        if (fileSteps.length === 0) {
+          console.log(c('yellow', `\n⚠️  --step ${opts.step.join(', ')} 不可行（文件不支持）\n`));
+          if (opts.input.length > 1) continue;
+          process.exit(1);
+        }
+      } else {
+        fileSteps = defaultSteps;
+      }
+      console.log(`\n  可执行步骤: ${c('green', fileSteps.join(' → '))}`);
+
+      // 确定输出文件名
+      const sheetName = 'local';
+      const baseName = safeFilename(opts.name || path.parse(inputPath).name);
+      const stem = baseName;
+
+      // 检查转码输出文件是否已有冲突
+      if (fileSteps.includes('transcode') && !opts.force) {
+        const tcDir = path.join(TRANSCODED_DIR, sheetName);
+        const tcPath = path.join(tcDir, stem + TRANSCODE_EXT);
+        const conflict = await resolveInputConflict(tcPath);
+        if (conflict.action === 'skip') {
+          console.log(c('yellow', '\n⏭️  已跳过转码\n'));
+          fileSteps = fileSteps.filter(s => s !== 'transcode');
+        }
+      }
+
+      if (fileSteps.length === 0) {
+        console.log(c('yellow', '\n无剩余步骤可执行\n'));
+        if (opts.input.length > 1) continue;
+        process.exit(0);
+      }
+
+      // 确保目录存在
+      if (fileSteps.includes('transcode')) {
+        fs.mkdirSync(path.join(TRANSCODED_DIR, sheetName), { recursive: true });
+      }
+
+      // 收集任务
+      inputTasks.push({
+        inputPath,
+        stem,
+        sheetName,
+        fileSteps,
+        fileInfo,
+      });
+    }
+
+    // dry-run 模式：已在上面处理（文件校验时打印）
     if (opts.dryRun) {
       console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
-      for (const [fileIdx, inputArg] of opts.input.entries()) {
-        const p = path.resolve(inputArg);
-        console.log(`  [文件 ${fileIdx + 1}/${opts.input.length}] ${c('cyan', p)}`);
-      }
       console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
       if (opts.name && opts.input.length === 1) {
         console.log(`  输出名称: ${c('cyan', opts.name)}`);
@@ -3633,90 +3765,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       process.exit(0);
     }
 
-    for (const [fileIdx, inputArg] of opts.input.entries()) {
-      const inputPath = path.resolve(inputArg);
-    console.log(c('dim', '\n── 文件校验 ──'));
-    console.log(`  文件: ${c('cyan', inputPath)}`);
-
-    const fileInfo = validateInputFile(inputPath);
-      if (!fileInfo.valid) {
-        console.log(c('red', `\n❌ 无法处理该文件:`));
-        for (const e of fileInfo.errors) {
-          console.log(c('red', `   ${e}`));
-        }
-        if (fileIdx < opts.input.length - 1) {
-          console.log(c('yellow', '  跳过，继续处理下一个文件...\n'));
-          continue;
-        }
-        process.exit(1);
-      }
-
-    // 展示文件信息
-    console.log(`  格式: ${c('cyan', fileInfo.format || 'unknown')}`);
-    if (fileInfo.hasVideo) {
-      console.log(`  视频: ${c('cyan', fileInfo.videoCodec)} ${fileInfo.width}x${fileInfo.height}`);
-    }
-    if (fileInfo.hasAudio) {
-      console.log(`  音频: ${c('cyan', fileInfo.audioCodec)}`);
-    }
-    if (fileInfo.duration > 0) {
-      const dur = fileInfo.duration;
-      const mm = Math.floor(dur / 60);
-      const ss = Math.floor(dur % 60);
-      console.log(`  时长: ${c('cyan', `${mm}:${String(ss).padStart(2, '0')}`)} (${dur.toFixed(1)}s)`);
-    }
-    if (fileInfo.errors.length > 0) {
-      console.log('');
-      for (const e of fileInfo.errors) {
-        console.log(c('yellow', `  ⚠️  ${e}`));
-      }
-    }
-
-    // 展示可执行步骤
-    const defaultSteps = fileInfo.feasibleSteps;
-    // 用户可通过 --step 指定步骤，但只保留可行的
-    let fileSteps;
-    if (opts.step?.length) {
-      fileSteps = opts.step.filter(s => defaultSteps.includes(s));
-      if (fileSteps.length === 0) {
-        console.log(c('yellow', `\n⚠️  --step ${opts.step.join(', ')} 不可行（文件不支持）\n`));
-        process.exit(1);
-      }
-    } else {
-      fileSteps = defaultSteps;
-    }
-    console.log(`\n  可执行步骤: ${c('green', fileSteps.join(' → '))}`);
-
-    // 确定输出文件名
-    const sheetName = 'local';
-    const baseName = safeFilename(opts.name || path.parse(inputPath).name);
-    const stem = baseName;
-
-    // 检查转码输出文件是否已有冲突
-    if (fileSteps.includes('transcode') && !opts.force) {
-      const tcDir = path.join(TRANSCODED_DIR, sheetName);
-      const tcPath = path.join(tcDir, stem + TRANSCODE_EXT);
-      const conflict = await resolveInputConflict(tcPath);
-      if (conflict.action === 'skip') {
-        console.log(c('yellow', '\n⏭️  已跳过转码\n'));
-        fileSteps = fileSteps.filter(s => s !== 'transcode');
-      }
-    }
-
-      if (fileSteps.length === 0) {
-        console.log(c('yellow', '\n无剩余步骤可执行\n'));
-        if (fileIdx < opts.input.length - 1) continue;
-        process.exit(0);
-      }
-
-    // 确保目录存在
-    if (fileSteps.includes('transcode')) {
-      fs.mkdirSync(path.join(TRANSCODED_DIR, sheetName), { recursive: true });
-    }
-
-    // 检查 whisper 可用性
+    // 检查 whisper 可用性（只需检查一次）
     let whisperAvailable = false;
-    if (fileSteps.includes('transcribe')) {
+    const needTranscribe = inputTasks.some(t => t.fileSteps.includes('transcribe'));
+    if (needTranscribe) {
       whisperAvailable = await checkWhisperAvailable();
       if (!whisperAvailable) {
         let backend;
@@ -3728,34 +3780,38 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       }
     }
 
-    // 执行流水线
-    try {
-      const inputResult = await runInputTask({
-        inputPath,
-        stem,
-        sheetName,
-        steps: fileSteps,
-        maxRetries: opts.retry,
-        retryDelay: opts.retryDelay,
-        force: opts.force || false,
-        transcodeTimeout: opts.transcodeTimeout,
-        transcribeTimeout: opts.transcribeTimeout,
-        analyzeTimeout: opts.analyzeTimeout,
-        whisperAvailable,
-        fileInfo,
+    // 执行任务：根据 concurrency 决定串行或并发
+    const inputLimit = pLimit(Math.max(1, opts.concurrency || 1));
+    const inputTaskFns = inputTasks.map((task, idx) => {
+      return inputLimit(async () => {
+        const { inputPath, stem, sheetName, fileSteps, fileInfo } = task;
+        try {
+          const inputResult = await runInputTask({
+            inputPath,
+            stem,
+            sheetName,
+            steps: fileSteps,
+            maxRetries: opts.retry,
+            retryDelay: opts.retryDelay,
+            force: opts.force || false,
+            transcodeTimeout: opts.transcodeTimeout,
+            transcribeTimeout: opts.transcribeTimeout,
+            analyzeTimeout: opts.analyzeTimeout,
+            whisperAvailable,
+            fileInfo,
+          });
+          return inputResult;
+        } catch (err) {
+          console.error(c('red', `\n❌ 处理文件 ${inputPath} 时出错: ${err.message || err}`));
+          return null;
+        }
       });
+    });
 
-      // 收集结果（循环结束后统一生成报告）
-      if (inputResult) {
-        inputResults.push(inputResult);
-      }
-    } catch (err) {
-      console.error(c('red', `\n❌ 处理文件 ${inputPath} 时出错: ${err.message || err}`));
-      console.error(c('dim', `  错误详情: ${err.stack || err}`));
-      console.log(c('yellow', '\n  跳过，继续处理下一个文件...\n'));
-      if (fileIdx < opts.input.length - 1) continue;
+    const inputResultsRaw = await Promise.all(inputTaskFns);
+    for (const r of inputResultsRaw) {
+      if (r) inputResults.push(r);
     }
-    } // for (const [fileIdx, inputArg] of opts.input.entries()) 结束
 
     // 所有文件处理完毕后，生成汇总报告
     if (inputResults.length) {
