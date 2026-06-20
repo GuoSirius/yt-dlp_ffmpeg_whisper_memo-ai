@@ -3002,17 +3002,25 @@ async function run({
     let rows = readExcelSheet(sheetName);
     if (targetIds && targetIds.length) {
       const idSet = targetIds.map(String);
+      // 预备：收集可用列名（过滤前先拿第一行）
+      const sampleRow = rows[0];
+      const availableCols = sampleRow ? Object.keys(sampleRow) : [];
+      // ID 列候选名：COL_ID、常见变体
+      const idCols = [COL_ID, 'id', 'ID', 'Id'].filter((v, i, a) => a.indexOf(v) === i);
       rows = rows.filter(row => {
-        if (row[COL_ID] != null) {
-          try {
-            if (idSet.includes(String(Math.floor(Number(row[COL_ID]))))) return true;
-          } catch { }
+        // 按 ID 列候选名逐一尝试
+        for (const col of idCols) {
+          if (row[col] == null) continue;
+          if (idSet.includes(String(Math.floor(Number(row[col]))))) return true;
         }
+        // 按标题匹配
         if (idSet.includes(String(row[COL_TITLE]))) return true;
         return false;
       });
       if (!rows.length) {
-        logError(`Sheet [${sheetName}] no match for id/title = ${idSet.join(', ')}`);
+        logError(`Sheet [${sheetName}] 未找到匹配 --id 的行: ${idSet.join(', ')}`);
+        logError(`  可用列: ${availableCols.join(', ')}`);
+        logError(`  ID 列候选: ${idCols.join(', ')}  →  请确认 .env 中 COL_ID 是否和 Excel 列名一致`);
         continue;
       }
     }
@@ -3447,9 +3455,11 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
-  // ── file 覆盖 ──
+  // ── file 覆盖（相对路径基于项目目录 BASE_DIR，而非 shell cwd）──
   if (opts.file) {
-    EXCEL_FILE = path.resolve(opts.file);
+    EXCEL_FILE = path.isAbsolute(opts.file)
+      ? opts.file
+      : path.resolve(BASE_DIR, opts.file);
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
   }
 
