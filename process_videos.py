@@ -2906,8 +2906,9 @@ def _generate_report_for_result(result, config, sheet_name=None):
 
 
 def run(
-    target_sheet: str | None,
+    target_sheets: list[str] | None,
     target_ids: list[str] | None,
+    excel_files: list[Path] | None = None,
     steps: list[str],
     max_retries: int,
     retry_delay: float,
@@ -2931,7 +2932,7 @@ def run(
                                analyze_timeout)
 
     # ── 构建任务列表 ──
-    sheets = [target_sheet] if target_sheet else VIDEO_SHEETS
+    sheets = target_sheets if (target_sheets and len(target_sheets)) else VIDEO_SHEETS
     tasks = []
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
@@ -3663,7 +3664,8 @@ if __name__ == "__main__":
         """,
     )
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
-    parser.add_argument("--sheet", help="指定 sheet 名称（默认全部视频 sheet）")
+    parser.add_argument("--sheet", action="append", default=[],
+                        help="指定 sheet 名称（可多次指定，逗号/空格/中文逗号分隔）")
     parser.add_argument("--id", dest="vid_ids", action="append", default=[],
                         help="指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）")
     parser.add_argument("--offset", type=int, default=0, help="跳过前 N 条任务（从 0 开始），默认 0")
@@ -3710,7 +3712,8 @@ if __name__ == "__main__":
     parser.add_argument("--init", action="store_true", help="复制 .env.example 到当前目录并重命名为 .env")
     parser.add_argument(
         "--file",
-        help="指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）",
+        action="append", default=[],
+        help="指定 Excel 文件路径（可多次指定，或用逗号分隔，如 --file a.xlsx,b.xlsx）",
     )
     parser.add_argument(
         "--env-file",
@@ -3722,7 +3725,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--url",
-        help="直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接",
+        action="append", default=[],
+        help="直接指定视频下载链接（可多次指定，或用逗号分隔，如 --url url1,url2）",
     )
     parser.add_argument(
         "--name",
@@ -3809,10 +3813,17 @@ if __name__ == "__main__":
             print(f"✅ .env 已从 .env.example 创建: {dest}")
         sys.exit(0)
 
-    # ── file 覆盖 ──
+    # ── file 覆盖（支持多个，逗号/中文逗号/空格分隔）──
+    excel_files = []
     if args.file:
-        EXCEL_FILE = Path(args.file).resolve()
-        log.info(f"Excel 文件覆盖为: {EXCEL_FILE}")
+        for f in args.file:
+            for part in re.split(r"[,，\s]+", str(f)):
+                part = part.strip()
+                if part:
+                    excel_files.append(Path(part).resolve() if Path(part).is_absolute() else (BASE_DIR / part).resolve())
+        if excel_files:
+            EXCEL_FILE = excel_files[0]
+            log.info(f"Excel 文件: {[str(f) for f in excel_files]}")
 
     # ── output 覆盖（CLI > env > 默认 "output"）──
     if args.output:
@@ -3826,28 +3837,109 @@ if __name__ == "__main__":
     if args.input and not args.step:
         steps = ["transcode", "transcribe", "analyze"]
 
-    # ── --url 模式：直接处理单个视频链接 ──
+    # ── --url 模式：直接处理视频链接（支持多个） ──
     if args.url:
-        parsed = parse_url(args.url)
-        if not parsed:
-            print(c("red", f"\n❌ 无法识别的 URL: {args.url}"))
-            print(c("dim", "支持的平台: YouTube, B站, 腾讯视频, 优酷"))
-            print(c("dim", "URL 格式示例:"))
-            print(c("dim", "  https://www.bilibili.com/video/BV1xxxyyyzzz"))
-            print(c("dim", "  https://www.youtube.com/watch?v=xxxxxxxxxxx"))
-            print(c("dim", "  https://v.qq.com/x/page/x0000xxxxx.html"))
-            print(c("dim", "  https://v.youku.com/v_show/id_XXXXXXX.html"))
-            sys.exit(1)
+        # 解析所有 URL（支持逗号/中文逗号/空格分隔）
+        url_list = []
+        for u in args.url:
+            for part in re.split(r"[,，\s]+", str(u)):
+                part = part.strip()
+                if part:
+                    url_list.append(part)
 
-        platform = parsed["platform"]
-        video_id = parsed["video_id"]
-        watch_url = parsed["watch_url"]
-        pkey = parsed["pkey"]
+        url_results = []
+        for single_url in url_list:
+            parsed = parse_url(single_url)
+            if not parsed:
+                print(c("red", f"❌ 无法识别的 URL: {single_url}"))
+                print(c("yellow", "支持的平台: YouTube, B站, 腾讯视频, 优酷"))
+                print(c("dim", "URL 格式示例:"))
+                print(c("dim", "  https://www.bilibili.com/video/BV1xxxyyyzzz"))
+                print(c("dim", "  https://www.youtube.com/watch?v=xxxxxxxxxxx"))
+                print(c("dim", "  https://v.qq.com/x/page/x0000xxxxx.html"))
+                print(c("dim", "  https://v.youku.com/v_show/id_XXXXXXX.html"))
+                continue
 
-        print(c("dim", "\n── URL 任务 ──"))
-        print(f"  平台: {c('cyan', platform)}")
-        print(f"  视频ID: {c('cyan', video_id)}")
-        print(f"  链接: {c('cyan', watch_url)}")
+            platform = parsed["platform"]
+            video_id = parsed["video_id"]
+            watch_url = parsed["watch_url"]
+            pkey = parsed["pkey"]
+
+            print(c("dim", f"\n── URL 任务: {single_url} ──"))
+            print(f"  平台: {c('cyan', platform)}")
+            print(f"  视频ID: {c('cyan', video_id)}")
+            print(f"  链接: {c('cyan', watch_url)}")
+
+            # dry-run 模式
+            if args.dry_run:
+                print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
+                print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
+                print(f"  输出名称: {c('cyan', args.name if args.name else video_id)}")
+                continue
+
+            # 构建文件路径: output/downloads/<platform>/<name>.mp4
+            DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+            dl_dir = DOWNLOADS_DIR / platform
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            file_name = safe_filename(args.name if args.name else video_id)
+            proposed_path = dl_dir / f"{file_name}.mp4"
+
+            # 冲突处理（--force 时直接覆盖）
+            if args.force:
+                final_path = proposed_path
+                final_stem = file_name
+            else:
+                conflict = resolve_url_conflict(proposed_path)
+                if conflict["action"] == "skip":
+                    print(c("yellow", f"\n⏭️  {single_url} 已跳过\n"))
+                    continue
+                final_path = conflict["path"]
+                final_stem = final_path.stem
+
+            print(f"  文件: {final_path}")
+
+            
+            # 检查 whisper 可用性
+            whisper_available = True
+            if "transcribe" in steps:
+                whisper_available = _check_whisper_available()
+                if not whisper_available:
+                    if WHISPER_BACKEND == "local":
+                        backend = "local CLI"
+                    elif WHISPER_BACKEND == "faster-whisper":
+                        backend = "faster-whisper (faster_whisper)"
+                    elif WHISPER_BACKEND == "funasr":
+                        backend = f"funasr/{FUNASR_MODE}"
+                    else:
+                        backend = WHISPER_SERVICE
+                    log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+
+            # 执行流水线
+            result = _run_url_task({
+                "watch_url": watch_url,
+                "platform": platform,
+                "pkey": pkey,
+                "video_id": video_id,
+                "stem": final_stem,
+                "dl_dir": dl_dir,
+                "steps": steps,
+                "max_retries": args.retry,
+                "retry_delay": args.retry_delay,
+                "force": args.force,
+                "download_timeout": args.download_timeout,
+                "transcode_timeout": args.transcode_timeout,
+                "transcribe_timeout": args.transcribe_timeout,
+                "analyze_timeout": args.analyze_timeout,
+            })
+            if result:
+                url_results.append(result)
+
+        # 所有 URL 处理完毕后，生成汇总报告
+        if url_results:
+            config = {"steps": steps, "max_retries": args.retry, "retry_delay": args.retry_delay, "concurrency": 1, "force": args.force}
+            generate_report(url_results, config, "url")
+            print_report_summary(url_results)
+        sys.exit(0)
 
         # dry-run 模式
         if args.dry_run:
@@ -4036,7 +4128,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     run(
-        target_sheet=args.sheet,
+        target_sheets=args.sheets,
         # 兜底：防止 shell（如 PowerShell）将逗号展开为空格
         target_ids=[s for v in (args.vid_ids or [])
                     for s in re.split(r'[,，\s]+', str(v)) if s] or None,
