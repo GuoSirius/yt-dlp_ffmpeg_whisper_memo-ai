@@ -2908,7 +2908,6 @@ def _generate_report_for_result(result, config, sheet_name=None):
 def run(
     target_sheets: list[str] | None,
     target_ids: list[str] | None,
-    excel_files: list[Path] | None = None,
     steps: list[str],
     max_retries: int,
     retry_delay: float,
@@ -2916,6 +2915,7 @@ def run(
     force: bool,
     dry_run: bool,
     retry_failed: str | None,
+    excel_files: list[Path] | None = None,
     download_timeout: int = 1800,
     transcode_timeout: int = 1200,
     transcribe_timeout: int = 0,
@@ -3734,7 +3734,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--input",
-        help="指定本地视频文件路径（跳过下载，直接转码→识别→分析）",
+        action="append",
+        default=[],
+        help="指定本地视频文件路径（可多次指定），跳过下载，直接转码→识别→分析",
     )
     parser.add_argument(
         "--content",
@@ -4004,12 +4006,29 @@ if __name__ == "__main__":
 
         sys.exit(0)
 
-    # ── --input 模式：直接处理本地视频文件 ──
+    # ── --input 模式：直接处理本地视频文件（支持多个） ──
     if args.input:
-        input_path = Path(args.input).resolve()
+        # 多文件时忽略 --name（每个文件用自己的文件名）
+        if args.name and len(args.input) > 1:
+            log.warning("--name 在指定多个 --input 时被忽略，每个文件将使用自己的文件名")
 
-        print(c("dim", "\n── 文件校验 ──"))
-        print(f"  文件: {c('cyan', str(input_path))}")
+        # dry-run 模式：收集所有文件信息后统一打印
+        if args.dry_run:
+            print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
+            for idx, inp in enumerate(args.input):
+                p = Path(inp).resolve()
+                print(f"  [文件 {idx + 1}/{len(args.input)}] {c('cyan', str(p))}")
+            print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
+            if args.name and len(args.input) == 1:
+                print(f"  输出名称: {c('cyan', args.name)}")
+            sys.exit(0)
+
+        input_results = []
+        for file_idx, input_arg in enumerate(args.input):
+            input_path = Path(input_arg).resolve()
+
+            print(c("dim", f"\n── 文件校验 [{file_idx + 1}/{len(args.input)}] ──"))
+            print(f"  文件: {c('cyan', str(input_path))}")
 
         file_info = validate_input_file(input_path)
 
@@ -4084,32 +4103,32 @@ if __name__ == "__main__":
             whisper_available=whisper_available,
         )
 
-        # 生成标准报告 JSON（与 Excel 模式格式一致）
-        config = {
-            "steps": steps,
-            "max_retries": args.retry,
-            "retry_delay": args.retry_delay,
-            "concurrency": 1,
-            "force": args.force,
-        }
-        report_path = generate_report([result], config, sheet_name=sheet_name)
-        print_report_summary([result])
-        print(f"  整体状态: {c('green' if result.overall_status == 'success' else 'red', result.overall_status)}")
-        if result.download:
-            print(f"  {c('dim', '下载')}: {result.download.status}")
-        if result.transcode:
-            print(f"  {c('dim', '转码')}: {result.transcode.status}")
-            if result.transcode.file:
-                print(f"    {c('dim', '输出')}: {result.transcode.file}")
-        if result.transcribe:
-            print(f"  {c('dim', '识别')}: {result.transcribe.status}")
-            if result.transcribe.file:
-                print(f"    {c('dim', '输出')}: {result.transcribe.file}")
-        if result.analyze:
-            print(f"  {c('dim', '分析')}: {result.analyze.status}")
+        # 收集结果（循环结束后统一生成报告）
+        input_results.append(result)
+            # for [file_idx, input_arg] 循环结束
 
-        if result.error:
-            print(f"\n  错误: {result.error}")
+        # 所有文件处理完毕后，生成汇总报告
+        if input_results:
+            config = {
+                "steps": steps,
+                "max_retries": args.retry,
+                "retry_delay": args.retry_delay,
+                "concurrency": 1,
+                "force": args.force,
+            }
+            report_path = generate_report(input_results, config, sheet_name="local")
+            print_report_summary(input_results)
+            for r in input_results:
+                print(f"\n  文件: {c('cyan', r.input_path if hasattr(r, 'input_path') else '')}")
+                print(f"  整体状态: {c('green' if r.overall_status == 'success' else 'red', r.overall_status)}")
+                if r.transcode:
+                    print(f"  {c('dim', '转码')}: {r.transcode.status}")
+                if r.transcribe:
+                    print(f"  {c('dim', '识别')}: {r.transcribe.status}")
+                if r.analyze:
+                    print(f"  {c('dim', '分析')}: {r.analyze.status}")
+                if r.error:
+                    print(f"  错误: {r.error}")
 
         sys.exit(0)
 
@@ -4141,6 +4160,7 @@ if __name__ == "__main__":
         force=args.force,
         dry_run=args.dry_run,
         retry_failed=args.retry_failed,
+        excel_files=args.file if args.file else None,
         download_timeout=args.download_timeout,
         transcode_timeout=args.transcode_timeout,
         transcribe_timeout=args.transcribe_timeout,

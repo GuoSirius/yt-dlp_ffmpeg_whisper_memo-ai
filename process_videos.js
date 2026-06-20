@@ -3410,7 +3410,10 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
       return [...(prev || []), ...parts];
     }, [])
-    .option('--input <path>', '指定本地视频文件路径（跳过下载，直接转码→识别→分析）')
+    .option('--input <path>', '指定本地视频文件路径（可多次指定或逗号/空格/中文逗号分隔），跳过下载，直接转码→识别→分析', (val, prev) => {
+      const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+      return [...(prev || []), ...parts];
+    }, [])
     .option('--content <text|path>', '直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，直接做 AI 分析')
     .option('--content-column <col>', 'Excel 模式：指定包含已爬取文本的列名，批量做 AI 分析')
     .option('--url <url>', '直接指定视频下载链接（可多次指定，逗号/空格/中文逗号分隔），跳过 Excel', (val, prev) => {
@@ -3605,9 +3608,28 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
-  // ── --input 模式：直接处理本地视频文件 ──
-  if (opts.input) {
-    const inputPath = path.resolve(opts.input);
+  // ── --input 模式：直接处理本地视频文件（支持多个） ──
+  if (opts.input?.length) {
+    if (opts.name && opts.input.length > 1) {
+      logWarn(`--name 在指定多个 --input 时被忽略，每个文件将使用自己的文件名`);
+    }
+    const inputResults = [];
+    // dry-run 模式：收集所有文件信息后统一打印
+    if (opts.dryRun) {
+      console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
+      for (const [fileIdx, inputArg] of opts.input.entries()) {
+        const p = path.resolve(inputArg);
+        console.log(`  [文件 ${fileIdx + 1}/${opts.input.length}] ${c('cyan', p)}`);
+      }
+      console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
+      if (opts.name && opts.input.length === 1) {
+        console.log(`  输出名称: ${c('cyan', opts.name)}`);
+      }
+      process.exit(0);
+    }
+
+    for (const [fileIdx, inputArg] of opts.input.entries()) {
+      const inputPath = path.resolve(inputArg);
     console.log(c('dim', '\n── 文件校验 ──'));
     console.log(`  文件: ${c('cyan', inputPath)}`);
 
@@ -3656,17 +3678,6 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     }
     console.log(`\n  可执行步骤: ${c('green', steps.join(' → '))}`);
 
-    // dry-run 模式
-    if (opts.dryRun) {
-      console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
-      console.log(`  [本地文件] 将执行步骤: ${c('cyan', steps.join(' → '))}`);
-      console.log(`  输入文件: ${c('cyan', inputPath)}`);
-      if (opts.name) {
-        console.log(`  输出名称: ${c('cyan', opts.name)}`);
-      }
-      process.exit(0);
-    }
-
     // 确定输出文件名
     const sheetName = 'local';
     const baseName = safeFilename(opts.name || path.parse(inputPath).name);
@@ -3685,7 +3696,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
     if (steps.length === 0) {
       console.log(c('yellow', '\n无剩余步骤可执行\n'));
-      process.exit(0);
+      continue;
     }
 
     // 确保目录存在
@@ -3723,11 +3734,17 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       fileInfo,
     });
 
-    // 生成标准报告 JSON（与 Excel 模式格式一致）
+    // 收集结果（循环结束后统一生成报告）
     if (inputResult) {
+      inputResults.push(inputResult);
+    }
+    } // for (const [fileIdx, inputArg] of opts.input.entries()) 结束
+
+    // 所有文件处理完毕后，生成汇总报告
+    if (inputResults.length) {
       const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
-      generateReport([inputResult], config, sheetName);
-      printReportSummary([inputResult]);
+      generateReport(inputResults, config, 'local');
+      printReportSummary(inputResults);
     }
 
     process.exit(0);
