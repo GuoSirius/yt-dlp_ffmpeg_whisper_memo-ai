@@ -584,6 +584,8 @@ node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c" --ste
 - 自定义：通过 `--name` 指定（如 `--name "产品介绍"`）
 - 冲突处理：自动提示选择（覆盖 / 跳过 / 自定义名称）
 
+> **并发处理**：多 URL 时支持并发（受 `--concurrency` 控制）；非 `--force` 时建议单 URL 执行（避免交互阻塞）。
+
 ### 处理本地文件
 
 ```bash
@@ -603,6 +605,8 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 - 检查文件格式是否支持（视频/音频）
 - 检查是否可以正常读取
 - 校验失败会提示错误并退出
+
+> **并发处理**：多文件时支持并发（受 `--concurrency` 控制）；非 `--force` 时建议单文件执行（避免交互阻塞）。
 
 ### 处理纯文本内容（跳过视频步骤）
 
@@ -701,7 +705,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | `--limit <n>` | int | 0 | 最多处理 N 条任务，0 表示无限制 |
 | `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `analyze` |
 | `--force` | flag | off | 强制重做下载+转码，忽略已有文件 |
-| `--concurrency <n>` | int | 1 | 并发数，建议 2~3 |
+| `--concurrency <n>` | int | 1 | 并发数，建议 2~3。适用于：Excel 批量模式（已支持）、`--url` 多 URL（JS/Py 均支持）、`--input` 多文件（Py 支持；JS 需 `--force` 跳过交互冲突） |
 | `--retry <n>` | int | 0 | 每步失败最大重试次数 |
 | `--retry-delay <n>` | float | 5 | 重试间隔基数（秒），指数退避 5→10→20 |
 | `--download-timeout <n>` | int | 1800 | 单个下载任务最长执行时间（秒），0=不限制 |
