@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.11] - 2026-06-20
+
+### Features
+
+- 增加 --version 参数（js/py 均支持）；修复 py 版 --id 匹配逻辑 (`f03e6c6`)
+
+### Bug Fixes
+
+- --id 匹配改回只用 COL_ID/COL_TITLE，去掉 AI_DEBUG 调试打印 (`6de36e6`)
+- --id 匹配增加字符串直接匹配；--file/--output 相对路径改回相对于 shell cwd (`ff7ba35`)
+
+### Chores
+
+- update before release (`3b743ae`)
+
+
 ## [1.5.10] - 2026-06-20
 
 ### Bug Fixes
