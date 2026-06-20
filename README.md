@@ -14,34 +14,28 @@
 
 ---
 
-## 安装方式
+## 安装前准备
 
-### Node.js 版本（推荐）
+> 首次使用请按顺序完成以下 6 步，后续换电脑只需重复第一步和第六步。
 
+### 第一步：获取代码
+
+**Node.js 版本（推荐）**：
 ```bash
-# 全局安装
 npm install -g video-pipeline
-
-# 使用后可直接调用
 video-pipeline --help
 ```
 
-### Python 版本
-
+**Python 版本**：
 ```bash
-# 克隆或下载脚本
 git clone https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai.git
 cd yt-dlp_ffmpeg_whisper_memo-ai
-
-# 安装 Python 依赖
-pip install pandas openpyxl requests python-dotenv questionary
+pip install -r requirements.txt
 ```
 
 ---
 
-## 环境依赖
-
-### 必装工具
+### 第二步：安装环境依赖（必装）
 
 | 工具 | 版本要求 | 安装方式 | 用途 |
 |------|-----------|----------|------|
@@ -51,24 +45,119 @@ pip install pandas openpyxl requests python-dotenv questionary
 
 > **验证安装**：在终端执行 `yt-dlp --version`、`ffmpeg -version`、`ffprobe -version`，确保均在 PATH 中。
 
-### 必装 Node.js（YouTube n-sig 挑战）
+---
+
+### 第三步：安装 Node.js（YouTube n-sig 挑战）
 
 YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式。
 
 | 方式 | 安装命令 |
 |------|----------|
 | Node.js（推荐） | [nodejs.org](https://nodejs.org/) 下载 LTS 版，安装后 `node --version` 验证 |
-| Deno | `winget install DenoLand.Deno` 或 [deno.com](https://deno.com/) |
+| Deno | `winget install DenoSirius.Deno` 或 [deno.com](https://deno.com/) |
 
-> 脚本默认使用 `--js-runtimes node`，如果你装的是 deno，修改 `.env` 中 `YOUTUBE_JS_RUNTIMES=deno`。
+> 脚本默认使用 `--js-runtime node`，如果你装的是 deno，修改 `.env` 中 `YOUTUBE_JS_RUNTIMES=deno`。
 
-### Python 依赖
+---
+
+### 第四步：安装 Python 依赖
 
 ```bash
-pip install pandas openpyxl requests python-dotenv questionary
+pip install -r requirements.txt
+```
+
+**手动安装**（如果不使用 `requirements.txt`）：
+```bash
+pip install pandas openpyxl requests python-dotenv colorama questionary
 ```
 
 > `questionary` 为可选依赖（交互式确认时使用），建议一并安装。
+
+---
+
+### 第五步：安装 ASR 后端（至少选一个）
+
+#### ① openai-whisper（local 后端）
+```bash
+pip install openai-whisper
+```
+- 支持 CPU / CUDA
+- 模型自动下载到 `~/.cache/whisper`
+- 配置：`WHISPER_BACKEND=local`
+
+#### ② faster-whisper（推荐，速度约 4×）
+```bash
+pip install faster-whisper
+```
+- **CPU 模式**：`WHISPER_COMPUTE_TYPE=int8`（推荐）
+- **GPU 模式**：`WHISPER_COMPUTE_TYPE=float16` + `WHISPER_DEVICE=cuda`
+- **国内网络**（必备）：设置 `HF_ENDPOINT=https://hf-mirror.com`（清华镜像加速模型下载）
+- 配置：`WHISPER_BACKEND=faster-whisper`
+
+#### ③ FunASR（中文推荐，中文 WER ~5%）
+```bash
+pip install funasr modelscope
+```
+
+**子模式选择**（`FUNASR_MODE`）：
+
+| 子模式 | 适用场景 | 启动方式 |
+|--------|----------|----------|
+| `cli`（默认） | 本地 CPU/GPU 推理 | 安装后直接运行 |
+| `service` | 远程 GPU 并发（多任务） | 需先启动 server |
+
+**CPU 模式**（默认）：
+```bash
+# 无需额外操作，FUNSR_DEVICE=cpu（默认）
+```
+
+**GPU 模式**（强烈推荐，中文 large 模型速度差距 10×+）：
+```bash
+# 设置环境变量
+FUNASR_MODE=cli
+FUNASR_DEVICE=cuda
+```
+
+**service 模式**（远程 GPU 并发）：
+```bash
+# 先启动 funasr-server（GPU 推荐）
+pip install funasr vllm fastapi uvicorn python-multipart
+funasr-server --device cuda --port 8899
+
+# 然后配置 .env
+# WHISPER_BACKEND=funasr
+# FUNASR_MODE=service
+# FUNASR_SERVICE=http://127.0.0.1:8899
+```
+
+- 配置：`WHISPER_BACKEND=funasr`
+
+---
+
+### 第六步：配置环境变量
+
+```bash
+# 首次使用：复制模板
+cp .env.example .env
+
+# 编辑 .env 适配你的 Excel 结构
+# 详见 .env.example 中的注释
+```
+
+> **换电脑使用**：只需把 `.env` 一起拷贝，或在新电脑上重新 `cp .env.example .env` 并编辑。
+
+---
+
+
+## 安装方式
+
+> 安装步骤详见上方「安装前准备」。
+
+---
+
+## 环境依赖
+
+> 安装方法详见上方「安装前准备」。
 
 ### 环境变量配置（.env）
 
@@ -123,6 +212,8 @@ cp .env.example .env
 > **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktok`、`douyin` 等无效 key 会导致脚本无法识别。
 
 ### Whisper 语音识别
+
+> ASR 后端的安装方法详见上方「安装前准备 · 第五步」。下方仅列出各后端的配置参数与行为差异。
 
 支持**四种后端**，通过 `WHISPER_BACKEND` 切换。所有 Whisper / FunASR 相关环境变量分多组管理：
 
