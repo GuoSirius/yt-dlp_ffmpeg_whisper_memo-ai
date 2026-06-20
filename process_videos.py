@@ -2812,7 +2812,7 @@ def _run_url_task(opts):
         max_retries,
         retry_delay,
         force,
-        True,  # whisper_available（上游已检查）
+        opts.get("whisper_available", True),  # whisper_available（上游已检查）
         "",
         download_timeout,
         transcode_timeout,
@@ -3849,7 +3849,23 @@ if __name__ == "__main__":
                 if part:
                     url_list.append(part)
 
+        # 检查 whisper 可用性（只需一次，在并发执行前）
+        whisper_available = _check_whisper_available() if "transcribe" in steps else False
+        if "transcribe" in steps and not whisper_available:
+            if WHISPER_BACKEND == "local":
+                backend_info = "本地 whisper CLI"
+            elif WHISPER_BACKEND == "faster-whisper":
+                backend_info = "faster-whisper (faster_whisper)"
+            elif WHISPER_BACKEND == "funasr":
+                backend_info = f"funasr/{FUNASR_MODE}"
+            else:
+                backend_info = WHISPER_SERVICE
+            log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
+        
         url_results = []
+        url_tasks = []  # 收集任务参数，用于并发执行
+        
+        # 第一遍：校验所有 URL，收集任务
         for single_url in url_list:
             parsed = parse_url(single_url)
             if not parsed:
@@ -3861,31 +3877,31 @@ if __name__ == "__main__":
                 print(c("dim", "  https://v.qq.com/x/page/x0000xxxxx.html"))
                 print(c("dim", "  https://v.youku.com/v_show/id_XXXXXXX.html"))
                 continue
-
+            
             platform = parsed["platform"]
             video_id = parsed["video_id"]
             watch_url = parsed["watch_url"]
             pkey = parsed["pkey"]
-
+            
             print(c("dim", f"\n── URL 任务: {single_url} ──"))
             print(f"  平台: {c('cyan', platform)}")
             print(f"  视频ID: {c('cyan', video_id)}")
             print(f"  链接: {c('cyan', watch_url)}")
-
+            
             # dry-run 模式
             if args.dry_run:
                 print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
                 print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
                 print(f"  输出名称: {c('cyan', args.name if args.name else video_id)}")
                 continue
-
+            
             # 构建文件路径: output/downloads/<platform>/<name>.mp4
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             dl_dir = DOWNLOADS_DIR / platform
             dl_dir.mkdir(parents=True, exist_ok=True)
             file_name = safe_filename(args.name if args.name else video_id)
             proposed_path = dl_dir / f"{file_name}.mp4"
-
+            
             # 冲突处理（--force 时直接覆盖）
             if args.force:
                 final_path = proposed_path
@@ -3897,27 +3913,11 @@ if __name__ == "__main__":
                     continue
                 final_path = conflict["path"]
                 final_stem = final_path.stem
-
-            print(f"  文件: {final_path}")
-
             
-            # 检查 whisper 可用性
-            whisper_available = True
-            if "transcribe" in steps:
-                whisper_available = _check_whisper_available()
-                if not whisper_available:
-                    if WHISPER_BACKEND == "local":
-                        backend = "local CLI"
-                    elif WHISPER_BACKEND == "faster-whisper":
-                        backend = "faster-whisper (faster_whisper)"
-                    elif WHISPER_BACKEND == "funasr":
-                        backend = f"funasr/{FUNASR_MODE}"
-                    else:
-                        backend = WHISPER_SERVICE
-                    log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
-
-            # 执行流水线
-            result = _run_url_task({
+            print(f"  文件: {final_path}")
+            
+            # 收集任务参数
+            url_tasks.append({
                 "watch_url": watch_url,
                 "platform": platform,
                 "pkey": pkey,
@@ -3928,84 +3928,51 @@ if __name__ == "__main__":
                 "max_retries": args.retry,
                 "retry_delay": args.retry_delay,
                 "force": args.force,
+                "whisper_available": whisper_available,
                 "download_timeout": args.download_timeout,
                 "transcode_timeout": args.transcode_timeout,
                 "transcribe_timeout": args.transcribe_timeout,
                 "analyze_timeout": args.analyze_timeout,
             })
-            if result:
-                url_results.append(result)
-
+        
+        # 执行任务：根据 concurrency 决定串行或并发
+        if args.concurrency > 1 and len(url_tasks) > 1:
+            # 并发执行
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(args.concurrency, len(url_tasks))) as executor:
+                future_to_task = {}
+                for task in url_tasks:
+                    future = executor.submit(_run_url_task, task)
+                    future_to_task[future] = task
+                
+                for future in as_completed(future_to_task):
+                    task = future_to_task[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            url_results.append(result)
+                    except Exception as e:
+                        print(c("red", f"\n❌ 处理 URL {task['watch_url']} 时出错: {str(e)[:200]}"))
+                        import traceback
+                        print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
+        else:
+            # 串行执行
+            for task in url_tasks:
+                try:
+                    result = _run_url_task(task)
+                    if result:
+                        url_results.append(result)
+                except Exception as e:
+                    print(c("red", f"\n❌ 处理 URL {task['watch_url']} 时出错: {str(e)[:200]}"))
+                    import traceback
+                    print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
+        
         # 所有 URL 处理完毕后，生成汇总报告
         if url_results:
             config = {"steps": steps, "max_retries": args.retry, "retry_delay": args.retry_delay, "concurrency": args.concurrency, "force": args.force}
             generate_report(url_results, config, "url")
             print_report_summary(url_results)
         sys.exit(0)
-
-        # dry-run 模式
-        if args.dry_run:
-            print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
-            print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
-            print(f"  输出名称: {c('cyan', args.name if args.name else video_id)}")
-            sys.exit(0)
-
-        # 构建文件路径: output/downloads/<platform>/<name>.mp4
-        DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        dl_dir = DOWNLOADS_DIR / platform
-        dl_dir.mkdir(parents=True, exist_ok=True)
-        file_name = safe_filename(args.name if args.name else video_id)
-        proposed_path = dl_dir / f"{file_name}.mp4"
-
-        # 冲突处理（--force 时直接覆盖）
-        if args.force:
-            final_path = proposed_path
-            final_stem = file_name
-        else:
-            conflict = resolve_url_conflict(proposed_path)
-            if conflict["action"] == "skip":
-                print("\n⏭️  已跳过\n")
-                sys.exit(0)
-            final_path = conflict["path"]
-            final_stem = final_path.stem
-
-        print(f"  文件: {final_path}")
-
-        # 检查 whisper 可用性
-        whisper_available = True
-        if "transcribe" in steps:
-            whisper_available = _check_whisper_available()
-            if not whisper_available:
-                if WHISPER_BACKEND == "local":
-                    backend = "local CLI"
-                elif WHISPER_BACKEND == "faster-whisper":
-                    backend = "faster-whisper (faster_whisper)"
-                elif WHISPER_BACKEND == "funasr":
-                    backend = f"funasr/{FUNASR_MODE}"
-                else:
-                    backend = WHISPER_SERVICE
-                log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
-
-        # 执行流水线
-        _run_url_task({
-            "watch_url": watch_url,
-            "platform": platform,
-            "pkey": pkey,
-            "video_id": video_id,
-            "stem": final_stem,
-            "dl_dir": dl_dir,
-            "steps": steps,
-            "max_retries": args.retry,
-            "retry_delay": args.retry_delay,
-            "force": args.force,
-            "download_timeout": args.download_timeout,
-            "transcode_timeout": args.transcode_timeout,
-            "transcribe_timeout": args.transcribe_timeout,
-            "analyze_timeout": args.analyze_timeout,
-        })
-
-        sys.exit(0)
-
     # ── --input 模式：直接处理本地视频文件（支持多个，支持并发） ──
     if args.input:
         # 多文件时忽略 --name（每个文件用自己的文件名）
