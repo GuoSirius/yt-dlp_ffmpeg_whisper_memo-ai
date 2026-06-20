@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.12] - 2026-06-20
+
+### Bug Fixes
+
+- esm 模块中补充 __filename/__dirname 定义，修复 --version 报错 (`f8b32e1`)
+
+
 ## [1.5.11] - 2026-06-20
 
 ### Features
