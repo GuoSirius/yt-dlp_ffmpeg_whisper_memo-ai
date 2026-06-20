@@ -29,6 +29,10 @@ import { createRequire } from 'module';
 const __require = createRequire(import.meta.url);
 const PKG_VERSION = __require('./package.json').version;
 
+// ESM 中不存在 __filename / __dirname，手动定义
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // 控制台单行动态显示
 import {
   updateLine, clearLine, fmtSize, fmtTime, textBar,
