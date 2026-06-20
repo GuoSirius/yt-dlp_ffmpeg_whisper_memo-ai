@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.5.14] - 2026-06-20
+
+### Features
+
+- `--input` 支持多个值（可多次指定，或逗号/空格/中文逗号分隔；js/python 均改）
+- `--url` 支持多个值（js/python 均改）
+- `--sheet` 支持多个值（可多次指定，或逗号/空格/中文逗号分隔；js/python 均改）
+- `--id` 支持多个值（js/python 均改）
+- README 同步更新：CLI 参数表格、--url/--input 章节、多值使用示例
+
+### Bug Fixes
+
+- Python 版 `run()` 参数顺序修复（`excel_files` 默认值导致语法错误）
+
+### Chores
+
+- 同步 README / .env.example / CHANGELOG 信息一致
+
+
 ## [1.5.13] - 2026-06-20
 
 ### Bug Fixes

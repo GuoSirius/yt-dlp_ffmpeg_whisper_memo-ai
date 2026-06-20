@@ -604,8 +604,8 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|---------|------|
-| `--sheet <name>` | str | 全部 | 指定 sheet 名称 |
-| `--id <id>` | str | — | 指定 extra.id 或 title（单条测试） |
+| `--sheet <name>` | str | 全部 | 指定 sheet 名称（可多次指定，或逗号/空格/中文逗号分隔） |
+| `--id <id>` | str | — | 指定 extra.id 或 title（可多次指定，或逗号/空格/中文逗号分隔） |
 | `--offset <n>` | int | 0 | 跳过前 N 条任务（从 0 开始），适合调试大量数据 |
 | `--limit <n>` | int | 0 | 最多处理 N 条任务，0 表示无限制 |
 | `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `analyze` |
@@ -622,11 +622,11 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | `--init` | flag | off | 复制 .env.example 到当前目录并重命名为 .env |
 | `--file <path>` | path | — | 指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量） |
 | `--output <dir>` | path | `output` | 整体覆盖 `OUTPUT_DIR`（优先级：**CLI > env > 默认**）。子目录名由代码硬编码 |
-| `--input <path>` | path | — | 指定本地视频文件路径（跳过下载，直接转码→识别→分析） |
-| `--url <url>` | str | — | 直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接 |
+| `--input <path>` | path | — | 指定本地视频文件路径（可多次指定，或逗号/空格/中文逗号分隔），跳过下载，直接转码→识别→分析 |
+| `--url <url>` | str | — | 直接指定视频下载链接（可多次指定，或逗号/空格/中文逗号分隔），跳过 Excel |
 | `--content <text 或 path>` | str | — | 直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，仅做 AI 分析 |
 | `--content-column <col>` | str | — | Excel 模式：指定包含已有文本的列名，批量做 AI 分析（自动设 --step analyze） |
-| `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用） |
+| `--name <name>` | str | — | 指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用；**多文件时忽略**） |
 | `--env-file <path>` | path | .env | 指定要加载的 .env 文件路径 |
 | `--whisper-initial-prompt <text\|path>` | str | .env | Whisper 初始提示词（文本或文件路径，CLI 优先级最高） |
 | `--ai-prompt <text\|path>` | str | .env | AI 分析提示词模板（文本或文件路径，CLI 优先级最高） |
@@ -928,6 +928,8 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 ### ② --url 直链模式
 
+> 支持**多个 URL**（可多次指定，或逗号/空格/中文逗号分隔），逐条下载处理。多 URL 时 `--name` 被忽略，每条使用各自解析出的文件名。
+
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
 | 下载 | `output/downloads/{platform}/{name}.mp4` | 视频 | yt-dlp 下载单个视频 |
@@ -939,8 +941,20 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 文本报告 | `output/reports/{platform}/tasks/{name}.txt` | 文本 | 含识别原文 + AI 分析 |
 
 > `{platform}` 由脚本自动从 URL 解析，如 `https://www.youtube.com/watch?v=xxx` → `youtube`。
+> 
+> **多 URL 示例**：
+> ```
+> # 多次指定
+> --url "https://youtu.be/aaa" --url "https://youtu.be/bbb"
+> # 逗号分隔
+> --url "https://youtu.be/aaa,https://youtu.be/bbb"
+> # 空格分隔（Git Bash / Linux）
+> --url "https://youtu.be/aaa https://youtu.be/bbb"
+> ```
 
 ### ③ --input 本地文件模式
+
+> 支持**多个本地文件**（可多次指定，或逗号/空格/中文逗号分隔），逐条处理。多文件时 `--name` 被忽略，每个文件使用自己的文件名。
 
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
@@ -949,10 +963,18 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 识别 | `output/transcripts/local/{stem}.txt` | 文本 | whisper 识别原文 |
 | AI 关键词 | `output/keywords/local/{stem}.txt` | 文本 | AI 关键词归纳结果 |
 | 进度 | `output/progress/local/task_{stem}.json` | JSON | 单任务增量进度 |
-| JSON 报告 | `output/reports/local/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致 |
+| JSON 报告 | `output/reports/local/report_YYYYMMDD_HHMMSS.json` | JSON | 格式与 Excel 模式一致（含所有文件汇总） |
 | 文本报告 | `output/reports/local/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
 
 > `local` 是 `--input` 模式的固定目录名（与 Excel 模式的 sheet 名无关），所有本地文件处理结果统一归入此目录。
+> 
+> **多文件示例**：
+> ```
+> # 多次指定
+> --input "videos/a.mp4" --input "videos/b.mp4"
+> # 逗号分隔
+> --input "videos/a.mp4,videos/b.mp4"
+> ```
 
 ### ④ --content 纯文本模式
 
