@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.5.15] - 2026-06-20
+
+### Features
+
+- --url 模式支持并发处理 (`f5ddf50`)
+- --url 和 --input 模式支持并发处理（p-limit） (`d8973a3`)
+- --input 支持多个值（js/python 均改，可多次指定或逗号/空格/中文逗号分隔） (`172f313`)
+- py 版 --sheet/--file/--url 支持多个值（逗号/空格分隔 + 多次指定） (`12a18b0`)
+- js 版 --file/--url/--sheet 支持多个值（逗号/空格分隔 + 多次指定） (`2ea2118`)
+
+### Bug Fixes
+
+- 让 --url 和 --input 模式的报告配置使用 opts.concurrency (`24ea44b`)
+- --input 模式支持并发处理（ThreadPoolExecutor） (`1d944ef`)
+- 添加 --input 空文件列表检查 (`60427d1`)
+- 修复 --input 循环的 3 个 bug (`a9f8e3f`)
+- python 版 --input 多文件处理缩进修正，循环正确关闭 (`1d41c52`)
+
+### Documentation
+
+- 在 ASR 安装说明中添加缓存目录更改提示 (`0586547`)
+- 更新 README 记录 JS 并发支持及 --concurrency 说明 (`24b19e4`)
+- 更新 CHANGELOG 记录 JS 并发支持 (`c35354c`)
+- 统一 README 安装说明到「安装前准备」章节 (`b37bab5`)
+- 更新 CHANGELOG.md 记录 v1.5.14 的所有修复 (`ee6c2b4`)
+- 更新 2026-06-20 工作日志 (`95f453d`)
+- 同步 --input/--url/--sheet/--id 多值支持到 readme 和 changelog (`26d96c2`)
+
+### Chores
+
+- update before release (`79274a0`)
+- 更新版本号至 1.5.14 (`48ad64c`)
+
+
 ## [1.5.14] - 2026-06-20
 
 ### Features
