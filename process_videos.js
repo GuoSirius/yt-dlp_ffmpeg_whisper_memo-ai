@@ -3610,6 +3610,11 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
   // ── --input 模式：直接处理本地视频文件（支持多个） ──
   if (opts.input?.length) {
+    if (opts.input.length === 0) {
+      console.error(c('red', '错误: --input 未指定任何文件'));
+      console.error(c('dim', '用法: --input <path1> [path2] ... 或 --input path1,path2,...'));
+      process.exit(1);
+    }
     if (opts.name && opts.input.length > 1) {
       logWarn(`--name 在指定多个 --input 时被忽略，每个文件将使用自己的文件名`);
     }
