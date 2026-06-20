@@ -4037,7 +4037,9 @@ if __name__ == "__main__":
 
     run(
         target_sheet=args.sheet,
-        target_ids=[s for v in (args.vid_ids or []) for s in str(v).split(",")] or None,
+        # 兜底：防止 shell（如 PowerShell）将逗号展开为空格
+        target_ids=[s for v in (args.vid_ids or [])
+                    for s in re.split(r'[,，\s]+', str(v)) if s] or None,
         steps=steps,
         offset=args.offset,
         limit=args.limit,

@@ -3007,6 +3007,8 @@ async function run({
   for (const sheetName of sheets) {
     let rows = readExcelSheet(sheetName);
     if (targetIds && targetIds.length) {
+      // 兜底：防止 shell（如 PowerShell）将逗号展开为空格，导致整个字符串作为一个元素传入
+      targetIds = [...targetIds.join(',').split(/[,，\s]+/).map(s => s.trim()).filter(Boolean)];
       const idSet = targetIds.map(String);
       const sampleRow = rows[0];
       const availableCols = sampleRow ? Object.keys(sampleRow) : [];
@@ -3371,8 +3373,9 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .version(PKG_VERSION, '--version', '输出版本号')
     .option('--sheet <name>', '指定 sheet 名称')
-    .option('--id <id>', '指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）', (val, prev) => {
-      const parts = String(val).split(',').map(s => s.trim()).filter(Boolean);
+    .option('--id <id>', '指定 extra.id 或 title，可多次指定或用逗号/空格分隔（如 --id 1,2,3 或 --id 1 2 3）', (val, prev) => {
+      // 同时支持逗号、中文逗号、空白字符分隔（兼容 PowerShell 等 shell 对逗号的解析差异）
+      const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
       return [...(prev || []), ...parts];
     }, [])
     .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', v => parseInt(v, 10), 0)
