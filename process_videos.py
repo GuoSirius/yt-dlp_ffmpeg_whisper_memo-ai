@@ -59,6 +59,14 @@ import requests
 import pandas as pd
 from openpyxl import load_workbook
 
+# 从 package.json 读取版本号（与 JS 版保持一致）
+__version__ = "unknown"
+try:
+    _pkg = json.load(open(os.path.join(os.path.dirname(__file__), "package.json")))
+    __version__ = _pkg.get("version", "unknown")
+except Exception:
+    pass
+
 # ── 控制台单行动态显示 ──
 from console_ui import (
     update_line, clear_line, text_bar, Spinner,
@@ -2929,19 +2937,27 @@ def run(
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
         if target_ids:
             mask = pd.Series([False] * len(df))
+            # ID 列候选名：COL_ID、常见变体
+            id_col_candidates = list(dict.fromkeys([COL_ID, 'id', 'ID', 'Id']))
             for _tid in target_ids:
-                if COL_ID in df.columns:
-                    try:
-                        mask = mask | (df[COL_ID].apply(
-                            lambda x: str(int(float(x))) if pd.notna(x) else ""
-                        ) == str(_tid))
-                    except Exception:
-                        pass
-                if COL_TITLE in df.columns:
+                matched_any_col = False
+                for col in id_col_candidates:
+                    if col in df.columns:
+                        try:
+                            mask = mask | (df[col].apply(
+                                lambda x: str(int(float(x))) if pd.notna(x) else ""
+                            ) == str(_tid))
+                            matched_any_col = True
+                        except Exception:
+                            pass
+                if not matched_any_col and COL_TITLE in df.columns:
                     mask = mask | (df[COL_TITLE].astype(str) == str(_tid))
             df = df[mask]
             if df.empty:
-                log.error(f"Sheet [{sheet_name}] 中找不到 id/title = {target_ids}")
+                available_cols = list(df.columns)
+                log.error(f"Sheet [{sheet_name}] 未找到匹配 --id 的行: {target_ids}")
+                log.error(f"  可用列: {available_cols}")
+                log.error(f"  ID 列候选: {id_col_candidates}  →  请确认 .env 中 COL_ID 是否和 Excel 列名一致")
                 continue
         # 预计算 stems（同 sheet 内去重）
         precompute_stems(df, sheet_name)
@@ -3642,6 +3658,7 @@ if __name__ == "__main__":
   python process_videos.py --dry-run
         """,
     )
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     parser.add_argument("--sheet", help="指定 sheet 名称（默认全部视频 sheet）")
     parser.add_argument("--id", dest="vid_ids", action="append", default=[],
                         help="指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）")

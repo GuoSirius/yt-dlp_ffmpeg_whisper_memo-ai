@@ -24,6 +24,11 @@ import os from 'os';
 import { program } from 'commander';
 import { select, input } from '@inquirer/prompts';
 
+// 读取版本号（用于 --version）
+import { createRequire } from 'module';
+const __require = createRequire(import.meta.url);
+const PKG_VERSION = __require('./package.json').version;
+
 // 控制台单行动态显示
 import {
   updateLine, clearLine, fmtSize, fmtTime, textBar,
@@ -3359,6 +3364,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
   program
     .name('process_videos')
     .description('视频下载、转码、文本识别、AI分析一体化流程')
+    .version(PKG_VERSION, '--version', '输出版本号')
     .option('--sheet <name>', '指定 sheet 名称')
     .option('--id <id>', '指定 extra.id 或 title，可多次指定或逗号分隔（如 --id 1,2,3 或 --id 1 --id 2）', (val, prev) => {
       const parts = String(val).split(',').map(s => s.trim()).filter(Boolean);
