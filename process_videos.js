@@ -501,10 +501,11 @@ function safeFilename(name) {
   return safe || 'unknown';
 }
 
-function readExcelSheet(sheetName) {
-  const wb = XLSX.readFile(EXCEL_FILE);
+function readExcelSheet(sheetName, filePath = null) {
+  const file = filePath || EXCEL_FILE;
+  const wb = XLSX.readFile(file);
   if (!wb.SheetNames.includes(sheetName)) {
-    throw new Error(`Sheet "${sheetName}" not found in ${EXCEL_FILE}`);
+    throw new Error(`Sheet "${sheetName}" not found in ${file}`);
   }
   const ws = wb.Sheets[sheetName];
   return XLSX.utils.sheet_to_json(ws);
@@ -2994,6 +2995,7 @@ async function run({
   concurrency, force, dryRun, retryFailed,
   downloadTimeout, transcodeTimeout, transcribeTimeout, analyzeTimeout,
   offset = 0, rowLimit = 0,
+  excelFiles = null,
 }) {
   // ── 重跑失败模式 ──
   if (retryFailed) {
@@ -3002,10 +3004,14 @@ async function run({
   }
 
   // ── 构建任务列表 ──
-  const sheets = targetSheet ? [targetSheet] : VIDEO_SHEETS;
+  const files = (excelFiles && excelFiles.length)
+    ? excelFiles.map(f => path.resolve(f))
+    : [EXCEL_FILE];
+  const sheets = (targetSheet && targetSheet.length) ? targetSheet : VIDEO_SHEETS;
   let tasks = [];
-  for (const sheetName of sheets) {
-    let rows = readExcelSheet(sheetName);
+  for (const excelFile of files) {
+    for (const sheetName of sheets) {
+    let rows = readExcelSheet(sheetName, excelFile);
     if (targetIds && targetIds.length) {
       // 兜底：防止 shell（如 PowerShell）将逗号展开为空格，导致整个字符串作为一个元素传入
       targetIds = [...targetIds.join(',').split(/[,，\s]+/).map(s => s.trim()).filter(Boolean)];
@@ -3049,6 +3055,7 @@ async function run({
       }
       tasks.push({ row, sheetName });
     }
+  }
   }
 
   // ── 偏移/限量（全局，跨 sheet） ──
@@ -3372,7 +3379,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .name('process_videos')
     .description('视频下载、转码、文本识别、AI分析一体化流程')
     .version(PKG_VERSION, '--version', '输出版本号')
-    .option('--sheet <name>', '指定 sheet 名称')
+    .option('--sheet <name>', '指定 sheet 名称（可多次指定，如 --sheet "Sheet1" --sheet "Sheet2"）', (val, prev) => [...(prev || []), val], [])
     .option('--id <id>', '指定 extra.id 或 title，可多次指定或用逗号/空格分隔（如 --id 1,2,3 或 --id 1 2 3）', (val, prev) => {
       // 同时支持逗号、中文逗号、空白字符分隔（兼容 PowerShell 等 shell 对逗号的解析差异）
       const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
@@ -3399,11 +3406,17 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--dry-run', '干跑模式，只列任务不执行')
     .option('--retry-failed <path>', '从报告 JSON 重跑失败项（output/reports/{sheet}/report_xxx.json）')
     .option('--init', '复制 .env.example 到当前目录并重命名为 .env')
-    .option('--file <path>', '指定 Excel 文件路径（优先级高于 EXCEL_FILE 环境变量）')
+    .option('--file <path>', '指定 Excel 文件路径（可多次指定，逗号/空格/中文逗号分隔）', (val, prev) => {
+      const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+      return [...(prev || []), ...parts];
+    }, [])
     .option('--input <path>', '指定本地视频文件路径（跳过下载，直接转码→识别→分析）')
     .option('--content <text|path>', '直接提供文本内容（文件路径或内联文本），跳过下载/转码/识别，直接做 AI 分析')
     .option('--content-column <col>', 'Excel 模式：指定包含已爬取文本的列名，批量做 AI 分析')
-    .option('--url <url>', '直接指定视频下载链接（跳过 Excel），支持标准链接和内嵌链接')
+    .option('--url <url>', '直接指定视频下载链接（可多次指定，逗号/空格/中文逗号分隔），跳过 Excel', (val, prev) => {
+      const parts = String(val).split(/[,，\s]+/).map(s => s.trim()).filter(Boolean);
+      return [...(prev || []), ...parts];
+    }, [])
     .option('--name <name>', '指定输出文件名，不含扩展名（与 --url / --input / --content 配合使用）')
     .option('--env-file <path>', '指定要加载的 .env 文件路径（默认: 当前目录 .env）')
     .option('--output <dir>', '指定输出根目录（覆盖 OUTPUT_DIR 环境变量；子目录 downloads/transcoded/transcripts/keywords/reports/progress/logs 自动创建）')
@@ -3469,10 +3482,12 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
-  // ── file 覆盖（相对路径相对于 shell cwd 解析，符合 CLI 直觉）──
-  if (opts.file) {
-    EXCEL_FILE = path.resolve(opts.file);
-    logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
+  // ── file 覆盖 ──
+  let excelFiles = [];
+  if (opts.file?.length) {
+    excelFiles = opts.file.map(f => path.resolve(f));
+    EXCEL_FILE = excelFiles[0];
+    logInfo(`Excel 文件: ${excelFiles.join(', ')}`);
   }
 
   // ── output 覆盖（CLI > env > 默认 "output"）──
@@ -3489,97 +3504,104 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     steps.push('analyze');
     logInfo('--content-column 模式：默认 --step analyze');
   }
-  // ── --url 模式：直接处理单个视频链接 ──
-  if (opts.url) {
-    const parsed = parseUrl(opts.url);
-    if (!parsed) {
-      console.error(c('red', `❌ 无法识别的 URL: ${opts.url}`));
-      console.error(c('yellow', '支持的平台: YouTube, B站, 腾讯视频, 优酷'));
-      console.error(c('dim', 'URL 格式示例:'));
-      console.error(c('dim', '  https://www.bilibili.com/video/BV1xxxyyyzzz'));
-      console.error(c('dim', '  https://www.youtube.com/watch?v=xxxxxxxxxxx'));
-      console.error(c('dim', '  https://v.qq.com/x/page/x0000xxxxx.html'));
-      console.error(c('dim', '  https://v.youku.com/v_show/id_XXXXXXX.html'));
-      process.exit(1);
-    }
-
-    console.log(c('dim', '\n── URL 任务 ──'));
-    console.log(`  平台: ${c('cyan', parsed.platform)}`);
-    console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
-    console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
-
-    // dry-run 模式
-    if (opts.dryRun) {
-      console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
-      console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
-      console.log(`  输出名称: ${c('cyan', opts.name || parsed.videoId)}`);
-      process.exit(0);
-    }
-
-    // 构建文件路径: output/downloads/<platform>/<name>.mp4
-    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
-    const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
-    fs.mkdirSync(dlDir, { recursive: true });
-    const fileName = safeFilename(opts.name || parsed.videoId);
-    const proposedPath = path.join(dlDir, `${fileName}.mp4`);
-
-    // 冲突处理（--force 时直接覆盖）
-    let finalPath, finalStem;
-    if (opts.force) {
-      finalPath = proposedPath;
-      finalStem = fileName;
-    } else {
-      const conflict = await resolveUrlConflict(proposedPath);
-      if (conflict.action === 'skip') {
-        console.log(c('yellow', '\n⏭️  已跳过\n'));
-        process.exit(0);
+  // ── --url 模式：直接处理视频链接（支持多个） ──
+  if (opts.url?.length) {
+    const urlResults = [];
+    for (const singleUrl of opts.url) {
+      const parsed = parseUrl(singleUrl);
+      if (!parsed) {
+        console.error(c('red', `❌ 无法识别的 URL: ${singleUrl}`));
+        console.error(c('yellow', '支持的平台: YouTube, B站, 腾讯视频, 优酷'));
+        console.error(c('dim', 'URL 格式示例:'));
+        console.error(c('dim', '  https://www.bilibili.com/video/BV1xxxyyyzzz'));
+        console.error(c('dim', '  https://www.youtube.com/watch?v=xxxxxxxxxxx'));
+        console.error(c('dim', '  https://v.qq.com/x/page/x0000xxxxx.html'));
+        console.error(c('dim', '  https://v.youku.com/v_show/id_XXXXXXX.html'));
+        continue;
       }
-      finalPath = conflict.path;
-      finalStem = path.basename(finalPath, '.mp4');
-    }
 
-    console.log(`  文件: ${c('green', finalPath)}`);
+      console.log(c('dim', `\n── URL 任务: ${singleUrl} ──`));
+      console.log(`  平台: ${c('cyan', parsed.platform)}`);
+      console.log(`  视频ID: ${c('cyan', parsed.videoId)}`);
+      console.log(`  链接: ${c('cyan', parsed.watchUrl)}`);
 
-    // 检查 whisper 可用性
-    let whisperAvailable = false;
-    if (steps.includes('transcribe')) {
-      whisperAvailable = await checkWhisperAvailable();
-      if (!whisperAvailable) {
-        let backend;
-        if (WHISPER_BACKEND === 'local') backend = 'local CLI';
-        else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
-        else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
-        else backend = WHISPER_SERVICE;
-        logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
+      // dry-run 模式
+      if (opts.dryRun) {
+        console.log(c('dim', '\n── 开始执行 (dry-run) ──\n'));
+        console.log(`  将执行步骤: ${c('cyan', steps.join(' → '))}`);
+        console.log(`  输出名称: ${c('cyan', opts.name || parsed.videoId)}`);
+        continue;
+      }
+
+      // 构建文件路径: output/downloads/<platform>/<name>.mp4
+      fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+      const dlDir = path.join(DOWNLOADS_DIR, parsed.platform);
+      fs.mkdirSync(dlDir, { recursive: true });
+      const fileName = safeFilename(opts.name || parsed.videoId);
+      const proposedPath = path.join(dlDir, `${fileName}.mp4`);
+
+      // 冲突处理（--force 时直接覆盖）
+      let finalPath, finalStem;
+      if (opts.force) {
+        finalPath = proposedPath;
+        finalStem = fileName;
+      } else {
+        const conflict = await resolveUrlConflict(proposedPath);
+        if (conflict.action === 'skip') {
+          console.log(c('yellow', `\n⏭️  ${singleUrl} 已跳过\n`));
+          continue;
+        }
+        finalPath = conflict.path;
+        finalStem = path.basename(finalPath, '.mp4');
+      }
+
+      console.log(`  文件: ${c('green', finalPath)}`);
+
+      // 检查 whisper 可用性
+      let whisperAvailable = false;
+      if (steps.includes('transcribe')) {
+        whisperAvailable = await checkWhisperAvailable();
+        if (!whisperAvailable) {
+          let backend;
+          if (WHISPER_BACKEND === 'local') backend = 'local CLI';
+          else if (WHISPER_BACKEND === 'faster-whisper') backend = 'faster-whisper (whisper-ctranslate2)';
+          else if (WHISPER_BACKEND === 'funasr') backend = `funasr/${FUNASR_MODE}`;
+          else backend = WHISPER_SERVICE;
+          logWarn(`⚠️ whisper not available (${backend}), transcribe step will fail`);
+        }
+      }
+
+      // 执行流水线
+      const urlResult = await runUrlTask({
+        watchUrl: parsed.watchUrl,
+        platform: parsed.platform,
+        pkey: parsed.pkey,
+        videoId: parsed.videoId,
+        stem: finalStem,
+        dlDir,
+        steps,
+        maxRetries: opts.retry,
+        retryDelay: opts.retryDelay,
+        force: opts.force || false,
+        downloadTimeout: opts.downloadTimeout,
+        transcodeTimeout: opts.transcodeTimeout,
+        transcribeTimeout: opts.transcribeTimeout,
+        analyzeTimeout: opts.analyzeTimeout,
+        whisperAvailable,
+      });
+
+      // 生成标准报告 JSON（与 Excel 模式格式一致）
+      if (urlResult) {
+        urlResults.push(urlResult);
       }
     }
 
-    // 执行流水线
-    const urlResult = await runUrlTask({
-      watchUrl: parsed.watchUrl,
-      platform: parsed.platform,
-      pkey: parsed.pkey,
-      videoId: parsed.videoId,
-      stem: finalStem,
-      dlDir,
-      steps,
-      maxRetries: opts.retry,
-      retryDelay: opts.retryDelay,
-      force: opts.force || false,
-      downloadTimeout: opts.downloadTimeout,
-      transcodeTimeout: opts.transcodeTimeout,
-      transcribeTimeout: opts.transcribeTimeout,
-      analyzeTimeout: opts.analyzeTimeout,
-      whisperAvailable,
-    });
-
-    // 生成标准报告 JSON（与 Excel 模式格式一致）
-    if (urlResult) {
+    // 所有 URL 处理完毕后，生成汇总报告
+    if (urlResults.length) {
       const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
-      generateReport([urlResult], config, parsed.platform);
-      printReportSummary([urlResult]);
+      generateReport(urlResults, config, 'url');
+      printReportSummary(urlResults);
     }
-
     process.exit(0);
   }
 
@@ -3728,6 +3750,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
   run({
     targetSheet: opts.sheet || null,
+    excelFiles: excelFiles.length ? excelFiles : null,
     targetIds: opts.id || [],
     contentColumn: opts.contentColumn || null,
     steps,
