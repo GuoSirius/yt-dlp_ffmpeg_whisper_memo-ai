@@ -3601,7 +3601,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
     // 所有 URL 处理完毕后，生成汇总报告
     if (urlResults.length) {
-      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
+      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: opts.concurrency || 1, force: opts.force || false };
       generateReport(urlResults, config, 'url');
       printReportSummary(urlResults);
     }
@@ -3759,7 +3759,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
 
     // 所有文件处理完毕后，生成汇总报告
     if (inputResults.length) {
-      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: 1, force: opts.force || false };
+      const config = { steps, max_retries: opts.retry, retry_delay: opts.retryDelay, concurrency: opts.concurrency || 1, force: opts.force || false };
       generateReport(inputResults, config, 'local');
       printReportSummary(inputResults);
     }

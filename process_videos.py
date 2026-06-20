@@ -3938,7 +3938,7 @@ if __name__ == "__main__":
 
         # 所有 URL 处理完毕后，生成汇总报告
         if url_results:
-            config = {"steps": steps, "max_retries": args.retry, "retry_delay": args.retry_delay, "concurrency": 1, "force": args.force}
+            config = {"steps": steps, "max_retries": args.retry, "retry_delay": args.retry_delay, "concurrency": args.concurrency, "force": args.force}
             generate_report(url_results, config, "url")
             print_report_summary(url_results)
         sys.exit(0)
