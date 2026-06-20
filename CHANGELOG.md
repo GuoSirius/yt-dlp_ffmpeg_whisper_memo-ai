@@ -9,10 +9,27 @@
 - `--sheet` 支持多个值（可多次指定，或逗号/空格/中文逗号分隔；js/python 均改）
 - `--id` 支持多个值（js/python 均改）
 - README 同步更新：CLI 参数表格、--url/--input 章节、多值使用示例
+- Py `--input` 模式支持并发处理（使用 `ThreadPoolExecutor`，受 `--concurrency` 控制）
+- JS/Py 的 `--url` 和 `--input` 模式报告配置使用 `opts.concurrency` 而不是硬编码 1
 
 ### Bug Fixes
 
 - Python 版 `run()` 参数顺序修复（`excel_files` 默认值导致语法错误）
+- JS `--input` 循环 `steps` 变量遮蔽问题（改为 `fileSteps`，防止影响报告配置）
+- Py `--input` 循环直接修改主流程 `steps` 变量（改为 `file_steps = steps.copy()`）
+- JS/Py `--input` 循环缺少 inner try/catch 或 try/except（添加异常处理，防止单个文件失败中断整个循环）
+- JS 添加 `--input` 空文件列表检查
+
+### Edge Cases
+
+- Excel 列头中的 `.`（如 `extra.id`）兼容性处理（已确认 pandas/openpyxl 支持）
+- 文件路径中的特殊字符处理（已确认支持）
+- `--name` 与多个文件一起使用时的行为处理（多文件时忽略 `--name`）
+
+### Performance
+
+- Py `--input` 模式支持并发处理（使用 `ThreadPoolExecutor`）
+- JS/Py 的 `--url` 和 `--input` 模式报告配置使用 `opts.concurrency`
 
 ### Chores
 
