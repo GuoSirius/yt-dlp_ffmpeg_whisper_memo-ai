@@ -29,6 +29,7 @@
 ### Performance
 
 - Py `--input` 模式支持并发处理（使用 `ThreadPoolExecutor`）
+- JS `--url` 和 `--input` 模式支持并发处理（使用 `p-limit`，受 `--concurrency` 控制）
 - JS/Py 的 `--url` 和 `--input` 模式报告配置使用 `opts.concurrency`
 
 ### Chores
