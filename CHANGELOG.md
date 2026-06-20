@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.10] - 2026-06-20
+
+### Bug Fixes
+
+- --id 匹配失败无提示、--file 路径解析相对于 cwd 而非项目目录 (`1f24f3f`)
+
+### Chores
+
+- update before release (`7a01a59`)
+
+
 ## [1.5.9] - 2026-06-19
 
 ### Chores
