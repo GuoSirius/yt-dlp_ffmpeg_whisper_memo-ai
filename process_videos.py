@@ -4030,82 +4030,98 @@ if __name__ == "__main__":
             print(c("dim", f"\n── 文件校验 [{file_idx + 1}/{len(args.input)}] ──"))
             print(f"  文件: {c('cyan', str(input_path))}")
 
-        file_info = validate_input_file(input_path)
+            file_info = validate_input_file(input_path)
 
-        if not file_info['valid']:
-            print(c("red", f"\n❌ 无法处理该文件:"))
-            for err in file_info['errors']:
-                print(c("red", f"   - {err}"))
-            sys.exit(1)
+            if not file_info['valid']:
+                print(c("red", f"\n❌ 无法处理该文件:"))
+                for err in file_info['errors']:
+                    print(c("red", f"   - {err}"))
+                continue
 
-        print(f"  格式: {c('cyan', file_info['format'] or 'unknown')}")
-        if file_info['has_video']:
-            video_info = f"{file_info['video_codec']} {file_info['width']}x{file_info['height']}"
-            print(f"  视频: {c('cyan', video_info)}")
-        if file_info['has_audio']:
-            print(f"  音频: {c('cyan', file_info['audio_codec'])}")
-        dur_label = f"{int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d}"
-        print(f"  时长: {c('cyan', dur_label)} ({file_info['duration']:.1f}s)")
+            print(f"  格式: {c('cyan', file_info['format'] or 'unknown')}")
+            if file_info['has_video']:
+                video_info = f"{file_info['video_codec']} {file_info['width']}x{file_info['height']}"
+                print(f"  视频: {c('cyan', video_info)}")
+            if file_info['has_audio']:
+                print(f"  音频: {c('cyan', file_info['audio_codec'])}")
+            dur_label = f"{int(file_info['duration'] // 60)}:{int(file_info['duration'] % 60):02d}"
+            print(f"  时长: {c('cyan', dur_label)} ({file_info['duration']:.1f}s)")
 
-        if file_info['errors']:
-            print(c("yellow", f"\n⚠️  警告:"))
-            for err in file_info['errors']:
-                print(c("yellow", f"   - {err}"))
+            if file_info['errors']:
+                print(c("yellow", f"\n⚠️  警告:"))
+                for err in file_info['errors']:
+                    print(c("yellow", f"   - {err}"))
 
-        print(f"\n  {c('green', '可执行步骤')}: {c('cyan', ' → '.join(file_info['feasible_steps']))}")
+            print(f"\n  {c('green', '可执行步骤')}: {c('cyan', ' → '.join(file_info['feasible_steps']))}")
 
-        # 检查请求的步骤是否都可行
-        for step in steps:
-            if step not in file_info['feasible_steps']:
-                print(c("red", f"\n❌ 错误: 文件不支持 '{step}' 步骤"))
-                print(c("dim", f"   支持的步骤: {', '.join(file_info['feasible_steps'])}"))
-                sys.exit(1)
+            # 检查请求的步骤是否都可行
+            steps_ok = True
+            for step in steps:
+                if step not in file_info['feasible_steps']:
+                    print(c("red", f"\n❌ 错误: 文件不支持 '{step}' 步骤"))
+                    print(c("dim", f"   支持的步骤: {', '.join(file_info['feasible_steps'])}"))
+                    steps_ok = False
+                    break
+            if not steps_ok:
+                continue
 
-        # 确定 sheet 名称（用于输出目录）
-        sheet_name = args.sheet if args.sheet else "local"
+            # 确定输出文件名
+            stem = safe_filename(args.name if len(args.input) == 1 and args.name else input_path.stem)
 
-        # 检查 whisper 可用性
-        whisper_available = True
-        if "transcribe" in steps:
-            whisper_available = _check_whisper_available()
-            if not whisper_available:
-                if WHISPER_BACKEND == "local":
-                    backend = "local CLI"
-                elif WHISPER_BACKEND == "faster-whisper":
-                    backend = "faster-whisper (faster_whisper)"
-                elif WHISPER_BACKEND == "funasr":
-                    backend = f"funasr/{FUNASR_MODE}"
-                else:
-                    backend = WHISPER_SERVICE
-                log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+            # 检查转码输出文件是否已有冲突
+            if "transcode" in steps and not args.force:
+                tc_dir = TRANSCODED_DIR / "local"
+                tc_path = tc_dir / f"{stem}{TRANSCODE_EXT}"
+                conflict = resolve_input_conflict(tc_path)
+                if conflict['action'] == 'skip':
+                    print(c("yellow", f"\n⏭️  已跳过转码"))
+                    steps = [s for s in steps if s != "transcode"]
+                elif conflict['action'] == 'prompt':
+                    # 交互提示（这里简化为跳过）
+                    print(c("yellow", f"\n⏭️  文件已存在，跳过转码"))
+                    steps = [s for s in steps if s != "transcode"]
 
-        # dry-run 模式
-        if args.dry_run:
-            print(c("dim", f"\n── 开始执行 (dry-run) ──\n"))
-            print(f"  [本地文件] 将执行步骤: {c('cyan', ' → '.join(steps))}")
-            print(f"  输入文件: {c('cyan', str(input_path))}")
-            if args.name:
-                print(f"  输出名称: {c('cyan', args.name)}")
-            sys.exit(0)
+            if not steps:
+                print(c("yellow", f"\n无剩余步骤可执行，跳过此文件"))
+                continue
 
-        # 执行流水线
-        result = run_input_task(
-            input_path=input_path,
-            sheet_name=sheet_name,
-            steps=steps,
-            max_retries=args.retry,
-            retry_delay=args.retry_delay,
-            force=args.force,
-            transcode_timeout=args.transcode_timeout,
-            transcribe_timeout=args.transcribe_timeout,
-            analyze_timeout=args.analyze_timeout,
-            custom_name=args.name,
-            whisper_available=whisper_available,
-        )
+            # 确保目录存在
+            if "transcode" in steps:
+                (TRANSCODED_DIR / "local").mkdir(parents=True, exist_ok=True)
 
-        # 收集结果（循环结束后统一生成报告）
-        input_results.append(result)
-            # for [file_idx, input_arg] 循环结束
+            # 检查 whisper 可用性
+            whisper_available = True
+            if "transcribe" in steps:
+                whisper_available = _check_whisper_available()
+                if not whisper_available:
+                    if WHISPER_BACKEND == "local":
+                        backend = "local CLI"
+                    elif WHISPER_BACKEND == "faster-whisper":
+                        backend = "faster-whisper (faster_whisper)"
+                    elif WHISPER_BACKEND == "funasr":
+                        backend = f"funasr/{FUNASR_MODE}"
+                    else:
+                        backend = WHISPER_SERVICE
+                    log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
+
+            # 执行流水线
+            result = run_input_task(
+                input_path=input_path,
+                sheet_name="local",
+                steps=steps,
+                max_retries=args.retry,
+                retry_delay=args.retry_delay,
+                force=args.force,
+                transcode_timeout=args.transcode_timeout,
+                transcribe_timeout=args.transcribe_timeout,
+                analyze_timeout=args.analyze_timeout,
+                custom_name=stem if len(args.input) == 1 and args.name else None,
+                whisper_available=whisper_available,
+            )
+
+            # 收集结果
+            if result:
+                input_results.append(result)
 
         # 所有文件处理完毕后，生成汇总报告
         if input_results:
@@ -4119,16 +4135,18 @@ if __name__ == "__main__":
             report_path = generate_report(input_results, config, sheet_name="local")
             print_report_summary(input_results)
             for r in input_results:
-                print(f"\n  文件: {c('cyan', r.input_path if hasattr(r, 'input_path') else '')}")
-                print(f"  整体状态: {c('green' if r.overall_status == 'success' else 'red', r.overall_status)}")
-                if r.transcode:
-                    print(f"  {c('dim', '转码')}: {r.transcode.status}")
-                if r.transcribe:
-                    print(f"  {c('dim', '识别')}: {r.transcribe.status}")
-                if r.analyze:
-                    print(f"  {c('dim', '分析')}: {r.analyze.status}")
-                if r.error:
-                    print(f"  错误: {r.error}")
+                p = r.get("input_path", "unknown")
+                print(f"\n  文件: {c('cyan', p)}")
+                status = r.get("overall_status", "unknown")
+                print(f"  整体状态: {c('green' if status == 'success' else 'red', status)}")
+                if r.get("transcode"):
+                    print(f"  {'转码'}: {r['transcode']['status']}")
+                if r.get("transcribe"):
+                    print(f"  {'识别'}: {r['transcribe']['status']}")
+                if r.get("analyze"):
+                    print(f"  {'分析'}: {r['analyze']['status']}")
+                if r.get("error"):
+                    print(f"  错误: {r['error']}")
 
         sys.exit(0)
 
