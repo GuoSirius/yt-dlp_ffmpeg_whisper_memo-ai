@@ -82,7 +82,19 @@ pip install pandas openpyxl requests python-dotenv colorama questionary
 pip install openai-whisper
 ```
 - 支持 CPU / CUDA
-- 模型自动下载到 `~/.cache/whisper`
+- 模型自动下载到 `~/.cache/whisper`（Linux/Mac）或 `%USERPROFILE%\.cache\whisper`（Windows）
+- **更改缓存目录**：设置环境变量 `XDG_CACHE_HOME` 指向其他磁盘
+  ```bash
+  # Windows（临时）
+  set XDG_CACHE_HOME=D:\models\whisper
+  
+  # Windows（永久）
+  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  # 变量名：XDG_CACHE_HOME，变量值：D:\models\whisper
+  
+  # Linux/Mac
+  export XDG_CACHE_HOME=/d/models/whisper
+  ```
 - 配置：`WHISPER_BACKEND=local`
 
 #### ② faster-whisper（推荐，速度约 4×）
@@ -92,6 +104,19 @@ pip install faster-whisper
 - **CPU 模式**：`WHISPER_COMPUTE_TYPE=int8`（推荐）
 - **GPU 模式**：`WHISPER_COMPUTE_TYPE=float16` + `WHISPER_DEVICE=cuda`
 - **国内网络**（必备）：设置 `HF_ENDPOINT=https://hf-mirror.com`（清华镜像加速模型下载）
+- 模型自动下载到 `~/.cache/huggingface/hub`（Linux/Mac）或 `%USERPROFILE%\.cache\huggingface\hub`（Windows）
+- **更改缓存目录**：设置环境变量 `HF_HOME` 或 `HF_HUB_CACHE` 指向其他磁盘
+  ```bash
+  # Windows（临时）
+  set HF_HOME=D:\models\huggingface
+  
+  # Windows（永久）
+  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  # 变量名：HF_HOME，变量值：D:\models\huggingface
+  
+  # Linux/Mac
+  export HF_HOME=/d/models/huggingface
+  ```
 - 配置：`WHISPER_BACKEND=faster-whisper`
 
 #### ③ FunASR（中文推荐，中文 WER ~5%）
@@ -130,6 +155,19 @@ funasr-server --device cuda --port 8899
 # FUNASR_SERVICE=http://127.0.0.1:8899
 ```
 
+- 模型自动下载到 `~/.cache/modelscope`（Linux/Mac）或 `%USERPROFILE%\.cache\modelscope`（Windows）
+- **更改缓存目录**：设置环境变量 `MODELSCOPE_CACHE` 指向其他磁盘
+  ```bash
+  # Windows（临时）
+  set MODELSCOPE_CACHE=D:\models\modelscope
+  
+  # Windows（永久）
+  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  # 变量名：MODELSCOPE_CACHE，变量值：D:\models\modelscope
+  
+  # Linux/Mac
+  export MODELSCOPE_CACHE=/d/models/modelscope
+  ```
 - 配置：`WHISPER_BACKEND=funasr`
 
 ---
