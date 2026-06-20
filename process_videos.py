@@ -2936,36 +2936,32 @@ def run(
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
         if target_ids:
-            # ID 列候选名：COL_ID、常见变体
-            id_col_candidates = list(dict.fromkeys([COL_ID, 'id', 'ID', 'Id']))
-            # 构建 mask：任一候选列匹配即入选
             mask = pd.Series([False] * len(df))
-            for _tid in target_ids:
-                for col in id_col_candidates:
-                    if col in df.columns:
-                        try:
-                            # 数字匹配：int(float(x))
-                            m = df[col].apply(
-                                lambda x: str(int(float(x))) if pd.notna(x) else ""
-                            ) == str(_tid)
-                            mask = mask | m
-                        except Exception:
-                            pass
-                        try:
-                            # 字符串直接匹配（防止数字解析失败）
-                            m = df[col].astype(str).str.strip() == str(_tid)
-                            mask = mask | m
-                        except Exception:
-                            pass
-                # title 匹配
-                if COL_TITLE in df.columns:
+            # 按 COL_ID 列匹配（数字 / 字符串均支持）
+            if COL_ID in df.columns:
+                for _tid in target_ids:
+                    try:
+                        m = df[COL_ID].apply(
+                            lambda x: str(int(float(x))) if pd.notna(x) else ""
+                        ) == str(_tid)
+                        mask = mask | m
+                    except Exception:
+                        pass
+                    try:
+                        m = df[COL_ID].astype(str).str.strip() == str(_tid)
+                        mask = mask | m
+                    except Exception:
+                        pass
+            # 按 COL_TITLE 列匹配
+            if COL_TITLE in df.columns:
+                for _tid in target_ids:
                     mask = mask | (df[COL_TITLE].astype(str).str.strip() == str(_tid))
             df = df[mask]
             if df.empty:
                 available_cols = list(df.columns)
                 log.error(f"Sheet [{sheet_name}] 未找到匹配 --id 的行: {target_ids}")
                 log.error(f"  可用列: {available_cols}")
-                log.error(f"  ID 列候选: {id_col_candidates}  →  请确认 .env 中 COL_ID 是否和 Excel 列名一致")
+                log.error(f"  COL_ID={COL_ID}, COL_TITLE={COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致")
                 continue
         # 预计算 stems（同 sheet 内去重）
         precompute_stems(df, sheet_name)

@@ -3006,30 +3006,17 @@ async function run({
       const idSet = targetIds.map(String);
       const sampleRow = rows[0];
       const availableCols = sampleRow ? Object.keys(sampleRow) : [];
-      const idCols = [COL_ID, 'id', 'ID', 'Id'].filter((v, i, a) => a.indexOf(v) === i);
-
-      // 调试：打印前 3 行的各 ID 列值
-      if (process.env.AI_DEBUG === 'true') {
-        const debugRows = rows.slice(0, Math.min(3, rows.length));
-        for (const [i, r] of debugRows.entries()) {
-          const parts = idCols.filter(c => r[c] != null).map(c => `${c}=${JSON.stringify(r[c])}`);
-          logInfo(`[DEBUG] row${i} idCols: ${parts.join(', ') || '(all null)'}`);
-        }
-        logInfo(`[DEBUG] idSet = ${JSON.stringify(idSet)}`);
-      }
 
       rows = rows.filter(row => {
-        for (const col of idCols) {
-          if (row[col] == null) continue;
-          const rowStr = String(row[col]).trim();
-          // 数字匹配（如 343 → "343"）
+        // 按 COL_ID 列匹配（数字 / 字符串均支持）
+        if (row[COL_ID] != null) {
+          const rowStr = String(row[COL_ID]).trim();
           if (!isNaN(Number(rowStr))) {
             if (idSet.includes(String(Math.floor(Number(rowStr))))) return true;
           }
-          // 字符串直接匹配（如 title 中含特殊字符时）
           if (idSet.includes(rowStr)) return true;
         }
-        // 按标题匹配
+        // 按 COL_TITLE 列匹配
         if (row[COL_TITLE] != null) {
           const titleStr = String(row[COL_TITLE]).trim();
           if (idSet.includes(titleStr)) return true;
@@ -3039,7 +3026,7 @@ async function run({
       if (!rows.length) {
         logError(`Sheet [${sheetName}] 未找到匹配 --id 的行: ${idSet.join(', ')}`);
         logError(`  可用列: ${availableCols.join(', ')}`);
-        logError(`  ID 列候选: ${idCols.join(', ')}  →  请确认 .env 中 COL_ID 是否和 Excel 列名一致`);
+        logError(`  COL_ID=${COL_ID}, COL_TITLE=${COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致`);
         continue;
       }
     }
