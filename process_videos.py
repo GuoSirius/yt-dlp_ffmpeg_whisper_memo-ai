@@ -4026,6 +4026,8 @@ if __name__ == "__main__":
         input_results = []
         for file_idx, input_arg in enumerate(args.input):
             input_path = Path(input_arg).resolve()
+            # 创建 steps 副本，避免修改主流程的 steps 变量
+            file_steps = steps.copy()
 
             print(c("dim", f"\n── 文件校验 [{file_idx + 1}/{len(args.input)}] ──"))
             print(f"  文件: {c('cyan', str(input_path))}")
@@ -4069,29 +4071,29 @@ if __name__ == "__main__":
             stem = safe_filename(args.name if len(args.input) == 1 and args.name else input_path.stem)
 
             # 检查转码输出文件是否已有冲突
-            if "transcode" in steps and not args.force:
+            if "transcode" in file_steps and not args.force:
                 tc_dir = TRANSCODED_DIR / "local"
                 tc_path = tc_dir / f"{stem}{TRANSCODE_EXT}"
                 conflict = resolve_input_conflict(tc_path)
                 if conflict['action'] == 'skip':
                     print(c("yellow", f"\n⏭️  已跳过转码"))
-                    steps = [s for s in steps if s != "transcode"]
+                    file_steps = [s for s in file_steps if s != "transcode"]
                 elif conflict['action'] == 'prompt':
                     # 交互提示（这里简化为跳过）
                     print(c("yellow", f"\n⏭️  文件已存在，跳过转码"))
-                    steps = [s for s in steps if s != "transcode"]
+                    file_steps = [s for s in file_steps if s != "transcode"]
 
-            if not steps:
+            if not file_steps:
                 print(c("yellow", f"\n无剩余步骤可执行，跳过此文件"))
                 continue
 
             # 确保目录存在
-            if "transcode" in steps:
+            if "transcode" in file_steps:
                 (TRANSCODED_DIR / "local").mkdir(parents=True, exist_ok=True)
 
             # 检查 whisper 可用性
             whisper_available = True
-            if "transcribe" in steps:
+            if "transcribe" in file_steps:
                 whisper_available = _check_whisper_available()
                 if not whisper_available:
                     if WHISPER_BACKEND == "local":
@@ -4105,28 +4107,35 @@ if __name__ == "__main__":
                     log.warning(f"⚠️ whisper not available ({backend}), transcribe step will fail")
 
             # 执行流水线
-            result = run_input_task(
-                input_path=input_path,
-                sheet_name="local",
-                steps=steps,
-                max_retries=args.retry,
-                retry_delay=args.retry_delay,
-                force=args.force,
-                transcode_timeout=args.transcode_timeout,
-                transcribe_timeout=args.transcribe_timeout,
-                analyze_timeout=args.analyze_timeout,
-                custom_name=stem if len(args.input) == 1 and args.name else None,
-                whisper_available=whisper_available,
-            )
+            try:
+                result = run_input_task(
+                    input_path=input_path,
+                    sheet_name="local",
+                    steps=file_steps,
+                    max_retries=args.retry,
+                    retry_delay=args.retry_delay,
+                    force=args.force,
+                    transcode_timeout=args.transcode_timeout,
+                    transcribe_timeout=args.transcribe_timeout,
+                    analyze_timeout=args.analyze_timeout,
+                    custom_name=stem if len(args.input) == 1 and args.name else None,
+                    whisper_available=whisper_available,
+                )
 
-            # 收集结果
-            if result:
-                input_results.append(result)
+                # 收集结果
+                if result:
+                    input_results.append(result)
+            except Exception as e:
+                print(c("red", f"\n❌ 处理文件 {input_path} 时出错: {str(e)[:200]}"))
+                import traceback
+                print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
+                print(c("yellow", "\n  跳过，继续处理下一个文件...\n"))
+                continue
 
         # 所有文件处理完毕后，生成汇总报告
         if input_results:
             config = {
-                "steps": steps,
+                "steps": file_steps,
                 "max_retries": args.retry,
                 "retry_delay": args.retry_delay,
                 "concurrency": 1,
