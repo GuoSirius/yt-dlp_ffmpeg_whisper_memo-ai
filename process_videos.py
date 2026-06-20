@@ -2936,22 +2936,30 @@ def run(
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
         if target_ids:
-            mask = pd.Series([False] * len(df))
             # ID 列候选名：COL_ID、常见变体
             id_col_candidates = list(dict.fromkeys([COL_ID, 'id', 'ID', 'Id']))
+            # 构建 mask：任一候选列匹配即入选
+            mask = pd.Series([False] * len(df))
             for _tid in target_ids:
-                matched_any_col = False
                 for col in id_col_candidates:
                     if col in df.columns:
                         try:
-                            mask = mask | (df[col].apply(
+                            # 数字匹配：int(float(x))
+                            m = df[col].apply(
                                 lambda x: str(int(float(x))) if pd.notna(x) else ""
-                            ) == str(_tid))
-                            matched_any_col = True
+                            ) == str(_tid)
+                            mask = mask | m
                         except Exception:
                             pass
-                if not matched_any_col and COL_TITLE in df.columns:
-                    mask = mask | (df[COL_TITLE].astype(str) == str(_tid))
+                        try:
+                            # 字符串直接匹配（防止数字解析失败）
+                            m = df[col].astype(str).str.strip() == str(_tid)
+                            mask = mask | m
+                        except Exception:
+                            pass
+                # title 匹配
+                if COL_TITLE in df.columns:
+                    mask = mask | (df[COL_TITLE].astype(str).str.strip() == str(_tid))
             df = df[mask]
             if df.empty:
                 available_cols = list(df.columns)

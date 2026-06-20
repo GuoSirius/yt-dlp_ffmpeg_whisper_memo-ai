@@ -44,9 +44,6 @@ if (_envFileIdx !== -1 && _envFileIdx + 1 < process.argv.length) {
 }
 dotenv.config({ path: _dotenvPath, override: true });
 
-// ============================== 路径配置 ==============================
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const BASE_DIR = process.cwd();
 
 function envPath(key, defaultValue) {
@@ -3007,19 +3004,36 @@ async function run({
     let rows = readExcelSheet(sheetName);
     if (targetIds && targetIds.length) {
       const idSet = targetIds.map(String);
-      // 预备：收集可用列名（过滤前先拿第一行）
       const sampleRow = rows[0];
       const availableCols = sampleRow ? Object.keys(sampleRow) : [];
-      // ID 列候选名：COL_ID、常见变体
       const idCols = [COL_ID, 'id', 'ID', 'Id'].filter((v, i, a) => a.indexOf(v) === i);
+
+      // 调试：打印前 3 行的各 ID 列值
+      if (process.env.AI_DEBUG === 'true') {
+        const debugRows = rows.slice(0, Math.min(3, rows.length));
+        for (const [i, r] of debugRows.entries()) {
+          const parts = idCols.filter(c => r[c] != null).map(c => `${c}=${JSON.stringify(r[c])}`);
+          logInfo(`[DEBUG] row${i} idCols: ${parts.join(', ') || '(all null)'}`);
+        }
+        logInfo(`[DEBUG] idSet = ${JSON.stringify(idSet)}`);
+      }
+
       rows = rows.filter(row => {
-        // 按 ID 列候选名逐一尝试
         for (const col of idCols) {
           if (row[col] == null) continue;
-          if (idSet.includes(String(Math.floor(Number(row[col]))))) return true;
+          const rowStr = String(row[col]).trim();
+          // 数字匹配（如 343 → "343"）
+          if (!isNaN(Number(rowStr))) {
+            if (idSet.includes(String(Math.floor(Number(rowStr))))) return true;
+          }
+          // 字符串直接匹配（如 title 中含特殊字符时）
+          if (idSet.includes(rowStr)) return true;
         }
         // 按标题匹配
-        if (idSet.includes(String(row[COL_TITLE]))) return true;
+        if (row[COL_TITLE] != null) {
+          const titleStr = String(row[COL_TITLE]).trim();
+          if (idSet.includes(titleStr)) return true;
+        }
         return false;
       });
       if (!rows.length) {
@@ -3461,19 +3475,15 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
-  // ── file 覆盖（相对路径基于项目目录 BASE_DIR，而非 shell cwd）──
+  // ── file 覆盖（相对路径相对于 shell cwd 解析，符合 CLI 直觉）──
   if (opts.file) {
-    EXCEL_FILE = path.isAbsolute(opts.file)
-      ? opts.file
-      : path.resolve(BASE_DIR, opts.file);
+    EXCEL_FILE = path.resolve(opts.file);
     logInfo(`Excel 文件覆盖为: ${EXCEL_FILE}`);
   }
 
   // ── output 覆盖（CLI > env > 默认 "output"）──
   if (opts.output) {
-    const newRoot = path.isAbsolute(opts.output)
-      ? path.resolve(opts.output)
-      : path.resolve(BASE_DIR, opts.output);
+    const newRoot = path.resolve(opts.output);
     if (newRoot !== OUTPUT_DIR) {
       applyOutputDir(newRoot, logInfo);
     }
