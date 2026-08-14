@@ -577,12 +577,13 @@ function loadTaskProgress(sheetName, stem) {
 // ── Excel 实时写回缓存（M2）────────────────────────────────────────────────
 // 优化前：每条任务完成都全量 readFile + writeFile 整表，被写锁串行化，高并发吞吐被拖垮。
 // 优化后：首次写入时把整表加载进内存（_excelWb），每条任务只在内存中改单元格并标记脏，
-//         由定时器（默认每 2s）/ process exit / SIGINT·SIGTERM 落盘。
+//         由定时器（默认每 3s，可用 EXCEL_FLUSH_INTERVAL ms 覆盖）/ process exit / SIGINT·SIGTERM 落盘。
 //         中断时最多丢失一个 flush 间隔内的修改，远优于丢失全部已完成结果。
 let _excelWb = null;             // 缓存的 workbook
 let _excelDirty = false;         // 是否有未落盘修改
 let _excelFlushStarted = false;  // 只启动一次
-const EXCEL_FLUSH_INTERVAL = 2000; // ms
+// 周期落盘间隔（ms）。中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
+const EXCEL_FLUSH_INTERVAL = parseInt(process.env.EXCEL_FLUSH_INTERVAL || '3000', 10);
 
 function _ensureExcelLoaded() {
   if (_excelWb) return _excelWb;

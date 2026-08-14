@@ -391,12 +391,13 @@ _model_load_lock = Lock()  # 模型懒加载锁（并发转录时避免重复加
 # ── Excel 实时写回缓存（M2）────────────────────────────────────────────────
 # 优化前：每条任务完成都全量 reload+save 整张表，并被 _excel_lock 串行化，高并发吞吐被拖垮。
 # 优化后：首次写入时把整表加载进内存，每条任务只在内存中改单元格并标记脏，
-#         由后台 flush 线程（默认每 2s）/ atexit / 信号 handler 落盘。
+#         由后台 flush 线程（默认每 3s，可用 EXCEL_FLUSH_INTERVAL 秒 覆盖）/ atexit / 信号 handler 落盘。
 #         中断时最多丢失一个 flush 间隔内的修改，远优于丢失全部已完成结果。
 _EXCEL_WB = None          # 缓存的 Workbook 对象
 _EXCEL_DIRTY = False      # 是否有未落盘的修改
 _EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
-EXCEL_FLUSH_INTERVAL = 2.0   # 周期落盘间隔（秒）
+# 周期落盘间隔（秒）。中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
+EXCEL_FLUSH_INTERVAL = float(os.getenv("EXCEL_FLUSH_INTERVAL", "3.0"))
 _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
 # ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
