@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.16] - 2026-08-14
+
+### Bug Fixes
+
+- 留空 VIDEO_SHEETS 时枚举全部 sheet（js/py 双版本） (`cc7db0f`)
+
+### Documentation
+
+- update (`4672a3c`)
+
+
 ## [1.5.15] - 2026-06-20
 
 ### Features
