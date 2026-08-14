@@ -46,6 +46,7 @@ import json
 import time
 import signal
 import atexit
+import socket
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -406,6 +407,9 @@ _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 MIN_TRANSCRIPT_CHARS = int(os.getenv("MIN_TRANSCRIPT_CHARS", "50"))
 # analyze 产物最小长度（字符），低于此视为残缺
 MIN_KEYWORDS_CHARS = int(os.getenv("MIN_KEYWORDS_CHARS", "5"))
+
+# 代理预检：TCP 探测超时（毫秒，与 JS 端同名同单位）。设为 0 可关闭代理预检。
+PROXY_PROBE_TIMEOUT = int(os.getenv("PROXY_PROBE_TIMEOUT", "2000"))
 
 
 def transcript_path(sheet_name: str, stem: str) -> Path:
@@ -1355,13 +1359,84 @@ def _check_whisper_available() -> bool:
             return False
 
 
+def _parse_proxy_endpoint(proxy_url: str) -> tuple[str, int] | None:
+    """把 *_PROXY 配置解析成 (host, port)。
+
+    支持 http://host:port、https://、socks5://、socks5h://，
+    也容忍 user:pass@host:port 与省略 scheme 的写法。解析不出来返回 None。"""
+    if not proxy_url:
+        return None
+    s = str(proxy_url).strip()
+    scheme = "http"
+    m = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*)://", s)
+    if m:
+        scheme = m.group(1).lower()
+        s = s[m.end():]
+    if "@" in s:                      # 去掉认证信息 user:pass@
+        s = s.rsplit("@", 1)[1]
+    if "/" in s:                      # 去掉路径
+        s = s.split("/", 1)[0]
+    host, port = s, 0
+    if ":" in s:
+        host, _, port_str = s.rpartition(":")
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 0
+    if port <= 0:                     # 缺省端口
+        port = 1080 if scheme.startswith("socks") else (443 if scheme == "https" else 80)
+    if not host:
+        return None
+    return host, port
+
+
+def _probe_tcp(host: str, port: int, timeout_ms: int = 2000) -> bool:
+    """TCP 连通性探测（仅确认端口有服务监听，不做协议握手）。"""
+    try:
+        with socket.create_connection((host, port), timeout=timeout_ms / 1000.0):
+            return True
+    except Exception:
+        return False
+
+
+def _check_proxies(result: dict) -> None:
+    """对所有配置了 *_PROXY 的平台做代理预检（同一 proxy 只探测一次）。"""
+    proxy_map: dict[str, list[str]] = {}
+    for pkey, cfg in PLATFORM_CONFIG.items():
+        proxy = (cfg or {}).get("proxy", "")
+        if not proxy:
+            continue
+        proxy_map.setdefault(proxy, []).append(pkey)
+
+    for proxy_url, pkeys in proxy_map.items():
+        env_names = " / ".join(
+            f"{_PKEY_ENV_PREFIX.get(k, k.upper())}_PROXY" for k in pkeys
+        )
+        ep = _parse_proxy_endpoint(proxy_url)
+        if ep is None:
+            result["proxy"] = False
+            result["all_ok"] = False
+            result["issues"].append(f"代理地址无法解析: {proxy_url}（{env_names}）")
+            continue
+        host, port = ep
+        if not _probe_tcp(host, port, PROXY_PROBE_TIMEOUT):
+            result["proxy"] = False
+            result["all_ok"] = False
+            result["issues"].append(
+                f"代理不可用: {proxy_url} 连不上（平台: {', '.join(pkeys)}）\n"
+                f"      · {host}:{port} 当前无服务监听，走该代理的平台会 100% 下载失败\n"
+                f"      · 请在代理客户端查看实际的「混合端口 / HTTP 端口」，"
+                f"并把 .env 里的 {env_names} 改成该端口"
+            )
+
+
 def check_environment(steps: list[str]) -> dict:
     """检测本次执行涉及的工具/服务是否可用。
 
     返回 {"all_ok": bool, "issues": [str], "ytdlp": bool, ...}"""
     result: dict = {
         "ytdlp": True, "ffmpeg": True, "ffprobe": True,
-        "whisper": True, "ai": True, "all_ok": True, "issues": [],
+        "whisper": True, "ai": True, "proxy": True, "all_ok": True, "issues": [],
     }
 
     if "download" in steps:
@@ -1369,6 +1444,9 @@ def check_environment(steps: list[str]) -> dict:
             result["ytdlp"] = False
             result["all_ok"] = False
             result["issues"].append(f"yt-dlp 不可用 ({YTDLP})")
+        # 代理预检：PROXY_PROBE_TIMEOUT=0 可关闭
+        if PROXY_PROBE_TIMEOUT > 0:
+            _check_proxies(result)
 
     if "transcode" in steps:
         if shutil.which(FFMPEG) is None:
@@ -2272,6 +2350,15 @@ def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) ->
                 print(f"  ✅ yt-dlp: 可用 ({YTDLP})")
             else:
                 print(f"  ❌ yt-dlp: 不可用 ({YTDLP})")
+            # 代理状态：仅列出配置了 *_PROXY 的平台
+            proxied = [(k, v["proxy"]) for k, v in PLATFORM_CONFIG.items() if (v or {}).get("proxy")]
+            if not proxied:
+                print(f"  ⏭ 代理: 未配置 *_PROXY（全部直连）")
+            elif PROXY_PROBE_TIMEOUT <= 0:
+                print(f"  ⏭ 代理: 已配置 {len(proxied)} 个，预检已关闭 (PROXY_PROBE_TIMEOUT=0)")
+            else:
+                label = ", ".join(f"{k}→{p}" for k, p in proxied)
+                print(f"  {'✅' if env['proxy'] else '❌'} 代理: {label}")
         else:
             print(f"  ⏭ yt-dlp: 未启用（步骤不含 download）")
         # ffmpeg

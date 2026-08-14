@@ -21,6 +21,7 @@ import XLSX from 'xlsx';
 import pLimit from 'p-limit';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import net from 'net';
 import { program } from 'commander';
 import { select, input } from '@inquirer/prompts';
 
@@ -93,6 +94,9 @@ applyOutputDir(OUTPUT_DIR);
 // 断点续跑：产物最小长度阈值
 const MIN_TRANSCRIPT_CHARS = parseInt(process.env.MIN_TRANSCRIPT_CHARS || '50', 10);
 const MIN_KEYWORDS_CHARS = parseInt(process.env.MIN_KEYWORDS_CHARS || '5', 10);
+
+// 代理预检：TCP 探测超时（毫秒），设为 0 可关闭代理预检
+const PROXY_PROBE_TIMEOUT = parseInt(process.env.PROXY_PROBE_TIMEOUT || '2000', 10);
 
 const YTDLP = process.env.YTDLP || 'yt-dlp';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
@@ -987,10 +991,87 @@ async function checkWhisperAvailable() {
   }
 }
 
+// ── 代理连通性探测 ──
+// 解析 *_PROXY 配置为 { scheme, host, port }
+// 支持 http://host:port、https://、socks5://、socks5h://，也容忍 user:pass@host:port 与省略 scheme
+function parseProxyEndpoint(proxyUrl) {
+  if (!proxyUrl) return null;
+  let s = String(proxyUrl).trim();
+  let scheme = 'http';
+  const m = s.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):\/\//);
+  if (m) { scheme = m[1].toLowerCase(); s = s.slice(m[0].length); }
+  const at = s.lastIndexOf('@');          // 去掉认证信息 user:pass@
+  if (at >= 0) s = s.slice(at + 1);
+  const slash = s.indexOf('/');           // 去掉路径
+  if (slash >= 0) s = s.slice(0, slash);
+  let host = s, port = NaN;
+  const idx = s.lastIndexOf(':');
+  if (idx >= 0) {
+    host = s.slice(0, idx);
+    port = parseInt(s.slice(idx + 1), 10);
+  }
+  if (!port || Number.isNaN(port)) {      // 缺省端口
+    if (scheme.startsWith('socks')) port = 1080;
+    else if (scheme === 'https') port = 443;
+    else port = 80;
+  }
+  if (!host) return null;
+  return { scheme, host, port };
+}
+
+// TCP 连通性探测（仅确认端口有服务监听，不做协议握手）
+function probeTcp(host, port, timeout = 2000) {
+  return new Promise(resolve => {
+    const socket = new net.Socket();
+    let done = false;
+    const finish = ok => {
+      if (done) return;
+      done = true;
+      try { socket.destroy(); } catch { }
+      resolve(ok);
+    };
+    socket.setTimeout(timeout);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    try { socket.connect(port, host); } catch { finish(false); }
+  });
+}
+
+// 对所有配置了 *_PROXY 的平台做代理预检（同一 proxy 只探测一次）
+async function checkProxies(result) {
+  const proxyMap = new Map();   // proxyUrl -> [pkey, ...]
+  for (const [pkey, cfg] of Object.entries(PLATFORM_CONFIG)) {
+    if (!cfg || !cfg.proxy) continue;
+    if (!proxyMap.has(cfg.proxy)) proxyMap.set(cfg.proxy, []);
+    proxyMap.get(cfg.proxy).push(pkey);
+  }
+  for (const [proxyUrl, pkeys] of proxyMap.entries()) {
+    const envNames = pkeys.map(k => `${_PKEY_ENV_PREFIX[k] || k.toUpperCase()}_PROXY`).join(' / ');
+    const ep = parseProxyEndpoint(proxyUrl);
+    if (!ep) {
+      result.proxy = false;
+      result.allOk = false;
+      result.issues.push(`代理地址无法解析: ${proxyUrl}（${envNames}）`);
+      continue;
+    }
+    const ok = await probeTcp(ep.host, ep.port, PROXY_PROBE_TIMEOUT);
+    if (!ok) {
+      result.proxy = false;
+      result.allOk = false;
+      result.issues.push(
+        `代理不可用: ${proxyUrl} 连不上（平台: ${pkeys.join(', ')}）\n`
+        + `      · ${ep.host}:${ep.port} 当前无服务监听，走该代理的平台会 100% 下载失败\n`
+        + `      · 请在代理客户端查看实际的「混合端口 / HTTP 端口」，并把 .env 里的 ${envNames} 改成该端口`
+      );
+    }
+  }
+}
+
 function checkEnvironment(steps) {
   const result = {
     ytdlp: true, ffmpeg: true, ffprobe: true,
-    whisper: true, ai: true, allOk: true, issues: []
+    whisper: true, ai: true, proxy: true, allOk: true, issues: []
   };
   // We can only do sync checks here, async ones deferred
   if (steps.includes('download') && !which(YTDLP)) {
@@ -1046,6 +1127,10 @@ async function checkEnvironmentAsync(steps) {
       } else backend = `service ${WHISPER_SERVICE}`;
       result.issues.push(`whisper not available (${backend})`);
     }
+  }
+  // 代理预检：只在需要下载时做，PROXY_PROBE_TIMEOUT=0 可关闭
+  if (steps.includes('download') && PROXY_PROBE_TIMEOUT > 0) {
+    await checkProxies(result);
   }
   return result;
 }
@@ -3237,6 +3322,16 @@ function printDryRun(tasks, steps, env) {
   console.log(`\n  ${c('bold', '环境检测:')}`);
   if (steps.includes('download')) {
     console.log(`  ${env.ytdlp ? c('green', '✅ yt-dlp') : c('red', '❌ yt-dlp')}: ${YTDLP}`);
+    // 代理状态：仅列出配置了 *_PROXY 的平台
+    const proxied = Object.entries(PLATFORM_CONFIG).filter(([, cfg]) => cfg && cfg.proxy);
+    if (!proxied.length) {
+      console.log(`  ${c('dim', '⏭ 代理: 未配置 *_PROXY（全部直连）')}`);
+    } else if (PROXY_PROBE_TIMEOUT <= 0) {
+      console.log(`  ${c('dim', `⏭ 代理: 已配置 ${proxied.length} 个，预检已关闭 (PROXY_PROBE_TIMEOUT=0)`)}`);
+    } else {
+      const label = proxied.map(([pkey, cfg]) => `${pkey}→${cfg.proxy}`).join(', ');
+      console.log(`  ${env.proxy ? c('green', `✅ 代理: ${label}`) : c('red', `❌ 代理: ${label}`)}`);
+    }
   } else {
     console.log(`  ${c('dim', '⏭ yt-dlp: 未启用（步骤不含 download）')}`);
   }
