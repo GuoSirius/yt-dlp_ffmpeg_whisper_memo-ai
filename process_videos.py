@@ -152,7 +152,7 @@ WHISPER_SERVICE_MODEL = os.getenv("WHISPER_SERVICE_MODEL", "")
 
 # ── Whisper 本地模式参数（local / faster-whisper 通用） ──         //
 WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")  # 任务类型: transcribe/translate
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")  # 模型名: tiny/base/small/medium/large-v3/turbo
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")  # 模型名: tiny/base/small/medium/large-v3/turbo
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "")  # 语言: 设 zh 避免繁体混入; 留空=自动检测
 WHISPER_MODEL_DIR = os.getenv("WHISPER_MODEL_DIR", "")  # 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")  # cpu / cuda
@@ -1410,14 +1410,21 @@ def _probe_tcp(host: str, port: int, timeout_ms: int = 2000) -> bool:
         return False
 
 
-def _check_proxies(result: dict) -> None:
-    """对所有配置了 *_PROXY 的平台做代理预检（同一 proxy 只探测一次）。"""
+def _check_proxies(result: dict, tasks=None, force: bool = False) -> None:
+    """对需要走代理下载的平台做代理预检（同一 proxy 只探测一次）。
+
+    tasks/force 提供时只查确实有待下载任务的 proxy；两者皆空则跳过探测。"""
+    needed = compute_needed_proxy_urls(tasks, force) if tasks else None
     proxy_map: dict[str, list[str]] = {}
     for pkey, cfg in PLATFORM_CONFIG.items():
         proxy = (cfg or {}).get("proxy", "")
         if not proxy:
             continue
+        if needed is not None and proxy not in needed:
+            continue
         proxy_map.setdefault(proxy, []).append(pkey)
+    if not proxy_map:
+        return  # 没有需要代理下载的平台，跳过预检
 
     for proxy_url, pkeys in proxy_map.items():
         env_names = " / ".join(
@@ -1441,7 +1448,39 @@ def _check_proxies(result: dict) -> None:
             )
 
 
-def check_environment(steps: list[str]) -> dict:
+def compute_needed_proxy_urls(tasks, force: bool) -> set:
+    """本批真正需要走代理下载的 proxy 集合。
+
+    仅当任务属于配置了 *_PROXY 的平台、且本地尚无已下载文件
+    （--force 时一律视为需要）才计入。下载已全部完成 / 仅跑后三步时
+    返回空集，代理预检应直接跳过，避免无意义失败中断执行。"""
+    needed: set = set()
+    if not tasks:
+        return needed
+    for item in tasks:
+        if isinstance(item, tuple):
+            row, sheet_name = item[0], item[1]
+        elif isinstance(item, dict):
+            row, sheet_name = item.get("row"), item.get("sheetName")
+        else:
+            continue
+        pkey, _vid = get_video_id(row)
+        if not pkey:
+            continue
+        cfg = PLATFORM_CONFIG.get(pkey)
+        if not cfg or not (cfg or {}).get("proxy"):
+            continue
+        stem = stem_name(row, sheet_name)
+        dl_dir = DOWNLOADS_DIR / sheet_name
+        if force:
+            needed.add(cfg["proxy"])
+            continue
+        if find_downloaded_file(dl_dir, stem) is None:
+            needed.add(cfg["proxy"])
+    return needed
+
+
+def check_environment(steps: list[str], tasks=None, force: bool = False) -> dict:
     """检测本次执行涉及的工具/服务是否可用。
 
     返回 {"all_ok": bool, "issues": [str], "ytdlp": bool, ...}"""
@@ -1455,9 +1494,9 @@ def check_environment(steps: list[str]) -> dict:
             result["ytdlp"] = False
             result["all_ok"] = False
             result["issues"].append(f"yt-dlp 不可用 ({YTDLP})")
-        # 代理预检：PROXY_PROBE_TIMEOUT=0 可关闭
+        # 代理预检：仅本批确有走代理下载的任务时做；PROXY_PROBE_TIMEOUT=0 可关闭
         if PROXY_PROBE_TIMEOUT > 0:
-            _check_proxies(result)
+            _check_proxies(result, tasks, force)
 
     if "transcode" in steps:
         if shutil.which(FFMPEG) is None:
@@ -2343,14 +2382,15 @@ def compute_summary(results: list[TaskResult]) -> dict:
             "partial": partial, "failed": failed, "no_video": no_video}
 
 
-def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) -> bool:
+def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str,
+                           tasks=None, force: bool = False) -> bool:
     """环境检测 + 用户确认（统一逻辑，消除 run() 和 run_from_report() 的重复代码）。
 
     - 非 dry_run：检测环境，有问题则列出并询问用户是否继续；用户取消返回 False
     - dry_run：检测环境并打印详细状态，始终返回 True（干跑不执行）
     返回 True = 继续执行，False = 用户取消
     """
-    env = check_environment(steps)
+    env = check_environment(steps, tasks, force)
 
     if dry_run:
         # 干跑模式：打印环境检测详情
@@ -2368,8 +2408,12 @@ def _check_and_confirm_env(steps: list[str], dry_run: bool, confirm_msg: str) ->
             elif PROXY_PROBE_TIMEOUT <= 0:
                 print(f"  ⏭ 代理: 已配置 {len(proxied)} 个，预检已关闭 (PROXY_PROBE_TIMEOUT=0)")
             else:
-                label = ", ".join(f"{k}→{p}" for k, p in proxied)
-                print(f"  {'✅' if env['proxy'] else '❌'} 代理: {label}")
+                needed = compute_needed_proxy_urls(tasks, force) if tasks else {p for _, p in proxied}
+                if not needed:
+                    print(f"  ⏭ 代理: 已配置但本批无待下载任务（跳过预检）")
+                else:
+                    label = ", ".join(f"{k}→{p}" for k, p in proxied if p in needed)
+                    print(f"  {'✅' if env['proxy'] else '❌'} 代理: {label}")
         else:
             print(f"  ⏭ yt-dlp: 未启用（步骤不含 download）")
         # ffmpeg
@@ -3027,7 +3071,7 @@ def run(
     log.info(f"任务数量: {len(tasks)}，并发数: {concurrency}，最大重试: {max_retries}")
 
     # ── 工具/服务预检 ──
-    if not _check_and_confirm_env(steps, dry_run, "是否继续执行？"):
+    if not _check_and_confirm_env(steps, dry_run, "是否继续执行？", tasks, force):
         return
 
     # ── 干跑模式 ──
@@ -3035,7 +3079,7 @@ def run(
         print("\n" + "=" * 60)
         print(f"  干跑模式 - 任务清单 ({len(tasks)} 条)")
         print("=" * 60)
-        env = check_environment(steps)  # 获取工具状态用于每步标记
+        env = check_environment(steps, tasks, force)  # 获取工具状态用于每步标记
 
         # ── 任务列表 ──
         print("\n  --- 任务步骤状态 ---")
@@ -3276,7 +3320,7 @@ def run_from_report(
         return
 
     # ── 工具/服务预检 ──
-    if not _check_and_confirm_env(steps, dry_run, "是否继续重跑？"):
+    if not _check_and_confirm_env(steps, dry_run, "是否继续重跑？", tasks, force):
         return
 
     whisper_available = _check_whisper_available() if "transcribe" in steps else False
@@ -3908,10 +3952,10 @@ if __name__ == "__main__":
             else:
                 backend_info = WHISPER_SERVICE
             log.warning(f"⚠️ whisper 不可用 ({backend_info})，识别步骤将跳过")
-        
+
         url_results = []
         url_tasks = []  # 收集任务参数，用于并发执行
-        
+
         # 第一遍：校验所有 URL，收集任务
         for single_url in url_list:
             parsed = parse_url(single_url)
@@ -3924,31 +3968,31 @@ if __name__ == "__main__":
                 print(c("dim", "  https://v.qq.com/x/page/x0000xxxxx.html"))
                 print(c("dim", "  https://v.youku.com/v_show/id_XXXXXXX.html"))
                 continue
-            
+
             platform = parsed["platform"]
             video_id = parsed["video_id"]
             watch_url = parsed["watch_url"]
             pkey = parsed["pkey"]
-            
+
             print(c("dim", f"\n── URL 任务: {single_url} ──"))
             print(f"  平台: {c('cyan', platform)}")
             print(f"  视频ID: {c('cyan', video_id)}")
             print(f"  链接: {c('cyan', watch_url)}")
-            
+
             # dry-run 模式
             if args.dry_run:
                 print(c("dim", "\n── 开始执行 (dry-run) ──\n"))
                 print(f"  将执行步骤: {c('cyan', ' → '.join(steps))}")
                 print(f"  输出名称: {c('cyan', args.name if args.name else video_id)}")
                 continue
-            
+
             # 构建文件路径: output/downloads/<platform>/<name>.mp4
             DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
             dl_dir = DOWNLOADS_DIR / platform
             dl_dir.mkdir(parents=True, exist_ok=True)
             file_name = safe_filename(args.name if args.name else video_id)
             proposed_path = dl_dir / f"{file_name}.mp4"
-            
+
             # 冲突处理（--force 时直接覆盖）
             if args.force:
                 final_path = proposed_path
@@ -3960,9 +4004,9 @@ if __name__ == "__main__":
                     continue
                 final_path = conflict["path"]
                 final_stem = final_path.stem
-            
+
             print(f"  文件: {final_path}")
-            
+
             # 收集任务参数
             url_tasks.append({
                 "watch_url": watch_url,
@@ -3981,7 +4025,7 @@ if __name__ == "__main__":
                 "transcribe_timeout": args.transcribe_timeout,
                 "analyze_timeout": args.analyze_timeout,
             })
-        
+
         # 执行任务：根据 concurrency 决定串行或并发
         if args.concurrency > 1 and len(url_tasks) > 1:
             # 并发执行
@@ -3991,7 +4035,7 @@ if __name__ == "__main__":
                 for task in url_tasks:
                     future = executor.submit(_run_url_task, task)
                     future_to_task[future] = task
-                
+
                 for future in as_completed(future_to_task):
                     task = future_to_task[future]
                     try:
@@ -4013,7 +4057,7 @@ if __name__ == "__main__":
                     print(c("red", f"\n❌ 处理 URL {task['watch_url']} 时出错: {str(e)[:200]}"))
                     import traceback
                     print(c("dim", f"  错误详情: {traceback.format_exc()[:500]}"))
-        
+
         # 所有 URL 处理完毕后，生成汇总报告
         if url_results:
             config = {"steps": steps, "max_retries": args.retry, "retry_delay": args.retry_delay, "concurrency": args.concurrency, "force": args.force}

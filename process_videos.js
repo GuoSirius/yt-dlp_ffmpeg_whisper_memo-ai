@@ -113,7 +113,7 @@ const WHISPER_SERVICE_MODEL = process.env.WHISPER_SERVICE_MODEL || '';  // ggml 
 
 // ── Whisper 本地模式参数（local / faster-whisper 通用） ──
 const WHISPER_TASK = process.env.WHISPER_TASK || 'transcribe';            // 任务类型: transcribe/translate
-const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';            // 模型名: tiny/base/small/medium/large-v3/turbo
+const WHISPER_MODEL = process.env.WHISPER_MODEL || 'large-v3';            // 模型名: tiny/base/small/medium/large-v3/turbo
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || '';           // 语言: 设 zh 避免繁体混入; 留空=自动检测
 const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR || '';          // 模型下载目录，留空=~/.cache/whisper（或 $XDG_CACHE_HOME/whisper）
 const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';             // cpu / cuda
@@ -1041,14 +1041,41 @@ function probeTcp(host, port, timeout = 2000) {
   });
 }
 
+// 计算「本批真正需要走代理下载」的 proxy 集合：
+// 仅当任务属于配置了 *_PROXY 的平台、且本地尚无已下载文件（--force 时一律视为需要）才计入。
+// 这样在「已全部下载 / 仅跑后三步」时完全跳过代理探测，避免无意义失败中断。
+function computeNeededProxyUrls(tasks, force) {
+  const needed = new Set();
+  if (!Array.isArray(tasks)) return needed;
+  for (const { row, sheetName } of tasks) {
+    const { pkey } = getVideoId(row);
+    if (!pkey) continue;
+    const cfg = PLATFORM_CONFIG[pkey];
+    if (!cfg || !cfg.proxy) continue;
+    const stem = stemName(row, sheetName);
+    const dlDir = path.join(DOWNLOADS_DIR, sheetName);
+    if (force) {
+      needed.add(cfg.proxy);
+      continue;
+    }
+    if (!findDownloadedFile(dlDir, stem)) {
+      needed.add(cfg.proxy);
+    }
+  }
+  return needed;
+}
+
 // 对所有配置了 *_PROXY 的平台做代理预检（同一 proxy 只探测一次）
-async function checkProxies(result) {
+// neededProxies: 仅探测该集合内的 proxy；为 null 探测全部（兼容旧调用）；为空 Set 则直接跳过
+async function checkProxies(result, neededProxies) {
   const proxyMap = new Map();   // proxyUrl -> [pkey, ...]
   for (const [pkey, cfg] of Object.entries(PLATFORM_CONFIG)) {
     if (!cfg || !cfg.proxy) continue;
+    if (neededProxies && !neededProxies.has(cfg.proxy)) continue;  // 只查真正需要的
     if (!proxyMap.has(cfg.proxy)) proxyMap.set(cfg.proxy, []);
     proxyMap.get(cfg.proxy).push(pkey);
   }
+  if (proxyMap.size === 0) return;  // 没有需要代理下载的平台，跳过预检
   for (const [proxyUrl, pkeys] of proxyMap.entries()) {
     const envNames = pkeys.map(k => `${_PKEY_ENV_PREFIX[k] || k.toUpperCase()}_PROXY`).join(' / ');
     const ep = parseProxyEndpoint(proxyUrl);
@@ -1113,7 +1140,7 @@ function checkEnvironment(steps) {
   return result;
 }
 
-async function checkEnvironmentAsync(steps) {
+async function checkEnvironmentAsync(steps, tasks = [], force = false) {
   const result = checkEnvironment(steps);
   if (steps.includes('transcribe')) {
     const ok = await checkWhisperAvailable();
@@ -1131,9 +1158,10 @@ async function checkEnvironmentAsync(steps) {
       result.issues.push(`whisper not available (${backend})`);
     }
   }
-  // 代理预检：只在需要下载时做，PROXY_PROBE_TIMEOUT=0 可关闭
+  // 代理预检：仅在本批确有走代理下载的任务时做；PROXY_PROBE_TIMEOUT=0 可关闭
   if (steps.includes('download') && PROXY_PROBE_TIMEOUT > 0) {
-    await checkProxies(result);
+    const needed = computeNeededProxyUrls(tasks, force);
+    await checkProxies(result, needed);
   }
   return result;
 }
@@ -3220,12 +3248,12 @@ async function run({
 
   logInfo(`tasks: ${tasks.length}, concurrency: ${concurrency}, max retries: ${maxRetries}`);
 
-  const envCheck = await checkEnvironmentAsync(steps);
+  const envCheck = await checkEnvironmentAsync(steps, tasks, force);
   if (!await checkAndConfirmEnv(envCheck, dryRun, '是否继续执行？')) return;
 
   // ── 干跑模式 ──
   if (dryRun) {
-    printDryRun(tasks, steps, envCheck);
+    printDryRun(tasks, steps, envCheck, force);
     return;
   }
 
@@ -3318,7 +3346,7 @@ async function run({
   logInfo(`all done! reports: ${Array.isArray(reportPaths) ? reportPaths.join(', ') : reportPaths}`);
 }
 
-function printDryRun(tasks, steps, env) {
+function printDryRun(tasks, steps, env, force = false) {
   console.log(styleSection(`干跑模式 - 任务清单 (${tasks.length} 条)`));
 
   // 环境检测
@@ -3332,8 +3360,14 @@ function printDryRun(tasks, steps, env) {
     } else if (PROXY_PROBE_TIMEOUT <= 0) {
       console.log(`  ${c('dim', `⏭ 代理: 已配置 ${proxied.length} 个，预检已关闭 (PROXY_PROBE_TIMEOUT=0)`)}`);
     } else {
-      const label = proxied.map(([pkey, cfg]) => `${pkey}→${cfg.proxy}`).join(', ');
-      console.log(`  ${env.proxy ? c('green', `✅ 代理: ${label}`) : c('red', `❌ 代理: ${label}`)}`);
+      const needed = computeNeededProxyUrls(tasks, force);
+      if (needed.size === 0) {
+        console.log(`  ${c('dim', '⏭ 代理: 已配置但本批无待下载任务（跳过预检）')}`);
+      } else {
+        const label = proxied.filter(([pkey]) => needed.has(PLATFORM_CONFIG[pkey].proxy))
+          .map(([pkey, cfg]) => `${pkey}→${cfg.proxy}`).join(', ');
+        console.log(`  ${env.proxy ? c('green', `✅ 代理: ${label}`) : c('red', `❌ 代理: ${label}`)}`);
+      }
     }
   } else {
     console.log(`  ${c('dim', '⏭ yt-dlp: 未启用（步骤不含 download）')}`);
@@ -3475,7 +3509,7 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
     return;
   }
 
-  const envRfr = await checkEnvironmentAsync(steps);
+  const envRfr = await checkEnvironmentAsync(steps, tasks, force);
   if (!await checkAndConfirmEnv(envRfr, dryRun, '是否继续重跑？')) return;
 
   let whisperAvailable = false;
