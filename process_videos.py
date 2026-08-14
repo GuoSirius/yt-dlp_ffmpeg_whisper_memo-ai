@@ -44,12 +44,14 @@ import subprocess
 import logging
 import json
 import time
+import signal
+import atexit
 import traceback
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+from threading import Lock, Thread
 
 import colorama
 colorama.init()
@@ -177,6 +179,8 @@ FUNASR_SERVICE_MODEL = os.getenv("FUNASR_SERVICE_MODEL", "iic/SenseVoiceSmall") 
 _SERVICE_MODEL_LOADED: str | None = None  # 缓存的已加载模型，避免重复 /load
 _FW_MODEL: object | None = None  # 缓存的 faster-whisper WhisperModel 实例
 _FW_MODEL_CFG: str = ""  # 缓存的模型配置指纹 (model/device/compute_type 组合)
+_FUNASR_MODEL: object | None = None  # 缓存的 FunASR AutoModel 实例
+_FUNASR_MODEL_CFG: str = ""  # 缓存的 FunASR 模型配置指纹
 
 # ── CLI 覆盖占位（CLI 解析后由 apply_cli_overrides 填充）──
 _cli_ai_prompt: str | None = None  # --ai-prompt
@@ -382,8 +386,18 @@ log = logging.getLogger(__name__)
 
 # Excel 写锁（openpyxl 非线程安全）
 _excel_lock = Lock()
-# 控制台打印锁（并发时防止输出交错）
-_print_lock = Lock()
+_model_load_lock = Lock()  # 模型懒加载锁（并发转录时避免重复加载/竞态，B3）
+
+# ── Excel 实时写回缓存（M2）────────────────────────────────────────────────
+# 优化前：每条任务完成都全量 reload+save 整张表，并被 _excel_lock 串行化，高并发吞吐被拖垮。
+# 优化后：首次写入时把整表加载进内存，每条任务只在内存中改单元格并标记脏，
+#         由后台 flush 线程（默认每 2s）/ atexit / 信号 handler 落盘。
+#         中断时最多丢失一个 flush 间隔内的修改，远优于丢失全部已完成结果。
+_EXCEL_WB = None          # 缓存的 Workbook 对象
+_EXCEL_DIRTY = False      # 是否有未落盘的修改
+_EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
+EXCEL_FLUSH_INTERVAL = 2.0   # 周期落盘间隔（秒）
+_print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
 # ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
 # transcribe 产物最小长度（字符），低于此视为残缺
@@ -952,9 +966,13 @@ def get_duration(filepath: Path) -> float | None:
 
 
 def make_ffmpeg_parser(total_duration: float | None) -> callable:
-    """根据总时长创建 ffmpeg 进度解析器（使用 -progress pipe:1 格式）"""
+    """根据总时长创建 ffmpeg 进度解析器（使用 -progress pipe:1 格式）。
+
+    每个解析器持有独立的进度状态（B1），并发转码时各任务的百分比互不串扰。
+    """
+    state = {'duration_us': 0, 'out_time_us': 0, 'speed': 0, 'total_size': 0}
     def _parse(line: str) -> str | None:
-        prog = parse_ffmpeg_progress(line, total_duration or 0)
+        prog = parse_ffmpeg_progress(line, total_duration or 0, state)
         if not prog:
             return None
         bar = text_bar(prog['percent'], 18)
@@ -1267,7 +1285,6 @@ def step_transcode(
     # 获取源文件时长用于百分比计算
     total_dur = get_duration(src_file)
     transcode_start = time.monotonic()
-    reset_ffmpeg_state()
 
     def _run():
         parser = make_ffmpeg_parser(total_dur)
@@ -1580,26 +1597,33 @@ def _transcribe_faster_whisper(
     global _FW_MODEL, _FW_MODEL_CFG
 
     def _get_model():
-        """获取或复用 WhisperModel 实例（按 model/device/compute_type 缓存）"""
+        """获取或复用 WhisperModel 实例（按 model/device/compute_type 缓存）。
+
+        双检锁（B3）：并发转录时只有首个线程真正加载模型，其余线程复用同一实例；
+        模型加载完成后为只读，多线程共享安全。
+        """
         global _FW_MODEL, _FW_MODEL_CFG
         cfg = f"{WHISPER_MODEL}|{WHISPER_DEVICE}|{WHISPER_COMPUTE_TYPE}"
         if _FW_MODEL is not None and _FW_MODEL_CFG == cfg:
             return _FW_MODEL
-        from faster_whisper import WhisperModel
-        model_kwargs: dict = {
-            "device": WHISPER_DEVICE,
-            "compute_type": WHISPER_COMPUTE_TYPE,
-            "num_workers": int(WHISPER_NUM_WORKERS),
-        }
-        if WHISPER_THREADS and WHISPER_THREADS != "0":
-            model_kwargs["cpu_threads"] = int(WHISPER_THREADS)
-        if WHISPER_MODEL_DIR:
-            model_kwargs["download_root"] = WHISPER_MODEL_DIR
-        with _print_lock:
-            print(f"  [{stem}] 加载 faster-whisper 模型: {WHISPER_MODEL} (device={WHISPER_DEVICE}, compute_type={WHISPER_COMPUTE_TYPE})...", flush=True)
-        _FW_MODEL = WhisperModel(WHISPER_MODEL, **model_kwargs)
-        _FW_MODEL_CFG = cfg
-        return _FW_MODEL
+        with _model_load_lock:
+            if _FW_MODEL is not None and _FW_MODEL_CFG == cfg:
+                return _FW_MODEL
+            from faster_whisper import WhisperModel
+            model_kwargs: dict = {
+                "device": WHISPER_DEVICE,
+                "compute_type": WHISPER_COMPUTE_TYPE,
+                "num_workers": int(WHISPER_NUM_WORKERS),
+            }
+            if WHISPER_THREADS and WHISPER_THREADS != "0":
+                model_kwargs["cpu_threads"] = int(WHISPER_THREADS)
+            if WHISPER_MODEL_DIR:
+                model_kwargs["download_root"] = WHISPER_MODEL_DIR
+            with _print_lock:
+                print(f"  [{stem}] 加载 faster-whisper 模型: {WHISPER_MODEL} (device={WHISPER_DEVICE}, compute_type={WHISPER_COMPUTE_TYPE})...", flush=True)
+            _FW_MODEL = WhisperModel(WHISPER_MODEL, **model_kwargs)
+            _FW_MODEL_CFG = cfg
+            return _FW_MODEL
 
     def _run():
         model = _get_model()
@@ -1753,197 +1777,41 @@ def _transcribe_funasr_cli(
     global _FUNASR_MODEL, _FUNASR_MODEL_CFG
 
     def _get_model():
-        """获取或复用 AutoModel 实例（按 model/device/vad/punc/spk 组合缓存）"""
+        """获取或复用 AutoModel 实例（按 model/device/vad/punc/spk 组合缓存）。
+
+        双检锁（B3）：并发转录时只有首个线程真正加载模型，其余线程复用同一实例。
+        """
         global _FUNASR_MODEL, _FUNASR_MODEL_CFG
         cfg = f"{FUNASR_MODEL}|{FUNASR_DEVICE}|{FUNASR_VAD_MODEL}|{FUNASR_PUNC_MODEL}|{FUNASR_SPK_MODEL}|{FUNASR_EMOTION_MODEL}"
         if _FUNASR_MODEL is not None and _FUNASR_MODEL_CFG == cfg:
             return _FUNASR_MODEL
-        from funasr import AutoModel  # 延迟导入，避免 funasr 未装时启动失败
-        model_kwargs: dict = {
-            "model": FUNASR_MODEL,
-            "device": FUNASR_DEVICE,
-        }
-        # 可选辅助模型（空字符串=不启用）
-        if FUNASR_VAD_MODEL:
-            model_kwargs["vad_model"] = FUNASR_VAD_MODEL
-        if FUNASR_PUNC_MODEL:
-            model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
-        if FUNASR_SPK_MODEL:
-            model_kwargs["spk_model"] = FUNASR_SPK_MODEL
-        if FUNASR_EMOTION_MODEL:
-            model_kwargs["emotion_model"] = FUNASR_EMOTION_MODEL
-        with _print_lock:
-            _models = [FUNASR_MODEL]
-            if FUNASR_VAD_MODEL:    _models.append(FUNASR_VAD_MODEL)
-            if FUNASR_PUNC_MODEL:   _models.append(FUNASR_PUNC_MODEL)
-            if FUNASR_SPK_MODEL:    _models.append(FUNASR_SPK_MODEL)
-            if FUNASR_EMOTION_MODEL: _models.append(FUNASR_EMOTION_MODEL)
-            print(f"  [{stem}] 加载 FunASR 模型: {'+'.join(_models)} (device={FUNASR_DEVICE})...", flush=True)
-        _FUNASR_MODEL = AutoModel(**model_kwargs)
-        _FUNASR_MODEL_CFG = cfg
-        return _FUNASR_MODEL
-
-    def _run():
-        model = _get_model()
-
-        # 构建 generate 参数
-        generate_kwargs: dict = {
-            "input": str(audio_file),
-            "batch_size_s": int(FUNASR_BATCH_SIZE_S),
-        }
-        if FUNASR_HOTWORD:
-            generate_kwargs["hotword"] = FUNASR_HOTWORD
-        if FUNASR_LANGUAGE:
-            generate_kwargs["language"] = FUNASR_LANGUAGE
-        if FUNASR_VAD_MODEL and FUNASR_VAD_MAX_SEGMENT and FUNASR_VAD_MAX_SEGMENT != "0":
-            generate_kwargs["vad_kwargs"] = {"max_single_segment_time": int(FUNASR_VAD_MAX_SEGMENT)}
-
-        # 从 FUNASR_EXTRA_ARGS 解析额外参数（支持 CLI 覆盖）
-        if _resolved_funasr_extra_args:
-            generate_kwargs = _apply_fw_extra_args(generate_kwargs, _resolved_funasr_extra_args)
-
-        results = model.generate(**generate_kwargs)
-        if not results:
-            raise ValueError("FunASR 返回空结果")
-        # results[0] 通常是 dict，含 "text" 字段
-        first = results[0]
-        if isinstance(first, dict):
-            text = (first.get("text") or "").strip()
-        else:
-            text = str(first).strip()
-        if not text:
-            raise ValueError("FunASR 返回空文本")
-        return text
-
-    try:
-        text, retries_used, err = retry_call(
-            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
-        )
-        if err:
-            return None, retries_used, err
-        return text, 0, None
-    except Exception as e:
-        import traceback as _tb
-        _audio_size = audio_file.stat().st_size if audio_file.exists() else "N/A"
-        _err_details = (
-            f"[{stem}] FunASR CLI 识别失败\n"
-            f"  audio    : {audio_file} ({_audio_size} bytes)\n"
-            f"  mode     : cli (AutoModel)\n"
-            f"  model    : {FUNASR_MODEL} (device={FUNASR_DEVICE})\n"
-            f"  vad/punc : {FUNASR_VAD_MODEL} / {FUNASR_PUNC_MODEL}\n"
-            f"  hotword  : {FUNASR_HOTWORD or '(none)'}\n"
-            f"  error    : {e}\n"
-        )
-        # 如果是 SSL/cert 相关错误，给出解决提示
-        _err_str = str(e)
-        if any(k in _err_str.lower() for k in ("certificate", "ssl", "CERTIFICATE_VERIFY_FAILED", "ConnectError")):
-            _err_details += (
-                f"  ⚠️ 疑似 SSL/证书错误，可能的解决方案：\n"
-                f"    1. 设置环境变量 SSL_CERT_FILE=/path/to/cert.pem\n"
-                f"    2. pip install --upgrade certifi\n"
-                f"    3. 设置 FUNASR_MODEL_DIR 指向已下载的本地模型目录（跳过在线下载）\n"
-            )
-        log.error(_err_details + f"  traceback:\n{_tb.format_exc()}")
-        return None, max_retries, _err_details.strip()
-
-
-def _transcribe_funasr_service(
-    audio_file: Path, stem: str,
-    max_retries: int, retry_delay: float,
-    timeout: int = 0,
-) -> tuple[str | None, int, str | None]:
-    """FunASR 服务模式：调用 funasr-server OpenAI 兼容 API。"""
-    global _Service_model_loaded
-
-    def _run():
-        # ── 按需切换模型（仅当指定了 model 时，且服务支持动态加载） ──
-        if FUNASR_SERVICE_MODEL and FUNASR_SERVICE_MODEL != _Service_model_loaded:
-            with _print_lock:
-                print(f"  [{stem}] 加载 FunASR 服务模型: {FUNASR_SERVICE_MODEL}", flush=True)
-
-        with open(audio_file, "rb") as f:
-            data = {
-                "model": FUNASR_SERVICE_MODEL,
-                "response_format": "json",
+        with _model_load_lock:
+            if _FUNASR_MODEL is not None and _FUNASR_MODEL_CFG == cfg:
+                return _FUNASR_MODEL
+            from funasr import AutoModel  # 延迟导入，避免 funasr 未装时启动失败
+            model_kwargs: dict = {
+                "model": FUNASR_MODEL,
+                "device": FUNASR_DEVICE,
             }
-            if FUNASR_HOTWORD:
-                # OpenAI 兼容 API 的 hotword 一般以 prompt 形式传递
-                data["prompt"] = FUNASR_HOTWORD
-            resp = requests.post(
-                f"{FUNASR_SERVICE_URL}/v1/audio/transcriptions",
-                files={"file": (audio_file.name, f, "audio/wav")},
-                data=data,
-                timeout=timeout if timeout > 0 else None,
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        text = (data.get("text") or "").strip()
-        if not text:
-            raise ValueError("FunASR 服务返回空文本")
-        _Service_model_loaded = FUNASR_SERVICE_MODEL
-        return text
-
-    try:
-        text, retries_used, err = retry_call(
-            _run, max_retries=max_retries, base_delay=retry_delay, task_label=stem,
-        )
-        if err:
-            return None, retries_used, err
-        return text, 0, None
-    except Exception as e:
-        log.error(f"[{stem}] FunASR 服务识别失败: {e}")
-        return None, max_retries, str(e)[:500]
-
-
-def _transcribe_funasr(
-    audio_file: Path, stem: str,
-    max_retries: int, retry_delay: float,
-    timeout: int = 0,
-) -> tuple[str | None, int, str | None]:
-    """FunASR 识别（cli 模式走 AutoModel, service 模式走 HTTP 转发到 funasr-server）"""
-    if FUNASR_MODE == "service":
-        return _transcribe_funasr_service(audio_file, stem, max_retries, retry_delay, timeout)
-    return _transcribe_funasr_cli(audio_file, stem, max_retries, retry_delay, timeout)
-
-
-def _transcribe_funasr_cli(
-    audio_file: Path, stem: str,
-    max_retries: int, retry_delay: float,
-    timeout: int = 0,
-) -> tuple[str | None, int, str | None]:
-    """FunASR CLI 模式：本地 AutoModel 推理（首次自动下载 ModelScope 模型）"""
-    global _FUNASR_MODEL, _FUNASR_MODEL_CFG
-
-    def _get_model():
-        """获取或复用 AutoModel 实例（按 model/device/vad/punc/spk 组合缓存）"""
-        global _FUNASR_MODEL, _FUNASR_MODEL_CFG
-        cfg = f"{FUNASR_MODEL}|{FUNASR_DEVICE}|{FUNASR_VAD_MODEL}|{FUNASR_PUNC_MODEL}|{FUNASR_SPK_MODEL}|{FUNASR_EMOTION_MODEL}"
-        if _FUNASR_MODEL is not None and _FUNASR_MODEL_CFG == cfg:
+            # 可选辅助模型（空字符串=不启用）
+            if FUNASR_VAD_MODEL:
+                model_kwargs["vad_model"] = FUNASR_VAD_MODEL
+            if FUNASR_PUNC_MODEL:
+                model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
+            if FUNASR_SPK_MODEL:
+                model_kwargs["spk_model"] = FUNASR_SPK_MODEL
+            if FUNASR_EMOTION_MODEL:
+                model_kwargs["emotion_model"] = FUNASR_EMOTION_MODEL
+            with _print_lock:
+                _models = [FUNASR_MODEL]
+                if FUNASR_VAD_MODEL:    _models.append(FUNASR_VAD_MODEL)
+                if FUNASR_PUNC_MODEL:   _models.append(FUNASR_PUNC_MODEL)
+                if FUNASR_SPK_MODEL:    _models.append(FUNASR_SPK_MODEL)
+                if FUNASR_EMOTION_MODEL: _models.append(FUNASR_EMOTION_MODEL)
+                print(f"  [{stem}] 加载 FunASR 模型: {'+'.join(_models)} (device={FUNASR_DEVICE})...", flush=True)
+            _FUNASR_MODEL = AutoModel(**model_kwargs)
+            _FUNASR_MODEL_CFG = cfg
             return _FUNASR_MODEL
-        from funasr import AutoModel  # 延迟导入，避免 funasr 未装时启动失败
-        model_kwargs: dict = {
-            "model": FUNASR_MODEL,
-            "device": FUNASR_DEVICE,
-        }
-        # 可选辅助模型（空字符串=不启用）
-        if FUNASR_VAD_MODEL:
-            model_kwargs["vad_model"] = FUNASR_VAD_MODEL
-        if FUNASR_PUNC_MODEL:
-            model_kwargs["punc_model"] = FUNASR_PUNC_MODEL
-        if FUNASR_SPK_MODEL:
-            model_kwargs["spk_model"] = FUNASR_SPK_MODEL
-        if FUNASR_EMOTION_MODEL:
-            model_kwargs["emotion_model"] = FUNASR_EMOTION_MODEL
-        with _print_lock:
-            _models = [FUNASR_MODEL]
-            if FUNASR_VAD_MODEL:    _models.append(FUNASR_VAD_MODEL)
-            if FUNASR_PUNC_MODEL:   _models.append(FUNASR_PUNC_MODEL)
-            if FUNASR_SPK_MODEL:    _models.append(FUNASR_SPK_MODEL)
-            if FUNASR_EMOTION_MODEL: _models.append(FUNASR_EMOTION_MODEL)
-            print(f"  [{stem}] 加载 FunASR 模型: {'+'.join(_models)} (device={FUNASR_DEVICE})...", flush=True)
-        _FUNASR_MODEL = AutoModel(**model_kwargs)
-        _FUNASR_MODEL_CFG = cfg
-        return _FUNASR_MODEL
 
     def _run():
         model = _get_model()
@@ -2202,63 +2070,129 @@ def save_task_progress(result: TaskResult) -> None:
 
 # ─────────────────────────────── Excel 实时写回 ─────────────────────────────
 
+def _ensure_excel_loaded() -> object | None:
+    """加载（或复用缓存的）Workbook 用于实时写回。失败返回 None。"""
+    global _EXCEL_WB
+    if _EXCEL_WB is not None:
+        return _EXCEL_WB
+    try:
+        _EXCEL_WB = load_workbook(str(EXCEL_FILE))
+    except Exception as e:
+        log.error(f"打开 Excel 失败: {e}")
+        _EXCEL_WB = None
+        return None
+    return _EXCEL_WB
+
+
+def _excel_set_cell(sheet_name: str, key: str, col_name: str, value: str) -> bool:
+    """在内存中定位并写入单元格（不落盘）。返回是否成功写入。"""
+    wb = _ensure_excel_loaded()
+    if wb is None:
+        return False
+    if sheet_name not in wb.sheetnames:
+        log.warning(f"Sheet [{sheet_name}] 不存在，跳过写入")
+        return False
+    ws = wb[sheet_name]
+    headers = {cell.value: cell.column for cell in ws[1]}
+    if col_name not in headers:
+        log.warning(f"[{sheet_name}] 找不到 {col_name} 列，跳过写入")
+        return False
+    target_col = headers[col_name]
+    id_col = headers.get(COL_ID)
+    title_col = headers.get(COL_TITLE)
+
+    for row in ws.iter_rows(min_row=2):
+        matched = False
+        id_val = row[id_col - 1].value if id_col else None
+        title_val = row[title_col - 1].value if title_col else None
+        if id_col and id_val is not None:
+            try:
+                if str(int(float(id_val))) == str(key):
+                    matched = True
+            except (ValueError, TypeError):
+                pass
+        if not matched and title_col:
+            if str(title_val) == str(key):
+                matched = True
+        if matched:
+            # Excel 单元格字符上限 32767，超出需截断
+            EXCEL_MAX_CHARS = 32767
+            safe_value = value[:EXCEL_MAX_CHARS] if len(value) > EXCEL_MAX_CHARS else value
+            if len(value) > EXCEL_MAX_CHARS:
+                log.warning(f"[{sheet_name}/{key}] {col_name} 截断 {len(value)} -> {EXCEL_MAX_CHARS} 字符 (Excel 限制)")
+            row[target_col - 1].value = safe_value
+            return True
+
+    log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
+    return False
+
+
 def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bool:
     """单条 Excel 单元格写回（断点续跑场景：每条任务完成立即写）。
 
-    使用 _excel_lock 串行化，openpyxl 非线程安全。
-    返回是否成功写入。
+    优化（M2）：仅在内存中更新单元格并标记脏，由后台 flush 线程 / atexit / 信号
+    周期落盘，避免每条任务都全量 reload+save 整表被锁串行化。
     """
     if not value or not value.strip():
         return False
     with _excel_lock:
+        ok = _excel_set_cell(sheet_name, key, col_name, value)
+        if ok:
+            global _EXCEL_DIRTY
+            _EXCEL_DIRTY = True
+        return ok
+
+
+def flush_excel() -> None:
+    """将内存中缓存的 Excel 修改落盘（若脏）。并发安全。"""
+    global _EXCEL_DIRTY
+    with _excel_lock:
+        if _EXCEL_WB is None or not _EXCEL_DIRTY:
+            return
         try:
-            wb = load_workbook(str(EXCEL_FILE))
+            _EXCEL_WB.save(str(EXCEL_FILE))
+            _EXCEL_DIRTY = False
         except Exception as e:
-            log.error(f"打开 Excel 失败: {e}")
-            return False
+            log.error(f"保存 Excel 失败: {e}")
+
+
+def _excel_flush_loop() -> None:
+    """后台周期落盘线程主循环（daemon）。"""
+    while True:
+        time.sleep(EXCEL_FLUSH_INTERVAL)
         try:
-            if sheet_name not in wb.sheetnames:
-                log.warning(f"Sheet [{sheet_name}] 不存在，跳过写入")
-                return False
-            ws = wb[sheet_name]
-            headers = {cell.value: cell.column for cell in ws[1]}
-            if col_name not in headers:
-                log.warning(f"[{sheet_name}] 找不到 {col_name} 列，跳过写入")
-                return False
-            target_col = headers[col_name]
-            id_col = headers.get(COL_ID)
-            title_col = headers.get(COL_TITLE)
+            flush_excel()
+        except Exception:
+            pass
 
-            matched = False
-            for row in ws.iter_rows(min_row=2):
-                id_val = row[id_col - 1].value if id_col else None
-                title_val = row[title_col - 1].value if title_col else None
-                if id_col and id_val is not None:
-                    try:
-                        if str(int(float(id_val))) == str(key):
-                            matched = True
-                    except (ValueError, TypeError):
-                        pass
-                if not matched and title_col:
-                    if str(title_val) == str(key):
-                        matched = True
-                if matched:
-                    # Excel 单元格字符上限 32767，超出需截断
-                    EXCEL_MAX_CHARS = 32767
-                    safe_value = value[:EXCEL_MAX_CHARS] if len(value) > EXCEL_MAX_CHARS else value
-                    if len(value) > EXCEL_MAX_CHARS:
-                        log.warning(f"[{sheet_name}/{key}] {col_name} 截断 {len(value)} -> {EXCEL_MAX_CHARS} 字符 (Excel 限制)")
-                    row[target_col - 1].value = safe_value
-                    return True
 
-            log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
-            return False
-        finally:
-            try:
-                wb.save(str(EXCEL_FILE))
-            except Exception as e:
-                log.error(f"保存 Excel 失败: {e}")
-            wb.close()
+def _excel_signal_handler(signum, frame):
+    """信号兜底：落盘后按默认行为退出（B2/M2 中断安全）。"""
+    try:
+        flush_excel()
+    except Exception:
+        pass
+    # 重新触发默认信号行为（退出进程）
+    raise KeyboardInterrupt
+
+
+def start_excel_flush() -> None:
+    """注册后台 flush 线程与退出时落盘（只执行一次）。"""
+    global _EXCEL_FLUSH_STARTED
+    if _EXCEL_FLUSH_STARTED:
+        return
+    _EXCEL_FLUSH_STARTED = True
+    try:
+        atexit.register(flush_excel)
+    except Exception:
+        pass
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(_sig, _excel_signal_handler)
+        except (ValueError, OSError, AttributeError):
+            pass
+    t = Thread(target=_excel_flush_loop, daemon=True)
+    t.start()
 
 
 def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[tuple[str, str], str] | None = None, content_dict: dict[tuple[str, str], str] | None = None):
@@ -2294,6 +2228,8 @@ def write_all_contents_to_excel(results: list[TaskResult], keywords_dict: dict[t
         for (kw_sheet, kw_key), kw_text in keywords_dict.items():
             if write_excel_cell(kw_sheet, str(kw_key), COL_KEYWORDS, kw_text):
                 log.info(f"[{kw_sheet}/{kw_key}] keywords 已写入（{len(kw_text)} 字符）")
+    # 批量写完成后立即落盘（M2：内存缓存 -> 磁盘）
+    flush_excel()
     log.info("Excel 写入完成")
 
 
@@ -2930,6 +2866,9 @@ def run(
     limit: int = 0,
 ):
     """主执行流程"""
+    # ── Excel 实时写回：启动后台周期落盘 + 退出兜底（M2）──
+    start_excel_flush()
+
     # ── 重跑失败模式 ──
     if retry_failed:
         return run_from_report(retry_failed, steps, max_retries, retry_delay,

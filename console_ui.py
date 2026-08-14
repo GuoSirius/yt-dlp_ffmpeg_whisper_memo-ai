@@ -8,7 +8,12 @@ import re
 import sys
 import time
 import math
-from threading import Thread, Event
+from threading import Thread, Event, Lock
+
+# ── 终端单行刷新锁（B2）──────────────────────────────────────────────────────
+# 并发转码时多个任务会同时刷新同一行 stderr，无锁会导致转义序列交错、显示乱码。
+# 所有单行写都必须走这把锁，保证每次刷新以完整的一行落盘。
+_term_lock = Lock()
 
 
 # ── 旋转动画帧 ───────────────────────────────────────────────────────────────────
@@ -18,14 +23,16 @@ SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 # ── 单行刷新（覆盖当前行）────────────────────────────────────────────────────────
 def update_line(text: str) -> None:
     """\x1b[2K = 清除整行, \r = 回到行首"""
-    sys.stderr.write(f"\x1b[2K\r{text}")
-    sys.stderr.flush()
+    with _term_lock:
+        sys.stderr.write(f"\x1b[2K\r{text}")
+        sys.stderr.flush()
 
 
 def clear_line() -> None:
     """清除当前行"""
-    sys.stderr.write('\x1b[2K\r')
-    sys.stderr.flush()
+    with _term_lock:
+        sys.stderr.write('\x1b[2K\r')
+        sys.stderr.flush()
 
 
 # ── 格式化工具 ───────────────────────────────────────────────────────────────────
@@ -106,9 +113,10 @@ class Spinner:
             self._thread.join(timeout=1)
             self._thread = None
         if final_text:
-            clear_line()
-            sys.stderr.write(f"  {final_text}\n")
-            sys.stderr.flush()
+            with _term_lock:
+                sys.stderr.write('\x1b[2K\r')
+                sys.stderr.write(f"  {final_text}\n")
+                sys.stderr.flush()
 
 
 # ── yt-dlp 进度行解析 ────────────────────────────────────────────────────────
@@ -148,8 +156,15 @@ def parse_ytdlp_line(line: str) -> dict | None:
 _ffmpeg_state = {'duration_us': 0, 'out_time_us': 0, 'speed': 0, 'total_size': 0}
 
 
-def parse_ffmpeg_progress(line: str, total_duration_sec: float = 0) -> dict | None:
-    """解析 ffmpeg -progress pipe:1 输出行，返回进度对象或 None"""
+def parse_ffmpeg_progress(line: str, total_duration_sec: float = 0, state: dict | None = None) -> dict | None:
+    """解析 ffmpeg -progress pipe:1 输出行，返回进度对象或 None。
+
+    state: 进度累积状态字典。传入独立字典即可让每个转码任务拥有自己的进度，
+    避免并发转码时共享 _ffmpeg_state 导致百分比串扰/跳 0（B1）。
+    不传则回退到模块级 _ffmpeg_state（向后兼容）。
+    """
+    if state is None:
+        state = _ffmpeg_state
     line = line.strip()
     if not line or line.startswith('['):
         return None
@@ -158,23 +173,23 @@ def parse_ffmpeg_progress(line: str, total_duration_sec: float = 0) -> dict | No
         return None
     key, val = m.group(1), m.group(2).strip()
     if key == 'out_time_us':
-        _ffmpeg_state['out_time_us'] = int(val) if val else 0
+        state['out_time_us'] = int(val) if val else 0
     elif key == 'speed':
         speed_m = re.match(r'([\d.]+)x', val)
-        _ffmpeg_state['speed'] = float(speed_m.group(1)) if speed_m else 0
+        state['speed'] = float(speed_m.group(1)) if speed_m else 0
     elif key == 'total_size':
-        _ffmpeg_state['total_size'] = int(val) if val else 0
+        state['total_size'] = int(val) if val else 0
     elif key == 'duration_us':
-        _ffmpeg_state['duration_us'] = int(val) if val else 0
+        state['duration_us'] = int(val) if val else 0
     # 计算进度
-    dur = total_duration_sec * 1e6 if total_duration_sec > 0 else (_ffmpeg_state['duration_us'] or 1)
-    percent = min(100, (_ffmpeg_state['out_time_us'] / dur) * 100)
+    dur = total_duration_sec * 1e6 if total_duration_sec > 0 else (state['duration_us'] or 1)
+    percent = min(100, (state['out_time_us'] / dur) * 100)
     return {
         'type': 'progress',
         'percent': round(percent * 10) / 10,
-        'elapsed': _ffmpeg_state['out_time_us'] / 1e6,
-        'speed': _ffmpeg_state['speed'],
-        'total_size': _ffmpeg_state['total_size'],
+        'elapsed': state['out_time_us'] / 1e6,
+        'speed': state['speed'],
+        'total_size': state['total_size'],
     }
 
 

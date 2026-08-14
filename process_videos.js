@@ -37,7 +37,7 @@ const __dirname = path.dirname(__filename);
 import {
   updateLine, clearLine, fmtSize, fmtTime, textBar,
   startSpinner, stopSpinner,
-  parseYtdlpLine, parseFfmpegProgress, resetFfmpegState,
+  parseYtdlpLine, parseFfmpegProgress, makeFfmpegProgressParser, resetFfmpegState,
 } from './console-ui.mjs';
 
 // --env-file 需在 dotenv 加载前解析
@@ -574,9 +574,32 @@ function loadTaskProgress(sheetName, stem) {
  * 按 id/title key 匹配行号，写入指定列（断点续跑实时写 Excel）。
  * XLSX.writeFile 非线程安全，本函数假定外层已用 _excel_lock 串行化（JS 中用 await + 队列）。
  */
+// ── Excel 实时写回缓存（M2）────────────────────────────────────────────────
+// 优化前：每条任务完成都全量 readFile + writeFile 整表，被写锁串行化，高并发吞吐被拖垮。
+// 优化后：首次写入时把整表加载进内存（_excelWb），每条任务只在内存中改单元格并标记脏，
+//         由定时器（默认每 2s）/ process exit / SIGINT·SIGTERM 落盘。
+//         中断时最多丢失一个 flush 间隔内的修改，远优于丢失全部已完成结果。
+let _excelWb = null;             // 缓存的 workbook
+let _excelDirty = false;         // 是否有未落盘修改
+let _excelFlushStarted = false;  // 只启动一次
+const EXCEL_FLUSH_INTERVAL = 2000; // ms
+
+function _ensureExcelLoaded() {
+  if (_excelWb) return _excelWb;
+  try {
+    _excelWb = XLSX.readFile(EXCEL_FILE);
+  } catch (e) {
+    logError(`打开 Excel 失败: ${e.message}`);
+    _excelWb = null;
+    return null;
+  }
+  return _excelWb;
+}
+
 function writeExcelCellByKey(sheetName, key, colName, value) {
   if (!value || !String(value).trim()) return false;
-  const wb = XLSX.readFile(EXCEL_FILE);
+  const wb = _ensureExcelLoaded();
+  if (!wb) return false;
   if (!wb.SheetNames.includes(sheetName)) {
     logWarn(`Sheet [${sheetName}] not found, skip write`);
     return false;
@@ -611,10 +634,10 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
       if (String(value).length > EXCEL_MAX_CHARS) {
         logWarn(`[${sheetName}/${key}] ${colName} truncated ${String(value).length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
       }
-      aoa[r][colIdx] = safeValue;
-      const newWs = XLSX.utils.aoa_to_sheet(aoa);
-      wb.Sheets[sheetName] = newWs;
-      XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
+      // 直接写单元格，保留其它单元格格式（M2：仅更新内存，不落盘）
+      const cellRef = XLSX.utils.encode_cell({ r, c: colIdx });
+      ws[cellRef] = { t: 's', v: safeValue };
+      _excelDirty = true;
       return true;
     }
   }
@@ -622,7 +645,26 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
   return false;
 }
 
-// Excel 写锁（XLSX.writeFile 非线程安全）
+function flushExcel() {
+  if (!_excelWb || !_excelDirty) return;
+  try {
+    XLSX.writeFile(_excelWb, EXCEL_FILE, { cellDates: true });
+    _excelDirty = false;
+  } catch (e) {
+    logError(`保存 Excel 失败: ${e.message}`);
+  }
+}
+
+function startExcelFlush() {
+  if (_excelFlushStarted) return;
+  _excelFlushStarted = true;
+  setInterval(() => { try { flushExcel(); } catch (e) { /* ignore */ } }, EXCEL_FLUSH_INTERVAL);
+  process.on('exit', () => { try { flushExcel(); } catch (e) { /* ignore */ } });
+  process.on('SIGINT', () => { try { flushExcel(); } catch (e) { /* ignore */ } process.exit(130); });
+  process.on('SIGTERM', () => { try { flushExcel(); } catch (e) { /* ignore */ } process.exit(143); });
+}
+
+// Excel 写锁（保留：实时写回仍经此串行化，避免与批量写相互穿插）
 let _excelWriteLock = null;
 function acquireExcelLock() {
   if (!_excelWriteLock) _excelWriteLock = Promise.resolve();
@@ -1343,7 +1385,9 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
   }
 
   const transcodeStart = Date.now();
-  resetFfmpegState();
+
+  // 每个任务独立的 ffmpeg 进度解析器（B1），并发转码时百分比互不串扰
+  const parseFfmpeg = makeFfmpegProgressParser(totalDur);
 
   async function doTranscode() {
     const args = [
@@ -1358,7 +1402,7 @@ async function stepTranscode(srcFile, sheetName, maxRetries, retryDelay, force, 
     // Parse stdout for progress ( pipe:1 sends progress to stdout)
     const rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
     rlOut.on('line', line => {
-      const prog = parseFfmpegProgress(line, totalDur);
+      const prog = parseFfmpeg(line);
       if (prog && prog.percent !== lastPct) {
         lastPct = prog.percent;
         const bar = textBar(prog.percent, 20);
@@ -1968,6 +2012,10 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
   if (!updates.size && !keywordsDict?.size) return;
 
   logInfo(`write ${updates.size} content + ${keywordsDict?.size || 0} keywords to Excel...`);
+  // M2：先把实时写缓存落盘并使缓存失效，让下面的全量读以磁盘为权威来源（避免覆盖实时写结果）
+  flushExcel();
+  _excelWb = null;
+  _excelDirty = false;
   const wb = XLSX.readFile(EXCEL_FILE, { cellFormula: true, cellDates: true });
 
   /**
@@ -3004,6 +3052,9 @@ async function run({
   offset = 0, rowLimit = 0,
   excelFiles = null,
 }) {
+  // ── Excel 实时写回：启动后台周期落盘 + 退出兜底（M2）──
+  startExcelFlush();
+
   // ── 重跑失败模式 ──
   if (retryFailed) {
     return runFromReport(retryFailed, steps, maxRetries, retryDelay, concurrency, force, dryRun,

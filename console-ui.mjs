@@ -113,7 +113,8 @@ function parseYtdlpLine(line) {
 // 返回：{ percent, elapsed, speed } 或 null
 let _ffmpegState = { durationUs: 0, outTimeUs: 0, speed: 0, totalSize: 0 };
 
-function parseFfmpegProgress(line, totalDurationSec) {
+function parseFfmpegProgress(line, totalDurationSec, state) {
+  if (!state) state = _ffmpegState;  // 向后兼容：不传则用全局态
   line = line.trim();
   if (!line || line.startsWith('[')) return null;
   const kv = line.match(/^(\w+)=(.+)$/);
@@ -121,25 +122,31 @@ function parseFfmpegProgress(line, totalDurationSec) {
   const key = kv[1];
   const val = kv[2].trim();
   if (key === 'out_time_us') {
-    _ffmpegState.outTimeUs = parseInt(val, 10) || 0;
+    state.outTimeUs = parseInt(val, 10) || 0;
   } else if (key === 'speed') {
     const m = val.match(/([\d.]+)x/);
-    _ffmpegState.speed = m ? parseFloat(m[1]) : 0;
+    state.speed = m ? parseFloat(m[1]) : 0;
   } else if (key === 'total_size') {
-    _ffmpegState.totalSize = parseInt(val, 10) || 0;
+    state.totalSize = parseInt(val, 10) || 0;
   } else if (key === 'duration_us') {
-    _ffmpegState.durationUs = parseInt(val, 10) || 0;
+    state.durationUs = parseInt(val, 10) || 0;
   }
   // 用 out_time_us / duration 计算进度
-  const dur = totalDurationSec > 0 ? totalDurationSec * 1e6 : (_ffmpegState.durationUs || 1);
-  const percent = Math.min(100, (_ffmpegState.outTimeUs / dur) * 100);
+  const dur = totalDurationSec > 0 ? totalDurationSec * 1e6 : (state.durationUs || 1);
+  const percent = Math.min(100, (state.outTimeUs / dur) * 100);
   return {
     type: 'progress',
     percent: Math.round(percent * 10) / 10,
-    elapsed: _ffmpegState.outTimeUs / 1e6,
-    speed: _ffmpegState.speed,
-    totalSize: _ffmpegState.totalSize,
+    elapsed: state.outTimeUs / 1e6,
+    speed: state.speed,
+    totalSize: state.totalSize,
   };
+}
+
+// 每个转码任务创建独立的进度状态（B1），避免并发转码时百分比串扰/跳 0。
+function makeFfmpegProgressParser(totalDurationSec) {
+  const state = { durationUs: 0, outTimeUs: 0, speed: 0, totalSize: 0 };
+  return (line) => parseFfmpegProgress(line, totalDurationSec, state);
 }
 
 function resetFfmpegState() {
@@ -158,5 +165,6 @@ export {
   stopSpinner,
   parseYtdlpLine,
   parseFfmpegProgress,
+  makeFfmpegProgressParser,
   resetFfmpegState,
 };
