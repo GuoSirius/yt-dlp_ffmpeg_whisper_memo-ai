@@ -215,7 +215,7 @@ cp .env.example .env
 |------|------|------|
 | 输入 | `EXCEL_FILE` | Excel 文件路径 |
 | 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` / `COL_KEYWORDS` | 唯一标识列 / 标题列 / 识别文本输出列 / AI 关键词输出列 |
-| 列映射 | `COL_TENCENT` / `COL_BILIBILI` / `COL_YOUTUBE` / `COL_YOUKU` | 各平台视频 ID 所在列 |
+| 列映射 | `COL_TENCENTVID` / `COL_BILIBILIBVID` / `COL_YOUTUBEID` / `COL_YOUKUID` | 各平台视频 ID 所在列（默认 `extra.tencentVid` / `extra.bilibiliBvid` / `extra.youtubeId` / `extra.youkuId`），至少配置一个 |
 | Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtube}`） |
@@ -227,9 +227,12 @@ cp .env.example .env
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
 | 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
+| 转码 | `TRANSCODE_EXT` | 转码输出音频扩展名（默认 `.wav`），决定 `transcoded/{sheet}/{stem}{ext}` 产物名 |
+| 转码 | `TRANSCODE_ARGS` | 完整 ffmpeg 转码参数链（默认含 `loudnorm` 响度归一化 + soxr 重采样至 16kHz 单声道 pcm_s16le）。不需要响度归一化可参考 `.env.example` 中的备选方案 |
 | 输出 | `OUTPUT_DIR` | 输出根目录（默认 `output`），7 个子目录（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`）由代码自动创建，目录名硬编码。优先级：**CLI `--output <dir>` > env `OUTPUT_DIR` > 默认 `output`** |
 | 输出 | `COOKIES_DIR` | Cookie 文件目录（独立于 `OUTPUT_DIR`，不归并到其下） |
 | 校验 | `MIN_TRANSCRIPT_CHARS` / `MIN_KEYWORDS_CHARS` | 断点续跑时的最小长度阈值（字符数）。识别文本/关键词文件低于此值视为残缺产物，会被清理并重做。默认 `50` / `5` |
+| 写回 | `EXCEL_FLUSH_INTERVAL` | Excel 实时写回的落盘间隔，**单位秒，双端写法一致**（JS 内部自动 ×1000 转毫秒）。默认 `3`，建议 `3~5`，不建议 >5。详见下方「断点续跑 · Excel 实时写回」 |
 | AI 分析 | `AI_ENABLED` | `true` 启用 / `false` 跳过（默认 true） |
 | AI 分析 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | OpenAI 兼容 API 配置 |
 | AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符。支持文件路径（try-file-first），CLI 覆盖：`--ai-prompt <text|path>`（CLI > .env > 内置默认） |
@@ -244,7 +247,7 @@ cp .env.example .env
 |------|------|-------------|------|
 | **【自由】** | 值可随意改为任意合法内容 | 路径、开关、数字、字符串、URL、UA、格式参数等 | `EXCEL_FILE`, `YOUTUBE_PROXY`, `WHISPER_MODEL` |
 | **【调序】** | 只能从固定集合中增减/排序，不能用集合外的值 | `PLATFORM_PRIORITY` | 只能包含 `bilibili` / `youtube` / `tencent` / `youku` |
-| **【关联】** | 值需与脚本内约定的 Key 名一致 | URL 模板中的 `{占位符}` | `{youtube}` 必须跟 `COL_YOUTUBE` 的后缀一致 |
+| **【关联】** | 值需与脚本内约定的 Key 名一致 | URL 模板中的 `{占位符}` | `YOUTUBE_URL_TPL` 里的占位符必须写成 `{youtube}`——即与 `PLATFORM_PRIORITY` 中的平台 key 同名，而非列名 |
 | **【固定】** | 除非 Excel 列名或脚本内部逻辑改变，否则不应修改 | 列名映射 | `COL_ID=extra.id`、`COL_TITLE=title` 等 |
 
 > **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktok`、`douyin` 等无效 key 会导致脚本无法识别。
@@ -801,7 +804,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | 步骤 | 产物 | 校验条件 | 校验失败行为 |
 |------|------|---------|--------------|
 | download | `downloads/{sheet}/{stem}.mp4` | 文件存在 + size>0 | 清理 `.part`/`.ytdl`，重做 |
-| transcode | `transcoded/{sheet}/{stem}.wav` | 文件存在 + size>0 | 清理 0 字节产物，重做 |
+| transcode | `transcoded/{sheet}/{stem}.wav`（扩展名由 `TRANSCODE_EXT` 决定） | 文件存在 + size>0 | 清理 0 字节产物，重做 |
 | transcribe | `transcripts/{sheet}/{stem}.txt` | 长度 ≥ `MIN_TRANSCRIPT_CHARS`（默认 50） | 清理文本，重做 |
 | analyze | `keywords/{sheet}/{stem}.txt` | 长度 ≥ `MIN_KEYWORDS_CHARS`（默认 5） | 清理关键词，重做 |
 
@@ -823,8 +826,37 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 
 ### Excel 实时写回
 
-- 每个任务完成后立即调用 `write_excel_cell`（Python `_excel_lock` 串行化 / JS `acquireExcelLock` promise 队列）
-- 不再依赖末尾批量写 → 断电时 Excel 已是最新内容
+从 v1.6 开始，实时写回由「每条任务整表 reload + save」改为**内存缓存 + 周期落盘**，在保留中断安全的同时不再拖垮并发吞吐。
+
+**写入链路**
+
+1. 任务完成 → `write_excel_cell`（Python）/ `writeExcelCellByKey`（JS）**只更新内存中的 Workbook 缓存**并打脏标记，不碰磁盘
+2. 首次写入时才把整表加载进缓存（`_ensure_excel_loaded` / `_ensureExcelLoaded`），后续复用
+3. 后台按 `EXCEL_FLUSH_INTERVAL`（默认 **3 秒**）把脏数据落盘；无修改时不做任何磁盘写
+
+**三重落盘兜底**（确保中断不丢）
+
+| 触发时机 | Python | JS |
+|----------|--------|-----|
+| 周期落盘 | daemon 线程 `_excel_flush_loop` | `setInterval` |
+| 正常退出 | `atexit` | `process.on('exit')` |
+| Ctrl+C / 被终止 | `SIGINT` / `SIGTERM` handler | `SIGINT` / `SIGTERM` handler |
+
+**丢数据风险对比**
+
+| 场景 | 旧方案（每条整表 save） | 新方案（缓存 + 周期落盘） |
+|------|------------------------|--------------------------|
+| 正常结束 / Ctrl+C | 不丢 | 不丢（信号 handler 兜底 flush） |
+| 强杀 `kill -9` / 断电 | 不丢，但每条都付出整表序列化代价 | 最坏丢失一个间隔（默认 ≤3 秒）内的修改 |
+| 高并发吞吐 | 被 Excel 写锁串行化，明显拖慢 | 无磁盘串行化瓶颈 |
+
+**间隔怎么选**：默认 `3` 秒是平衡点；Excel 很大或任务很密集想省 I/O 可设 `5`；想更保守可设 `2`。不建议 >5（边际收益小，收尾风险变大）。
+
+> `EXCEL_FLUSH_INTERVAL` **单位统一为秒，Python 与 JS 写法完全一致**（JS 内部自动 ×1000 转毫秒），同一份 `.env` 双端通用。
+
+**其他约定**
+
+- 末尾批量写（`write_all_contents_to_excel`）会先 flush 再失效缓存，以磁盘为权威源，避免覆盖实时写结果
 - 单步运行（`--step`）不写 Excel（避免误覆盖）
 
 ### 启动统计
@@ -1028,11 +1060,15 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 |------|----------|
 | 总体进度 | 完成/总任务数、百分比、✅成功 ❌失败 ⚠️部分 ⏭️无视频 四维计数 |
 | 下载 | yt-dlp 实时百分比 + 速度 + ETA |
-| 转码 | 先 ffprobe 取时长，再实时解析 `time=` 算百分比（如 `25.3% (38s/150s)`） |
+| 转码 | 先 ffprobe 取时长，再用 `-progress pipe:1` 读 `out_time_us` 算百分比（如 `25.3% (38s/150s)`） |
 | 识别 | 每 5s 打印已用时间，完成时显示总耗时和文本长度 |
 | AI 分析 | 每 5s 打印已用时间，完成时显示结果长度或失败原因 |
 
-多线程并发时使用打印锁保证输出不交错。
+**并发下的进度隔离**（v1.6 修复）
+
+- **每任务独立进度状态**：转码进度解析器由工厂函数为每个任务创建独立状态（Python `make_ffmpeg_parser` / JS `makeFfmpegProgressParser`），不再共用模块级全局变量。此前 `--concurrency 2+` 时多个转码任务会互相污染百分比（出现跳 0 或倒退）。
+- **终端刷新加锁**：Python 端 `update_line` / `clear_line` / `Spinner` 的单行刷新统一由 `_term_lock` 串行化，避免并发时 ANSI 转义序列交错导致乱码。JS 为单线程事件循环，`process.stderr.write` 本身原子，无需额外加锁。
+- **模型加载去重**：Python 的 faster-whisper / FunASR 模型缓存采用双检锁（`_model_load_lock`），并发转录时只加载一次模型，不会重复下载或重复构造。
 
 ---
 
