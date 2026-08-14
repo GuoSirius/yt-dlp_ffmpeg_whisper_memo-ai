@@ -511,6 +511,13 @@ function readExcelSheet(sheetName, filePath = null) {
   return XLSX.utils.sheet_to_json(ws);
 }
 
+// 获取 Excel 文件中的全部 sheet 名称（VIDEO_SHEETS 与 --sheet 均留空时使用）
+function getAllSheetNames(filePath = null) {
+  const file = filePath || EXCEL_FILE;
+  const wb = XLSX.readFile(file);
+  return wb.SheetNames;
+}
+
 // ============================== 断点续跑工具 ==============================
 
 function transcriptPath(sheetName, stem) {
@@ -3007,9 +3014,11 @@ async function run({
   const files = (excelFiles && excelFiles.length)
     ? excelFiles.map(f => path.resolve(f))
     : [EXCEL_FILE];
-  const sheets = (targetSheet && targetSheet.length) ? targetSheet : VIDEO_SHEETS;
   let tasks = [];
   for (const excelFile of files) {
+    // 优先级：--sheet > VIDEO_SHEETS > 全部 sheet（留空则处理所有 sheet）
+    const baseSheets = (targetSheet && targetSheet.length) ? targetSheet : VIDEO_SHEETS;
+    const sheets = (baseSheets && baseSheets.length) ? baseSheets : getAllSheetNames(excelFile);
     for (const sheetName of sheets) {
     let rows = readExcelSheet(sheetName, excelFile);
     if (targetIds && targetIds.length) {

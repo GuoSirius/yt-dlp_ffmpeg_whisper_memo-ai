@@ -684,6 +684,12 @@ def parse_url(url: str) -> dict | None:
 _STEM_CACHE: dict[tuple, str] = {}
 
 
+def get_all_sheet_names(excel_file: Path) -> list[str]:
+    """获取 Excel 文件中的全部 sheet 名称（VIDEO_SHEETS 与 --sheet 均留空时使用）"""
+    xls = pd.ExcelFile(str(excel_file))
+    return xls.sheet_names
+
+
 def precompute_stems(df: pd.DataFrame, sheet_name: str) -> None:
     """为一个 sheet 的所有行预计算去重后的文件名。
 
@@ -2932,7 +2938,9 @@ def run(
                                analyze_timeout)
 
     # ── 构建任务列表 ──
-    sheets = target_sheets if (target_sheets and len(target_sheets)) else VIDEO_SHEETS
+    # 优先级：--sheet > VIDEO_SHEETS > 全部 sheet（留空则处理所有 sheet）
+    base_sheets = target_sheets if (target_sheets and len(target_sheets)) else VIDEO_SHEETS
+    sheets = base_sheets if (base_sheets and len(base_sheets)) else get_all_sheet_names(EXCEL_FILE)
     tasks = []
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
@@ -4167,7 +4175,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     run(
-        target_sheets=args.sheets,
+        target_sheets=args.sheet,
         # 兜底：防止 shell（如 PowerShell）将逗号展开为空格
         target_ids=[s for v in (args.vid_ids or [])
                     for s in re.split(r'[,，\s]+', str(v)) if s] or None,
