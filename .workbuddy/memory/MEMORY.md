@@ -64,6 +64,17 @@
   - `service` / `funasr/service`：HTTP GET 3 秒超时（不变）
 - 关键代码：JS `checkWhisperAvailable` line 870；Python `_check_whisper_available` line 1297
 
+## 代理预检机制（PROXY_PROBE_TIMEOUT，2026-08-14 实施）
+- **背景**：YouTube 下载必走 `YOUTUBE_PROXY`；用户换代理客户端后监听端口漂移（7897→17890），旧端口无监听 → 34 条任务全失败还白跑重试。代理预检在环境预检阶段提前抓出"端口不通"。
+- **双端对称实现**：仅含 `download` 步骤时触发。
+  - JS：`checkEnvironmentAsync` 末尾 `await checkProxies(result)`；`parseProxyEndpoint`/`probeTcp`(net.Socket)/`checkProxies`（遍历 `PLATFORM_CONFIG` 对 `cfg.proxy` 非空去重探测）
+  - Python：`check_environment` 的 download 分支调 `_check_proxies(result)`；`_parse_proxy_endpoint`/`_probe_tcp`(socket.create_connection)/`_check_proxies`
+- **探测语义**：只做 TCP 握手（host:port 能否连上），**不校验能否真翻墙**；同一 proxy 只探一次；失败 push issue + 置 `result.proxy=false`/`allOk=false`，提示去代理客户端查混合端口
+- **配置**：`PROXY_PROBE_TIMEOUT`(ms) 默认 `2000`，`0`=关闭预检。scheme 缺省端口按 socks→1080 / https→443 / http→80
+- **面板**：dry-run / check 末行显示 `✅ 代理: youtube→<url>` 或 `❌ 代理: ...` 或 `未配置` / `预检关闭`
+- **文档同步**：`.env.example` 2.4.4 段「如何定位代理端口」(netstat/lsof/yt-dlp 验证/dry-run 确认) + README「工具预检·代理预检」子节 + 核心配置表 + 故障排查表（10061 连接失败归因为端口失效）
+- **全局安装副本同步约定**：用户实跑 `D:/Programs/node_npm/node_global/node_modules/video-pipeline/process_videos.js`（**LF 行尾**，工作区是 CRLF）。同步时用 Node 脚本 `readFileSync().replace(/\r\n/g,'\n')` 写回，先备份 `.bak`；`node --check` 验证
+
 ## README 同步规范（2026-06-16 教训，2026-08-14 补充审计脚本）
 - **代码变更 + 文档同步必须同 commit 提交**，否则用户拉代码看 README 找不到对应功能
 - **commitlint start-case 拦截**：subject 行首出现英文大写词会被拒（`v1.4` → 改「同步 v1.4 的」；`Excel flush …` → 改「实时写落盘…」）。**结论：commit message 直接用中文开头**
