@@ -3067,10 +3067,12 @@ async function run({
     ? excelFiles.map(f => path.resolve(f))
     : [EXCEL_FILE];
   let tasks = [];
+  const processedSheets = [];  // 跨文件累积已处理的 sheet 名（供末尾生成报告使用，函数作用域）
   for (const excelFile of files) {
     // 优先级：--sheet > VIDEO_SHEETS > 全部 sheet（留空则处理所有 sheet）
     const baseSheets = (targetSheet && targetSheet.length) ? targetSheet : VIDEO_SHEETS;
     const sheets = (baseSheets && baseSheets.length) ? baseSheets : getAllSheetNames(excelFile);
+    processedSheets.push(...sheets);
     for (const sheetName of sheets) {
     let rows = readExcelSheet(sheetName, excelFile);
     if (targetIds && targetIds.length) {
@@ -3217,7 +3219,9 @@ async function run({
 
   // ── 生成报告 ──
   const config = {
-    sheets, target_ids: targetIds, steps, max_retries: maxRetries,
+    // 注意：sheets 定义在上面的 for(excelFile) 循环内，此处不可直接引用（否则 ReferenceError）
+    sheets: [...new Set(processedSheets)],
+    target_ids: targetIds, steps, max_retries: maxRetries,
     retry_delay: retryDelay, concurrency, force,
   };
   const reportPaths = generateReport(results, config);
