@@ -133,7 +133,7 @@ pip install funasr modelscope
 
 **CPU 模式**（默认）：
 ```bash
-# 无需额外操作，FUNSR_DEVICE=cpu（默认）
+# 无需额外操作，FUNASR_DEVICE=cpu（默认）
 ```
 
 **GPU 模式**（强烈推荐，中文 large 模型速度差距 10×+）：
@@ -290,8 +290,8 @@ API 端点：
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `WHISPER_TASK` | `transcribe` | 任务类型: transcribe / translate |
-| `WHISPER_MODEL` | `medium` | 模型大小：tiny / base / small / medium / large-v3 / turbo |
-| `WHISPER_LANGUAGE` | `zh` | 语言代码（zh/en/ja 等），空=多语言自动检测 |
+| `WHISPER_MODEL` | `large-v3` | 模型大小：tiny / base / small / medium / large-v3 / turbo |
+| `WHISPER_LANGUAGE` | `en` | 语言代码（zh/en/ja 等），空=多语言自动检测 |
 | `WHISPER_DEVICE` | `cpu` | 推理设备：cpu / cuda |
 | `WHISPER_MODEL_DIR` | 空 | 模型缓存目录，空=`~/.cache/whisper`（或 `$XDG_CACHE_HOME/whisper`） |
 | `WHISPER_BEAM_SIZE` | `5` | Beam search 宽度（越大越准但越慢，建议 5） |
