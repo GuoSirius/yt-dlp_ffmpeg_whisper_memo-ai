@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.6.1] - 2026-08-14
+
+### Features
+
+- 新增代理连通性预检，代理失效时提前阻断而非全批下载失败 (`7777571`)
+
+### Bug Fixes
+
+- py 端标准流强制 utf-8，修复重定向输出时 emoji 编码崩溃 (`4d14ddf`)
+- 给 Excel 落盘定时器加 unref，避免任务跑完进程不退出 (`a5f16ab`)
+- 修复报告生成时 sheets 越界引用导致的 ReferenceError (`bd8752e`)
+
+### Documentation
+
+- 记录代理端口速查表与 SSL UNEXPECTED_EOF 报错分析 (`671cb77`)
+- 补充常用代理客户端默认端口速查表，纠正 7897 误写 (`03519f0`)
+- 补充代理预检机制长期记忆与今日报障排查记录 (`e3152f2`)
+- 补充代理预检说明与代理端口定位方法 (`88656e7`)
+- 同步 EXCEL_FLUSH_INTERVAL 等 env 到 README 与 .env.example，修正平台列名笔误 (`c48b908`)
+
+
 ## [1.6.0] - 2026-08-14
 
 ### Bug Fixes
