@@ -221,7 +221,7 @@ cp .env.example .env
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtube}`） |
 | 平台 | `{平台}_COOKIES_FROM_BROWSER` | 从浏览器直读 cookie（推荐 Firefox，替代手动导出文件） |
 | 平台 | `{平台}_COOKIE_FILE` | cookie 文件路径（备用方案，需定期更新） |
-| 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge）。⚠️ 必须是代理客户端**实际监听**的混合/HTTP 端口，换客户端后务必核对 |
+| 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7890`，Clash）。⚠️ 必须是代理客户端**实际监听**的混合/HTTP 端口，换客户端后务必核对（各客户端默认端口见「工具预检 · 代理预检」） |
 | 平台 | `PROXY_PROBE_TIMEOUT` | 代理预检 TCP 探测超时（毫秒，默认 `2000`），`0` = 关闭。详见「工具预检 · 代理预检」 |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
@@ -729,8 +729,8 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 ```text
 ═══ 工具/服务预检 ═══
 以下依赖不可用:
-  • 代理不可用: http://127.0.0.1:7897 连不上（平台: youtube）
-      · 127.0.0.1:7897 当前无服务监听，走该代理的平台会 100% 下载失败
+  • 代理不可用: http://127.0.0.1:7890 连不上（平台: youtube）
+      · 127.0.0.1:7890 当前无服务监听，走该代理的平台会 100% 下载失败
       · 请在代理客户端查看实际的「混合端口 / HTTP 端口」，并把 .env 里的 YOUTUBE_PROXY 改成该端口
 ```
 
@@ -740,12 +740,12 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 
 - 支持 `http://` / `https://` / `socks5://` / `socks5h://`，也兼容 `user:pass@host:port` 与省略端口（按 scheme 取默认端口）
 - 探测只做 TCP 握手，**不校验能否真正翻墙** —— 端口通但节点没连上仍可能失败
-- dry-run 的「环境检测」面板会多出一行 `代理: youtube→http://127.0.0.1:7897`（✅/❌）
+- dry-run 的「环境检测」面板会多出一行 `代理: youtube→http://127.0.0.1:7890`（✅/❌）
 
 **代理端口对不上时怎么定位**：
 
 1. 代理客户端里找「**混合端口 / Mixed Port / HTTP 端口**」，这个才是要填进 `{平台}_PROXY` 的端口
-   （常见默认：Clash Verge `7897`、Clash for Windows `7890`、v2rayN `10809`）
+   （常见默认：Clash / Clash Verge / Clash for Windows `7890`、v2rayN `10809`(HTTP) / `10808`(SOCKS)、Shadowsocks `1080`；你当前的「魔戒」等非标客户端以界面实际显示的「本地代理/监听端口」为准）
 2. 或直接列出本机监听端口：
 
    ```bash
@@ -758,7 +758,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 3. 验证某端口是否真能翻墙（端口换成你自己的）：
 
    ```bash
-   yt-dlp --proxy http://127.0.0.1:7897 --skip-download --get-title "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+   yt-dlp --proxy http://127.0.0.1:7890 --skip-download --get-title "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
    ```
 
    能打印出标题即代理可用；报 `Unable to connect to proxy ... [WinError 10061] 目标计算机积极拒绝` 就是端口没有服务监听。
