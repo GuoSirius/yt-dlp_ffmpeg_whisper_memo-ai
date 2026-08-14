@@ -396,7 +396,8 @@ _model_load_lock = Lock()  # 模型懒加载锁（并发转录时避免重复加
 _EXCEL_WB = None          # 缓存的 Workbook 对象
 _EXCEL_DIRTY = False      # 是否有未落盘的修改
 _EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
-# 周期落盘间隔（秒）。中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
+# 周期落盘间隔（秒）。与 JS 端单位一致（.env 写 EXCEL_FLUSH_INTERVAL=5 双端通用）。
+# 中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
 EXCEL_FLUSH_INTERVAL = float(os.getenv("EXCEL_FLUSH_INTERVAL", "3.0"))
 _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
