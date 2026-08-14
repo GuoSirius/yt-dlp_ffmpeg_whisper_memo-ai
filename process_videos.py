@@ -55,6 +55,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread
 
 import colorama
+
+# ⚠️ 必须在 colorama.init() 之前把标准流切成 UTF-8：
+# 输出被重定向/管道接走时（如 `python process_videos.py > log.txt`），Windows 中文环境下
+# sys.stdout.encoding 会退化成 cp936/gbk，而预检面板里的 ✅ ⏭ ❌（U+2705 等）无法用 gbk 编码，
+# 会直接抛 UnicodeEncodeError 把整个进程打崩。errors="replace" 兜底极端终端。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 colorama.init()
 
 from dotenv import load_dotenv
