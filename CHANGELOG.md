@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.6.0] - 2026-08-14
+
+### Bug Fixes
+
+- 并发转码进度串扰(B1/B2)与模型竞态(B3),删FunASR重复死代码(M1),Excel实时写改内存缓存+周期落盘(M2) (`8f993c7`)
+
+### Refactoring
+
+- 实时写落盘间隔双端统一为秒(EXCEL_FLUSH_INTERVAL=5 通用) (`cd42333`)
+- 实时写 Excel 落盘间隔改为可配置(EXCEL_FLUSH_INTERVAL)，默认 3s (`7de1d0d`)
+
+### Documentation
+
+- 补充 B1/B2/B3/M1/M2 落地实现记录 (`352e5a0`)
+
+
 ## [1.5.16] - 2026-08-14
 
 ### Bug Fixes
