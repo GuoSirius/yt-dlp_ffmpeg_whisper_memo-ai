@@ -884,9 +884,11 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 
 | 触发时机 | Python | JS |
 |----------|--------|-----|
-| 周期落盘 | daemon 线程 `_excel_flush_loop` | `setInterval` |
+| 周期落盘 | daemon 线程 `_excel_flush_loop` | `setInterval` + `unref()` |
 | 正常退出 | `atexit` | `process.on('exit')` |
 | Ctrl+C / 被终止 | `SIGINT` / `SIGTERM` handler | `SIGINT` / `SIGTERM` handler |
+
+> **JS 端 `unref()` 不能省**：`setInterval` 默认会吊住 event loop，导致任务全部跑完后进程也不退出（终端一直挂着不回提示符）。`unref()` 让它对齐 Python daemon 线程语义——不阻塞退出，未落盘的脏数据由 `process.on('exit')` 钩子兜底 flush。
 
 **丢数据风险对比**
 

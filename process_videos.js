@@ -663,7 +663,10 @@ function flushExcel() {
 function startExcelFlush() {
   if (_excelFlushStarted) return;
   _excelFlushStarted = true;
-  setInterval(() => { try { flushExcel(); } catch (e) { /* ignore */ } }, EXCEL_FLUSH_INTERVAL);
+  const timer = setInterval(() => { try { flushExcel(); } catch (e) { /* ignore */ } }, EXCEL_FLUSH_INTERVAL);
+  // 必须 unref：否则该定时器会永久吊住 event loop，任务全部跑完后进程也不会退出（终端一直挂着）。
+  // 对齐 Python 端的 daemon 线程语义；未落盘的脏数据由下面的 exit 钩子兜底 flush。
+  if (typeof timer.unref === 'function') timer.unref();
   process.on('exit', () => { try { flushExcel(); } catch (e) { /* ignore */ } });
   process.on('SIGINT', () => { try { flushExcel(); } catch (e) { /* ignore */ } process.exit(130); });
   process.on('SIGTERM', () => { try { flushExcel(); } catch (e) { /* ignore */ } process.exit(143); });
