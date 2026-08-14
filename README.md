@@ -221,7 +221,8 @@ cp .env.example .env
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtube}`） |
 | 平台 | `{平台}_COOKIES_FROM_BROWSER` | 从浏览器直读 cookie（推荐 Firefox，替代手动导出文件） |
 | 平台 | `{平台}_COOKIE_FILE` | cookie 文件路径（备用方案，需定期更新） |
-| 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge） |
+| 平台 | `{平台}_PROXY` | 代理地址（如 `http://127.0.0.1:7897`，Clash Verge）。⚠️ 必须是代理客户端**实际监听**的混合/HTTP 端口，换客户端后务必核对 |
+| 平台 | `PROXY_PROBE_TIMEOUT` | 代理预检 TCP 探测超时（毫秒，默认 `2000`），`0` = 关闭。详见「工具预检 · 代理预检」 |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
@@ -714,9 +715,54 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | 步骤 | 检测项 | 不可用时行为 |
 |------|--------|-------------|
 | download | yt-dlp 可调用 | 提示用户，输入 `yes` 继续 / 其他取消 |
+| download | **代理连通性**（所有配了 `{平台}_PROXY` 的平台） | 同上 |
 | transcode | ffmpeg + ffprobe 可调用 | 同上 |
 | transcribe | whisper 后端可用（按 `WHISPER_BACKEND` 分支检测） | 同上 |
 | analyze | AI_ENABLED=true 且 API 配置完整 | 同上 |
+
+#### 代理预检（避免整批任务白跑）
+
+YouTube 等站点必须走代理，而**换代理客户端后监听端口经常变化**。端口填错时 yt-dlp 每条任务都会重试到超时，最终「N 条全失败」，且错误信息埋在一堆重试日志里很难发现。
+
+因此含 `download` 步骤时，会对每个配置了 `{平台}_PROXY` 的地址做一次 **TCP 连通性探测**（同一 proxy 只探一次，默认 2 秒超时，几乎不增加启动耗时）：
+
+```text
+═══ 工具/服务预检 ═══
+以下依赖不可用:
+  • 代理不可用: http://127.0.0.1:7897 连不上（平台: youtube）
+      · 127.0.0.1:7897 当前无服务监听，走该代理的平台会 100% 下载失败
+      · 请在代理客户端查看实际的「混合端口 / HTTP 端口」，并把 .env 里的 YOUTUBE_PROXY 改成该端口
+```
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `PROXY_PROBE_TIMEOUT` | `2000` | TCP 探测超时（毫秒）。设 `0` 关闭代理预检 |
+
+- 支持 `http://` / `https://` / `socks5://` / `socks5h://`，也兼容 `user:pass@host:port` 与省略端口（按 scheme 取默认端口）
+- 探测只做 TCP 握手，**不校验能否真正翻墙** —— 端口通但节点没连上仍可能失败
+- dry-run 的「环境检测」面板会多出一行 `代理: youtube→http://127.0.0.1:7897`（✅/❌）
+
+**代理端口对不上时怎么定位**：
+
+1. 代理客户端里找「**混合端口 / Mixed Port / HTTP 端口**」，这个才是要填进 `{平台}_PROXY` 的端口
+   （常见默认：Clash Verge `7897`、Clash for Windows `7890`、v2rayN `10809`）
+2. 或直接列出本机监听端口：
+
+   ```bash
+   # Windows
+   netstat -ano | findstr LISTENING | findstr 127.0.0.1
+   # macOS / Linux
+   lsof -nP -iTCP -sTCP:LISTEN | grep 127.0.0.1
+   ```
+
+3. 验证某端口是否真能翻墙（端口换成你自己的）：
+
+   ```bash
+   yt-dlp --proxy http://127.0.0.1:7897 --skip-download --get-title "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+   ```
+
+   能打印出标题即代理可用；报 `Unable to connect to proxy ... [WinError 10061] 目标计算机积极拒绝` 就是端口没有服务监听。
+4. 改完 `.env` 后干跑确认：`node process_videos.js --step download --dry-run`，看代理那一行是否 ✅
 
 **ASR 后端检测策略**（轻量秒级，不实际启动 CLI）：
 
@@ -1395,7 +1441,9 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 |------|------|------|----------|
 | `Sign in to confirm you're not a bot` | YouTube | cookie 过期或无效 | 检查 Firefox 登录态，或重新导出 cookie 文件 |
 | `cookies does no longer seem to be valid` | YouTube | cookie 文件超过 48h | 用 Firefox cookies-from-browser 方案（免维护） |
-| `Unable to download webpage: HTTP Error 403` | YouTube | IP 被识别为非 YouTube 地区 | 确保代理运行（端口 7897），检查 `YOUTUBE_PROXY` |
+| `Unable to download webpage: HTTP Error 403` | YouTube | IP 被识别为非 YouTube 地区 | 确保代理运行，核对 `YOUTUBE_PROXY` 端口 |
+| `Unable to connect to proxy ... [WinError 10061] 目标计算机积极拒绝` | 任意 | `{平台}_PROXY` 端口没有服务监听（**换代理客户端后端口变了**） | 见「工具预检 · 代理预检」定位实际混合端口；预检会在开跑前直接拦下 |
+| **N 条任务全部下载失败**（国内站正常、只有国外站失败） | YouTube | 大概率是代理端口失效，而非 cookie/格式问题 | 先 `--step download --dry-run` 看代理预检是否 ✅，再排查 cookie |
 | `n challenge solving failed` | YouTube | 无 JS 运行时 | 安装 Node.js，确保 `YOUTUBE_JS_RUNTIMES=node` |
 | `Requested format is not available` | YouTube | n-sig 未解开，格式不可用 | 同上，安装 JS 运行时 |
 | `HTTP Error 412` | B站 | 缺少 Chrome UA 或 cookie 过期 | 重新导出 `cookies/bilibili.txt` 或使用 Firefox 直读 |
@@ -1417,8 +1465,8 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 4. 安装必装工具：`yt-dlp`、`ffmpeg`、`ffprobe`，确保均在 PATH
 5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
 6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`（或设置 `BILIBILI_COOKIES_FROM_BROWSER=firefox`）
-7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
-8. `video-pipeline --dry-run` 验证
+7. 启动代理（Clash Verge 等），把 `YOUTUBE_PROXY` 改成代理客户端**实际监听**的混合/HTTP 端口
+8. `video-pipeline --step download --dry-run` 验证（重点看「代理: ✅」那一行）
 
 ### Python 版本
 
@@ -1428,8 +1476,8 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 4. `cp .env.example .env`，根据实际情况修改 `.env` 中的路径、代理端口和字段映射
 5. 用 Firefox 登录 YouTube，设置 `YOUTUBE_COOKIES_FROM_BROWSER=firefox`
 6. B站 cookie 仍需手动导出 `cookies/bilibili.txt`（或设置 `BILIBILI_COOKIES_FROM_BROWSER=firefox`）
-7. 启动代理（Clash Verge 等），确认端口匹配 `YOUTUBE_PROXY`
-8. `python process_videos.py --dry-run` 验证
+7. 启动代理（Clash Verge 等），把 `YOUTUBE_PROXY` 改成代理客户端**实际监听**的混合/HTTP 端口
+8. `python process_videos.py --step download --dry-run` 验证（重点看「代理: ✅」那一行）
 
 ---
 
