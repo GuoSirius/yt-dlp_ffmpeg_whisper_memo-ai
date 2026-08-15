@@ -2814,10 +2814,8 @@ def process_one_task(
                 if ok:
                     skip_steps.add("ocr")
                     result.ocr = StepResult("success", file=cached_ocr)
-        elif prior.get("ocr", {}).get("status") == "skipped":
-            # auto 模式未触发：直接跳过，复用 ASR
-            skip_steps.add("ocr")
-            result.ocr = StepResult("skipped", error=prior["ocr"].get("error", "prior skipped"))
+        # prior ocr 为 skipped 时不再无条件跳过：该状态依据上一次 ASR 结果判定，
+        # 若本次 ASR 失败，应在下方 OCR 步骤用本次 asr_text 重新评估 should_trigger_ocr 以兜底。
         if skip_steps:
             with _print_lock:
                 print(
@@ -2942,16 +2940,21 @@ def process_one_task(
             )
 
             if not text:
-                result.overall_status = "partial"
-                result.error = f"下载+转码成功但识别失败: {err}"
-                return result
+                # 语音识别失败：若 OCR 在 steps 中且存在视频文件，继续走 OCR 步骤尝试兜底；否则判 partial
+                ocr_can_rescue = ("ocr" in steps) and bool(dl_file)
+                if not ocr_can_rescue:
+                    result.overall_status = "partial"
+                    result.error = f"下载+转码成功但识别失败: {err}"
+                    return result
+                log.info(f"[{stem}] 语音识别失败，转 OCR 兜底 ({err})")
 
-        # 识别成功 → 落盘 transcript 文件（断点续跑校验依据）
-        try:
-            tp = transcript_path(sheet_name, stem)
-            tp.write_text(result.transcribe.file, encoding="utf-8")
-        except OSError as e:
-            log.warning(f"[{stem}] 写入 transcript 失败: {e}")
+        # 识别成功 → 落盘 transcript 文件（断点续跑校验依据）；识别失败（file 为 None）时不写
+        if result.transcribe.file:
+            try:
+                tp = transcript_path(sheet_name, stem)
+                tp.write_text(result.transcribe.file, encoding="utf-8")
+            except OSError as e:
+                log.warning(f"[{stem}] 写入 transcript 失败: {e}")
     else:
         # 回退：transcribe 不在 steps 中（或无音频文件）时，从磁盘加载已落盘的 transcript
         _tp = transcript_path(sheet_name, stem)
@@ -2985,6 +2988,9 @@ def process_one_task(
                     result.ocr = StepResult("success", file=cached)
                     with _print_lock:
                         print(c("dim", f"  [{stem}] ♻️ 跳过 ocr，复用 OCR 文本({len(cached)}字符)"), flush=True)
+                    # ASR 失败时，缓存的 OCR 文本可作为兜底内容
+                    if result.transcribe.status != "success":
+                        best_text = cached
                 else:
                     result.ocr = StepResult("skipped", error="cached ocr invalid")
         else:
@@ -3000,7 +3006,8 @@ def process_one_task(
                 if r["ok"] and validate_ocr_text(r["text"])[0]:
                     result.ocr = StepResult("success", file=r["text"])
                     asr_chars = len(asr_text.strip())
-                    use_ocr = r["chars"] >= asr_chars and r["avg_conf"] >= OCR_CONF_THRESH
+                    # 择优：ASR 成功时 OCR 字符数≥ASR 且置信度达标才采用；ASR 失败（兜底）时 OCR 已通过校验即采用
+                    use_ocr = (r["chars"] >= asr_chars and r["avg_conf"] >= OCR_CONF_THRESH) if asr_chars > 0 else True
                     best_text = r["text"] if use_ocr else asr_text
                     with _print_lock:
                         print(c("green", f"  [{stem}] OCR done ({r['chars']}字, conf={r['avg_conf']:.2f}) → {'采用OCR' if use_ocr else '回退ASR'}"), flush=True)
@@ -3020,8 +3027,14 @@ def process_one_task(
                 result.ocr = StepResult("success", file=_c)
     result.best_text = best_text  # 供 save_task_progress / analyze 使用
 
+    # ASR 失败且 OCR 也未能救回（无 best_text）→ 判 partial，不进入 analyze
+    if result.transcribe.status == "failed" and not best_text:
+        result.overall_status = "partial"
+        result.error = f"下载+转码成功但识别失败且 OCR 未产出文本: {result.transcribe.error or ''}"
+        return result
+
     # ── AI 分析（transcribe 之后执行）──
-    if "analyze" in steps and result.transcribe.status == "success":
+    if "analyze" in steps and (result.transcribe.status == "success" or (result.ocr and result.ocr.status == "success")):
         ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
         if ai_enabled:
             if "analyze" in skip_steps:
@@ -3073,7 +3086,7 @@ def process_one_task(
     # ── 统一判定整体状态（和本地文件模式一致）──
     if result.transcode.status == "failed":
         result.overall_status = "failed"
-    elif result.transcribe.status == "failed" and "transcribe" in steps:
+    elif result.transcribe.status == "failed" and "transcribe" in steps and not (result.ocr and result.ocr.status == "success"):
         result.overall_status = "partial"
     elif result.analyze.status == "failed":
         result.overall_status = "partial"
@@ -3786,9 +3799,12 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
         )
 
         if not text_file:
-            result.overall_status = 'partial'
-            result.error = f'转码成功但识别失败: {err}'
-            return result
+            # 语音识别失败：若 OCR 在 steps 中，继续走 OCR 步骤尝试兜底；否则判 partial
+            if "ocr" not in steps:
+                result.overall_status = 'partial'
+                result.error = f'转码成功但识别失败: {err}'
+                return result
+            log.info(f"[{result.stem}] 语音识别失败，转 OCR 兜底 ({err})")
     else:
         # 回退：transcribe 不在 steps 中时，从磁盘加载已落盘的 transcript
         _tp = transcript_path(sheet_name, result.stem)
@@ -3819,7 +3835,9 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             r = run_ocr_frames(str(input_path), str(ocr_out), str(ocr_meta))
             if r["ok"] and validate_ocr_text(r["text"])[0]:
                 result.ocr = StepResult("success", file=r["text"])
-                use_ocr = r["chars"] >= len(asr_text.strip()) and r["avg_conf"] >= OCR_CONF_THRESH
+                # 择优：ASR 成功时 OCR 字符数≥ASR 且置信度达标才采用；ASR 失败（兜底）时 OCR 已通过校验即采用
+                asr_len = len(asr_text.strip())
+                use_ocr = (r["chars"] >= asr_len and r["avg_conf"] >= OCR_CONF_THRESH) if asr_len > 0 else True
                 best_text = r["text"] if use_ocr else asr_text
                 print(c("green", f"  [{result.stem}] OCR done ({r['chars']}字, conf={r['avg_conf']:.2f}) → {'采用OCR' if use_ocr else '回退ASR'}"), flush=True)
             else:
@@ -3837,10 +3855,16 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
                 result.ocr = StepResult("success", file=_c)
     result.best_text = best_text
 
+    # ASR 失败且 OCR 也未能救回（无 best_text）→ 判 partial，不进入 analyze
+    if result.transcribe.status == 'failed' and not best_text:
+        result.overall_status = 'partial'
+        result.error = f'转码成功但识别失败且 OCR 未产出文本: {result.transcribe.error or ""}'
+        return result
+
     # ── AI 分析 ──
     if 'analyze' in steps:
-        if result.transcribe.status != 'success':
-            result.analyze = StepResult('skipped', error='无可用 transcript（transcribe 未执行且磁盘无缓存）')
+        if result.transcribe.status != 'success' and not best_text:
+            result.analyze = StepResult('skipped', error='无可用 transcript（transcribe 与 OCR 均未产出文本）')
         else:
             try:
                 ai_start = time.monotonic()
@@ -3854,7 +3878,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
 
             result.analyze = StepResult(
                 status='success' if analyze_ok else 'failed',
-                file=result.transcribe.file if analyze_ok else None,
+                file=analyze_ok if analyze_ok else None,
                 error=err,
                 retries_used=retries,
             )

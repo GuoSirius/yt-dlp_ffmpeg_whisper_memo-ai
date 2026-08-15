@@ -2572,11 +2572,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
           result.ocr = new StepResult('success', cachedOcr, null, 0);
         }
       }
-    } else if (prior.ocr && prior.ocr.status === 'skipped') {
-      // auto 模式未触发：直接跳过，复用 ASR
-      skipSteps.add('ocr');
-      result.ocr = new StepResult('skipped', null, prior.ocr.reason || 'prior skipped');
     }
+    // prior.ocr.status === 'skipped' 不再无条件跳过：该状态依据上一次 ASR 结果判定，
+    // 若本次 ASR 失败，应在下方 OCR 步骤用本次 asrText 重新评估 shouldTriggerOcr 以兜底。
     if (skipSteps.size) {
       lockedPrint(c('cyan', `  ♻️ 断点续跑：跳过已完成步骤 ${[...skipSteps].sort()}`)
         + c('dim', `  [来源: progress JSON]`));
@@ -2689,14 +2687,21 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       }
       result.transcribe = new StepResult(text ? 'success' : 'failed', text, error, retries);
       if (!text) {
-        result.overall_status = 'partial';
-        result.error = `download+transcode success but transcribe failed: ${error}`;
-        return result;
+        // 语音识别失败：若 OCR 在 steps 中且存在视频文件，继续走 OCR 步骤尝试兜底；否则判 partial
+        const ocrCanRescue = steps.includes('ocr') && !!dlFile;
+        if (!ocrCanRescue) {
+          result.overall_status = 'partial';
+          result.error = `download+transcode success but transcribe failed: ${error}`;
+          return result;
+        }
+        logInfo(`[${stem}] 语音识别失败，转 OCR 兜底 (${error})`);
       }
     }
-    // 落盘 transcript（断点续跑校验依据）
-    try { fs.writeFileSync(transcriptPath(sheetName, stem), result.transcribe.file, 'utf-8'); }
-    catch (e) { logWarn(`[${stem}] 写入 transcript 失败: ${e.message}`); }
+    // 落盘 transcript（断点续跑校验依据）；识别失败（file 为 null）时不写
+    if (result.transcribe.file) {
+      try { fs.writeFileSync(transcriptPath(sheetName, stem), result.transcribe.file, 'utf-8'); }
+      catch (e) { logWarn(`[${stem}] 写入 transcript 失败: ${e.message}`); }
+    }
   } else {
     // 回退：transcribe 不在 steps 中（或无音频文件）时，从磁盘加载已落盘的 transcript
     const _tp = transcriptPath(sheetName, stem);
@@ -2728,6 +2733,8 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
         if (validateOcrText(cached).ok) {
           result.ocr = new StepResult('success', cached, null, 0);
           lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 ocr，复用 OCR 文本(${cached.length}字符)`));
+          // ASR 失败时，缓存的 OCR 文本可作为兜底内容
+          if (result.transcribe.status !== 'success') bestText = cached;
         } else {
           result.ocr = new StepResult('skipped', null, 'cached ocr invalid');
         }
@@ -2747,8 +2754,9 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
           result.ocr = new StepResult('success', r.text, null, 0);
           const asrChars = asrText.trim().length;
           const ocrChars = r.chars;
-          // 择优：OCR 字符数 ≥ ASR 且 置信度达标 → 采用 OCR，否则回退 ASR
-          const useOcr = ocrChars >= asrChars && r.avgConf >= OCR_CONF_THRESH;
+          // 择优：ASR 成功时 OCR 字符数 ≥ ASR 且置信度达标才采用 OCR；
+          // ASR 失败（兜底）时，OCR 已通过校验即采用，避免丢弃唯一可用文本。
+          const useOcr = asrChars > 0 ? (ocrChars >= asrChars && r.avgConf >= OCR_CONF_THRESH) : true;
           bestText = useOcr ? r.text : asrText;
           lockedPrint(`  [${stem}] ${c('green', 'OCR done')} (${ocrChars}字, conf=${r.avgConf.toFixed(2)}) → ${useOcr ? '采用OCR' : '回退ASR'})`);
         } else {
@@ -2768,8 +2776,15 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   }
   result.bestText = bestText; // 供 saveTaskProgress / analyze 使用
 
+  // ASR 失败且 OCR 也未能救回（无 bestText）→ 判 partial，不进入 analyze
+  if (result.transcribe.status === 'failed' && !bestText) {
+    result.overall_status = 'partial';
+    result.error = `download+transcode success but transcribe failed and OCR 未产出文本: ${result.transcribe.error || ''}`;
+    return result;
+  }
+
   // ── AI analyze ──
-  if (steps.includes('analyze') && result.transcribe.status === 'success') {
+  if (steps.includes('analyze') && (result.transcribe.status === 'success' || (result.ocr && result.ocr.status === 'success'))) {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
       if (skipSteps.has('analyze')) {
@@ -2819,7 +2834,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
   // ── 统一判定整体状态（和本地文件模式一致）──
   if (result.transcode.status === 'failed') {
     result.overall_status = 'failed';
-  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe')) {
+  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe') && !(result.ocr && result.ocr.status === 'success')) {
     result.overall_status = 'partial';
   } else if (result.analyze.status === 'failed') {
     result.overall_status = 'partial';
@@ -3101,7 +3116,9 @@ async function runInputTask(opts) {
       const r = await runOcrFrames(inputPath, ocrOut, ocrMeta);
       if (r.ok && validateOcrText(r.text).ok) {
         result.ocr = new StepResult('success', r.text, null, 0);
-        const useOcr = r.chars >= transcribeText.trim().length && r.avgConf >= OCR_CONF_THRESH;
+        // 择优：ASR 成功时须 OCR 更优才采用；ASR 失败（兜底）时 OCR 通过校验即采用
+        const asrLen = transcribeText.trim().length;
+        const useOcr = asrLen > 0 ? (r.chars >= asrLen && r.avgConf >= OCR_CONF_THRESH) : true;
         bestText = useOcr ? r.text : transcribeText;
         lockedPrint(styleDone(`[${usedStem}] OCR done (${r.chars}字, conf=${r.avgConf.toFixed(2)}) → ${useOcr ? '采用OCR' : '回退ASR'}`));
       } else {
@@ -3153,7 +3170,7 @@ async function runInputTask(opts) {
   // ── 判定整体状态 ──
   if (result.transcode.status === 'failed') {
     result.overall_status = 'failed';
-  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe')) {
+  } else if (result.transcribe.status === 'failed' && steps.includes('transcribe') && !(result.ocr && result.ocr.status === 'success')) {
     result.overall_status = 'partial';
   } else if (result.analyze.status === 'failed') {
     result.overall_status = 'partial';

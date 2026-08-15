@@ -480,15 +480,26 @@ API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: f
 - `always`：无视 ASR 结果，强制跑 OCR（调试 / 对比用）
 - `off`：完全关闭 OCR
 
-**OCR / ASR 择优规则（OCR 始终是兜底）**
+**ASR 识别失败 → 自动 OCR 兜底（关键行为）**
+
+为保证语音识别异常时不至于整条任务 `partial`，流水线在 ASR 失败时按以下规则决定是否转入 OCR 抽帧：
+
+- ASR 返回异常 / 空文本 / 未生成输出文件时，只要任务步骤含 `ocr` 且源视频已成功下载，即**自动转入 OCR 抽帧兜底**，不再因语音识别失败直接 `partial`。
+- `OCR_MODE=auto`：空文本自然满足 `0 < OCR_TRIGGER_CPM`，**触发** OCR。
+- `OCR_MODE=always`：强制跑 OCR。
+- `OCR_MODE=off`：OCR 已关闭，ASR 失败无处兜底 → 任务 `partial`（符合预期，用户明确要求关闭 OCR）。
+- 续跑兼容：若上次续跑记录把 `ocr` 标记为 `skipped`（依据旧 ASR 结果判定），本次 ASR 失败时会**重新评估** `shouldTriggerOcr`，重新触发 OCR，而非沿用旧的跳过判定。
+
+**OCR / ASR 择优规则（OCR 是兜底，但 ASR 失败时优先采用 OCR）**
 
 `bestText` 的选取逻辑（**OCR 绝不喧宾夺主**）：
 
 - 若 `OCR_MODE=off` 或未触发 → `bestText = ASR 文本`
-- 触发 OCR 后，仅当 **OCR 字符数 ≥ ASR 字符数** 且 **OCR 平均置信度 ≥ `OCR_CONF_THRESH`(默认 0.6)** 才用 OCR 覆盖 ASR
+- ASR **失败（空文本）**时：只要 OCR 通过校验（`OCR_MIN_CHARS` + 置信度达标）即直接采用 OCR 文本，避免丢弃唯一可用内容（不再要求「OCR 字符数 ≥ ASR 字符数」，因为 ASR 本就为空）
+- ASR **成功**时：仅当 **OCR 字符数 ≥ ASR 字符数** 且 **OCR 平均置信度 ≥ `OCR_CONF_THRESH`(默认 0.6)** 才用 OCR 覆盖 ASR
 - 否则回退 ASR（OCR 质量不达标 → 信任语音识别结果）
 
-> 即「OCR 不如 ASR」时自动回退，阈值已放宽到足够包容；画面文字确实比语音多且清晰时才采用 OCR。
+> 即「OCR 不如 ASR」时自动回退，阈值已放宽到足够包容；画面文字确实比语音多且清晰时才采用 OCR。而当 ASR 彻底失败时，OCR 抽到的画面文字即是唯一可用的文本内容，会被直接采用。
 
 **抽帧策略（不丢字幕、支持长视频）**
 

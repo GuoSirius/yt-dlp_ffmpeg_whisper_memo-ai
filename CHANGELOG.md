@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Bug Fixes
+
+- 修复 ASR 识别失败后未触发 OCR 抽帧兜底：解开续跑 `ocr=skipped` 误跳过、transcribe 失败早退、analyze 网关与最终状态误判 partial 四道关卡，JS+Python 双端对称修复，并精炼 OCR 兜底择优（ASR 空文本直接采用 OCR）
+
 ## [2.0.0] - 2026-08-15
 
 ### Features
