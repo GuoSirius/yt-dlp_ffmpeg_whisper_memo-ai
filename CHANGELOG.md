@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.0.0] - 2026-08-15
+
+### Features
+
+- python 端对称接入 ocr 抽帧步骤与 asr 择优(P2-P4) ([`c4a4403`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/c4a4403))
+- js 端接入 ocr 抽帧步骤与 asr 择优(P2-P4) ([`34b624b`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/34b624b))
+- 新增 ocr_frames.py 抽帧+PaddleOCR 识别脚本(P1) ([`e73bc98`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/e73bc98))
+
+### Bug Fixes
+
+- 适配 paddleocr 3.x(参数重命名/模型目录/关mkldnn/import顺序) 并更正文档默认模型位置 ([`ed9959e`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/ed9959e))
+
+### Documentation
+
+- update ([`05391a4`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/05391a4))
+- 规整 README 结构并上移 OCR 章节，补全 .env.example 模型缓存重定向 ([`9dc6209`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/9dc6209))
+- 收尾 ocr 验证日志(沙箱C盘满阻断实跑,代码已交付) ([`4079028`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/4079028))
+- 更新 ocr 抽帧识别验证工作日志(含 paddleocr 3.x 兼容性坑) ([`da0bec4`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/da0bec4))
+- 补充 ocr 抽帧识别文档(安装/模型位置/避C盘/续跑兼容) ([`d3ad06b`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/d3ad06b))
+- 补充 OCR 抽帧计划工作日志 ([`69d65f9`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/69d65f9))
+- 新增 PaddleOCR 抽帧识别分支实现计划 ([`0a6cd9a`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/0a6cd9a))
+
+
 ## [1.6.3] - 2026-08-15
 
 ### Bug Fixes
