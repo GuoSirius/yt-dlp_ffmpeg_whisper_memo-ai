@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import sys
 import re
+import hashlib
 import shutil
 import importlib.util
 import argparse
@@ -763,6 +764,8 @@ class TaskResult:
     analyze: StepResult = field(default_factory=lambda: StepResult("skipped"))
     ocr: StepResult = field(default_factory=lambda: StepResult("skipped"))  # OCR 抽帧识别结果
     best_text: str | None = None      # OCR 与 ASR 择优后的最终文本（写入 content 列）
+    content_source: str | None = None # 续跑幂等：本次 content 来自 'asr' 还是 'ocr'
+    content_hash: str | None = None   # content 指纹，content 变更时据此失效 analyze
     overall_status: str = "pending"   # "success" | "partial" | "failed" | "no_video"
     error: str | None = None
 
@@ -2272,6 +2275,11 @@ def _transcribe_service(
 
 # ─────────────────────────────── 增量进度写回 ────────────────────────────────
 
+def _hash_text(s: str) -> str:
+    """content 指纹（SHA-256 前 16 位），用于检测 content 是否变更以失效关键词。"""
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
 def save_task_progress(result: TaskResult) -> None:
     """每完成一个任务立即写入 progress JSON，方便用户随时查看中间结果。
 
@@ -2306,6 +2314,8 @@ def save_task_progress(result: TaskResult) -> None:
         "error": result.error,
         "content": content,
         "keywords": keywords,
+        "content_source": getattr(result, "content_source", None),
+        "content_hash": getattr(result, "content_hash", None),
         "download": {
             "status": result.download.status,
             "file": result.download.file,
@@ -3044,8 +3054,10 @@ def process_one_task(
                     result.ocr = StepResult("success", file=cached)
                     with _print_lock:
                         print(c("dim", f"  [{stem}] ♻️ 跳过 ocr，复用 OCR 文本({len(cached)}字符)"), flush=True)
-                    # ASR 失败时，缓存的 OCR 文本可作为兜底内容
-                    if result.transcribe.status != "success":
+                    # 续跑复用：以首次跑记录的内容来源为准保证幂等——
+                    # 首次若切到 OCR（content_source==='ocr'），本次即便 ASR 也成功仍继续用 OCR；
+                    # 否则仅当 ASR 失败时才用 OCR 兜底。
+                    if result.transcribe.status != "success" or (prior and prior.get("content_source") == "ocr"):
                         best_text = cached
                 else:
                     result.ocr = StepResult("skipped", error="cached ocr invalid")
@@ -3082,6 +3094,20 @@ def process_one_task(
             if validate_ocr_text(_c)[0]:
                 result.ocr = StepResult("success", file=_c)
     result.best_text = best_text  # 供 save_task_progress / analyze 使用
+
+    # 记录内容来源与指纹：续跑幂等（用 content_source 决定 best_text）+ content 变更时失效 analyze
+    if getattr(result, "ocr", None) and result.ocr.status == "success" and isinstance(best_text, str) and best_text == result.ocr.file:
+        result.content_source = "ocr"
+    elif result.transcribe.status == "success" and isinstance(best_text, str) and best_text == result.transcribe.file:
+        result.content_source = "asr"
+    else:
+        result.content_source = None
+    result.content_hash = _hash_text(best_text) if isinstance(best_text, str) and best_text else None
+
+    # content 在 ASR/OCR 间切换、或更新后，关键词应重算，避免 content/keywords 不对等
+    if "analyze" in skip_steps and prior and isinstance(prior.get("content"), str) and isinstance(best_text, str) and best_text != prior.get("content"):
+        skip_steps.discard("analyze")
+        log.info(f"[{stem}] content 与上次不同，重跑 analyze 以重新生成关键词")
 
     # ASR 失败且 OCR 也未能救回（无 best_text）→ 判 partial，不进入 analyze
     if result.transcribe.status == "failed" and not best_text:
@@ -3910,6 +3936,15 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             if validate_ocr_text(_c)[0]:
                 result.ocr = StepResult("success", file=_c)
     result.best_text = best_text
+
+    # 记录内容来源与指纹（--input 模式无续跑，仅补全字段以保证落盘一致）
+    if getattr(result, "ocr", None) and result.ocr.status == "success" and isinstance(best_text, str) and best_text == result.ocr.file:
+        result.content_source = "ocr"
+    elif result.transcribe.status == "success" and isinstance(best_text, str) and best_text == result.transcribe.file:
+        result.content_source = "asr"
+    else:
+        result.content_source = None
+    result.content_hash = _hash_text(best_text) if isinstance(best_text, str) and best_text else None
 
     # ASR 失败且 OCR 也未能救回（无 best_text）→ 判 partial，不进入 analyze
     if result.transcribe.status == 'failed' and not best_text:

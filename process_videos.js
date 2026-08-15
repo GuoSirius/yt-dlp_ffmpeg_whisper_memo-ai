@@ -2247,6 +2247,16 @@ async function transcribeService(audioFile, stem, maxRetries, retryDelay, timeou
  * 目录结构: output/progress/{sheet}/task_{stem}.json
  * 文件包含 content（识别文本）和 keywords（AI 分析）等关键字段。
  */
+// 内容指纹（FNV-1a 32 位十六进制），用于检测 content 是否变更以失效关键词
+function _hashText(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 async function saveTaskProgress(result) {
   const progressDir = path.join(PROGRESS_DIR, result.sheet);
   fs.mkdirSync(progressDir, { recursive: true });
@@ -2270,6 +2280,8 @@ async function saveTaskProgress(result) {
     error: result.error,
     content,
     keywords,
+    content_source: result.contentSource || null,
+    content_hash: result.contentHash || null,
     download: {
       status: result.download.status,
       file: result.download.file,
@@ -2802,8 +2814,12 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
         if (validateOcrText(cached).ok) {
           result.ocr = new StepResult('success', cached, null, 0);
           lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 ocr，复用 OCR 文本(${cached.length}字符)`));
-          // ASR 失败时，缓存的 OCR 文本可作为兜底内容
-          if (result.transcribe.status !== 'success') bestText = cached;
+          // 续跑复用：以首次跑记录的内容来源为准保证幂等——
+          // 首次若切到 OCR（content_source==='ocr'），本次即便 ASR 也成功仍继续用 OCR；
+          // 否则仅当 ASR 失败时才用 OCR 兜底。
+          if (result.transcribe.status !== 'success' || (prior && prior.content_source === 'ocr')) {
+            bestText = cached;
+          }
         } else {
           result.ocr = new StepResult('skipped', null, 'cached ocr invalid');
         }
@@ -2844,6 +2860,19 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
     }
   }
   result.bestText = bestText; // 供 saveTaskProgress / analyze 使用
+
+  // 记录本次内容来源与指纹，供续跑幂等（按 content_source 决定 bestText）+ 关键词失效判定
+  result.contentSource = (result.ocr && result.ocr.status === 'success' && typeof bestText === 'string' && bestText === result.ocr.file)
+    ? 'ocr'
+    : ((result.transcribe.status === 'success' && typeof bestText === 'string' && bestText === result.transcribe.file) ? 'asr' : null);
+  result.contentHash = (typeof bestText === 'string' && bestText) ? _hashText(bestText) : null;
+
+  // content 在 ASR/OCR 间切换、或被更新后，关键词应重算，避免 content/keywords 不对等
+  if (skipSteps.has('analyze') && prior && typeof prior.content === 'string' && typeof bestText === 'string'
+      && bestText !== prior.content) {
+    skipSteps.delete('analyze');
+    logInfo(`[${stem}] content 与上次不同，重跑 analyze 以重新生成关键词`);
+  }
 
   // ASR 失败且 OCR 也未能救回（无 bestText）→ 判 partial，不进入 analyze
   if (result.transcribe.status === 'failed' && !bestText) {

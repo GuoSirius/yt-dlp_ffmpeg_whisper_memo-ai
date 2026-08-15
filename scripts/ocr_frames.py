@@ -6,7 +6,8 @@ ocr_frames.py — 视频抽帧 + PaddleOCR 文字识别（OCR 抽帧分支的单
 设计要点：
 - 抽帧：ffmpeg 场景切换抽帧（select='gt(scene,THRESH)'）+ 关键帧兜底 + max-frames 放宽阈值保护，
   确保 1~2 小时长视频完整处理且不丢字幕帧。
-- 识别：PaddleOCR 逐帧识别，置信度 < conf_thresh 的文本块丢弃，按帧序排序、相邻重复去重拼接。
+- 识别：PaddleOCR 逐帧识别，置信度 < conf_thresh 的文本块丢弃；结果按帧序拼接后做清洗去重——
+  剥离 Elabscience 水印词、合并跨帧相似行（吸收 OCR 噪声变体 Buffet/Buffe/Buffer）、剔除全局精确重复。
 - 双端共用：process_videos.js 与 process_videos.py 都通过 subprocess 调用本脚本，行为 100% 一致。
 - 模型位置：读取 PADDLE_OCR_BASE_DIR 环境变量（或 --model-dir）透传给 PaddleOCR，避免占 C 盘。
 
@@ -15,8 +16,10 @@ ocr_frames.py — 视频抽帧 + PaddleOCR 文字识别（OCR 抽帧分支的单
 - --meta : 元数据 JSON（chars / avg_conf / frames / ok / note），供调用方做 OCR/ASR 择优
 """
 import argparse
+import difflib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -109,6 +112,65 @@ def extract_frames(video, out_dir, scene_thresh, max_frames, duration=0.0):
     return frames
 
 
+# 水印/噪声词：视频角标常每帧都识别到，属噪声；剥离之。
+_WM = re.compile(r"\belabscience\b", re.IGNORECASE)
+_NON = re.compile(r"[^a-z0-9]+")
+
+
+def _norm_line(s: str) -> str:
+    """归一化用于去重比较：小写、剥离 Elabscience 水印词、去标点、压空白。"""
+    s = s.lower()
+    s = _WM.sub(" ", s)
+    s = _NON.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _strip_wm(s: str) -> str:
+    """仅剥离 Elabscience 水印词并压空白（保留大小写与其余内容），供最终输出。"""
+    s = _WM.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _dedup_lines(lines, line_confs):
+    """清洗 + 去重。
+
+    - 跨帧相似行合并，吸收 OCR 噪声变体（Buffet/Buffe/Buffer 这类残缺变体）；
+    - 全局精确（归一化后）重复剔除，避免烧录字幕/循环步骤跨多帧重复计数；
+    - 输出文本剥离 Elabscience 水印词（角标噪声）。
+    返回 [(text, conf), ...] 干净行。
+    """
+    seen = set()
+    out = []  # (norm, text, conf)
+    for text, conf in zip(lines, line_confs):
+        text = (text or "").strip()
+        if not text:
+            continue
+        n = _norm_line(text)
+        if not n:
+            continue
+        clean = _strip_wm(text)
+        if not clean:
+            continue
+        if n in seen:
+            continue
+        # 与上一条相邻行做近重复合并，保留置信度更高、文字更完整的代表
+        if out:
+            last_n, last_t, last_c = out[-1]
+            ratio = difflib.SequenceMatcher(None, n, last_n).ratio()
+            if ratio >= 0.85:
+                if conf > last_c + 1e-6 or (
+                    abs(conf - last_c) <= 1e-6 and len(clean) > len(last_t)
+                ):
+                    out[-1] = (n, clean, conf)
+                seen.add(n)
+                continue
+        seen.add(n)
+        out.append((n, clean, conf))
+    return [(t, c) for (_, t, c) in out]
+
+
 def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
     """逐帧 PaddleOCR，返回 (final_text, avg_conf, kept_blocks)。"""
     # 指定模型根目录时，在 import 前通过环境变量把 PaddleOCR/PaddleX 的模型缓存
@@ -171,7 +233,7 @@ def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
         _use_predict = False
 
     lines = []
-    confs = []
+    line_confs = []          # 每帧保留文本块的平均置信度
     _t0 = time.time()
     total = len(frames)
     for i, fp in enumerate(frames, 1):
@@ -189,6 +251,7 @@ def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
                 rec_texts, rec_scores = [], []
             if rec_texts:
                 parts = []
+                frame_confs = []
                 for text, sc in zip(rec_texts, rec_scores):
                     try:
                         conf = float(sc)
@@ -196,16 +259,24 @@ def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
                         conf = 0.0
                     if conf >= conf_thresh and text.strip():
                         parts.append(text.strip())
-                        confs.append(conf)
-                lines.append(" ".join(parts))
+                        frame_confs.append(conf)
+                if parts:
+                    lines.append(" ".join(parts))
+                    line_confs.append(sum(frame_confs) / len(frame_confs))
+                else:
+                    lines.append("")
+                    line_confs.append(0.0)
             else:
                 lines.append("")
+                line_confs.append(0.0)
         else:
             res = ocr.ocr(fp, cls=True)
             if not res or not res[0]:
                 lines.append("")
+                line_confs.append(0.0)
                 continue
             parts = []
+            frame_confs = []
             for item in res[0]:
                 if not item or len(item) < 2:
                     continue
@@ -215,21 +286,22 @@ def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
                 text, conf = text_conf[0], float(text_conf[1])
                 if conf >= conf_thresh and text.strip():
                     parts.append(text.strip())
-                    confs.append(conf)
-            lines.append(" ".join(parts))
+                    frame_confs.append(conf)
+            if parts:
+                lines.append(" ".join(parts))
+                line_confs.append(sum(frame_confs) / len(frame_confs))
+            else:
+                lines.append("")
+                line_confs.append(0.0)
     if prog_path:
         _write_prog(prog_path, "完成", total, total, time.time() - _t0)
 
-    # 相邻重复去重（烧录字幕常跨多帧不变）
-    deduped = []
-    prev = None
-    for ln in lines:
-        if ln and ln != prev:
-            deduped.append(ln)
-        prev = ln
-    final_text = "\n".join(deduped).strip()
-    avg_conf = (sum(confs) / len(confs)) if confs else 0.0
-    return final_text, avg_conf, len(confs)
+    # 清洗 + 去重：剥离 Elabscience 水印词，合并跨帧相似行（吸收 OCR 噪声变体）
+    kept = _dedup_lines(lines, line_confs)
+    final_text = "\n".join(t for t, _ in kept).strip()
+    kept_confs = [c for _, c in kept]
+    avg_conf = (sum(kept_confs) / len(kept_confs)) if kept_confs else 0.0
+    return final_text, avg_conf, len(kept_confs)
 
 
 def main():
