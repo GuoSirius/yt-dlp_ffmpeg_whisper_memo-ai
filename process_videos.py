@@ -411,6 +411,8 @@ _EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
 # 周期落盘间隔（秒）。与 JS 端单位一致（.env 写 EXCEL_FLUSH_INTERVAL=5 双端通用）。
 # 中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
 EXCEL_FLUSH_INTERVAL = float(os.getenv("EXCEL_FLUSH_INTERVAL", "3.0"))
+EXCEL_LOCK_MAX_WAIT = float(os.getenv("EXCEL_LOCK_MAX_WAIT", "300.0"))  # 占用时最多等待秒数，0=无限；超时另存 sidecar .pending.xlsx
+_excel_lock_warned = False  # 占用告警去重：只在首次检测到占用时打印一次
 _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
 # ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
@@ -2229,8 +2231,11 @@ def _excel_set_cell(sheet_name: str, key: str, col_name: str, value: str) -> boo
     ws = wb[sheet_name]
     headers = {cell.value: cell.column for cell in ws[1]}
     if col_name not in headers:
-        log.warning(f"[{sheet_name}] 找不到 {col_name} 列，跳过写入")
-        return False
+        # 缺失列自动在末列创建（Q1）
+        new_col = ws.max_column + 1
+        ws.cell(row=1, column=new_col, value=col_name)
+        headers[col_name] = new_col
+        log.info(f"[{sheet_name}] 自动创建列 \"{col_name}\"（末列 #{new_col}）")
     target_col = headers[col_name]
     id_col = headers.get(COL_ID)
     title_col = headers.get(COL_TITLE)
@@ -2254,7 +2259,7 @@ def _excel_set_cell(sheet_name: str, key: str, col_name: str, value: str) -> boo
             safe_value = value[:EXCEL_MAX_CHARS] if len(value) > EXCEL_MAX_CHARS else value
             if len(value) > EXCEL_MAX_CHARS:
                 log.warning(f"[{sheet_name}/{key}] {col_name} 截断 {len(value)} -> {EXCEL_MAX_CHARS} 字符 (Excel 限制)")
-            row[target_col - 1].value = safe_value
+            ws.cell(row=row[0].row, column=target_col, value=safe_value)
             return True
 
     log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
@@ -2277,17 +2282,54 @@ def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bo
         return ok
 
 
+def _try_save_excel() -> bool:
+    """尝试把缓存落盘；返回是否成功。占用时只告警一次、保留脏标记以便下次重试。"""
+    global _EXCEL_DIRTY, _excel_lock_warned
+    if _EXCEL_WB is None or not _EXCEL_DIRTY:
+        return True
+    try:
+        _EXCEL_WB.save(str(EXCEL_FILE))
+        if _excel_lock_warned:
+            log.info("✅ Excel 已恢复写入")
+            _excel_lock_warned = False
+        _EXCEL_DIRTY = False
+        return True
+    except Exception as e:
+        if not _excel_lock_warned:
+            log.warning(
+                f"⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
+                f"关闭 Excel 查看窗口后会自动恢复"
+            )
+            _excel_lock_warned = True
+        return False
+
+
 def flush_excel() -> None:
     """将内存中缓存的 Excel 修改落盘（若脏）。并发安全。"""
-    global _EXCEL_DIRTY
     with _excel_lock:
-        if _EXCEL_WB is None or not _EXCEL_DIRTY:
-            return
-        try:
-            _EXCEL_WB.save(str(EXCEL_FILE))
-            _EXCEL_DIRTY = False
-        except Exception as e:
-            log.error(f"保存 Excel 失败: {e}")
+        _try_save_excel()
+
+
+def finalize_excel() -> None:
+    """任务结束兜底：若 Excel 仍被占用，阻塞等待直到写成功再退出（Q2）。"""
+    if _EXCEL_WB is None:
+        return
+    deadline = time.time() + (EXCEL_LOCK_MAX_WAIT if EXCEL_LOCK_MAX_WAIT > 0 else float('inf'))
+    while _EXCEL_DIRTY:
+        if _try_save_excel():
+            break
+        if time.time() >= deadline:
+            try:
+                sidecar = str(EXCEL_FILE) + '.pending.xlsx'
+                _EXCEL_WB.save(sidecar)
+                log.error(
+                    f"⏰ Excel 在 {EXCEL_LOCK_MAX_WAIT}s 内始终被占用，已将全部改动另存到 {sidecar}"
+                    f"（该文件未被锁定，可打开后复制回原表）"
+                )
+            except Exception as e2:
+                log.error(f"⏰ Excel 始终被占用且 sidecar 另存失败: {e2}，未写数据可能丢失")
+            break
+        time.sleep(EXCEL_FLUSH_INTERVAL)
 
 
 def _excel_flush_loop() -> None:
@@ -4281,3 +4323,4 @@ if __name__ == "__main__":
         transcribe_timeout=args.transcribe_timeout,
         analyze_timeout=args.analyze_timeout,
     )
+    finalize_excel()

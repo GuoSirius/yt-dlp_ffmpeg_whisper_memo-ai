@@ -588,6 +588,9 @@ let _excelDirty = false;         // 是否有未落盘修改
 let _excelFlushStarted = false;  // 只启动一次
 // 周期落盘间隔：env 变量 EXCEL_FLUSH_INTERVAL 单位为「秒」，与 Python 端完全一致；此处转成 ms 供 setInterval 使用。
 const EXCEL_FLUSH_INTERVAL = (parseInt(process.env.EXCEL_FLUSH_INTERVAL || '3', 10)) * 1000;
+// 占用等待上限：任务结束时若 Excel 仍被占用，最多等待秒数；0=无限等待。超时则另存 sidecar .pending.xlsx 兜底。
+const EXCEL_LOCK_MAX_WAIT = parseInt(process.env.EXCEL_LOCK_MAX_WAIT || '300', 10);
+let _excelLockWarned = false;  // 占用告警去重：只在首次检测到占用时打印一次
 
 function _ensureExcelLoaded() {
   if (_excelWb) return _excelWb;
@@ -613,10 +616,14 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
   const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
   if (!aoa.length) return false;
   const headers = aoa[0];
-  const colIdx = headers.indexOf(colName);
+  let colIdx = headers.indexOf(colName);
   if (colIdx === -1) {
-    logWarn(`[${sheetName}] column "${colName}" not found, skip write`);
-    return false;
+    // 缺失列自动在末列创建（Q1）
+    colIdx = headers.length;
+    ws[XLSX.utils.encode_cell({ r: 0, c: colIdx })] = { t: 's', v: colName };
+    headers.push(colName);
+    if (aoa[0]) aoa[0][colIdx] = colName;
+    logInfo(`[${sheetName}] 自动创建列 "${colName}"（末列 #${colIdx + 1}）`);
   }
   const idIdx = headers.indexOf(COL_ID);
   const titleIdx = headers.indexOf(COL_TITLE);
@@ -650,13 +657,54 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
   return false;
 }
 
+// 尝试把缓存落盘；返回是否成功。占用时只告警一次、保留脏标记以便下次重试。
+function _trySaveWb(wb) {
+  if (!wb) return true;
+  try {
+    XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
+    if (_excelLockWarned) {
+      logInfo('✅ Excel 已恢复写入');
+      _excelLockWarned = false;
+    }
+    _excelDirty = false;
+    return true;
+  } catch (e) {
+    if (!_excelLockWarned) {
+      logWarn(`⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；关闭 Excel 查看窗口后会自动恢复`);
+      _excelLockWarned = true;
+    }
+    return false;
+  }
+}
+
+function _trySaveExcel() {
+  return _trySaveWb(_excelWb);
+}
+
 function flushExcel() {
   if (!_excelWb || !_excelDirty) return;
-  try {
-    XLSX.writeFile(_excelWb, EXCEL_FILE, { cellDates: true });
-    _excelDirty = false;
-  } catch (e) {
-    logError(`保存 Excel 失败: ${e.message}`);
+  _trySaveExcel();
+}
+
+// 任务结束兜底：若 Excel 仍被占用，阻塞等待直到写成功再退出（Q2）。
+// 超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar .pending.xlsx，绝不静默丢数据。
+async function finalizeExcel() {
+  if (!_excelWb) return;
+  const maxMs = EXCEL_LOCK_MAX_WAIT > 0 ? EXCEL_LOCK_MAX_WAIT * 1000 : Infinity;
+  const deadline = Date.now() + maxMs;
+  while (_excelDirty) {
+    if (_trySaveExcel()) break;
+    if (Date.now() >= deadline) {
+      try {
+        const sidecar = EXCEL_FILE + '.pending.xlsx';
+        XLSX.writeFile(_excelWb, sidecar, { cellDates: true });
+        logError(`⏰ Excel 在 ${EXCEL_LOCK_MAX_WAIT}s 内始终被占用，已将全部改动另存到 ${sidecar}（该文件未被锁定，可打开后复制回原表）`);
+      } catch (e2) {
+        logError(`⏰ Excel 始终被占用且 sidecar 另存失败: ${e2.message}，未写数据可能丢失`);
+      }
+      break;
+    }
+    await new Promise(r => setTimeout(r, EXCEL_FLUSH_INTERVAL));
   }
 }
 
@@ -2131,11 +2179,11 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
   if (!updates.size && !keywordsDict?.size) return;
 
   logInfo(`write ${updates.size} content + ${keywordsDict?.size || 0} keywords to Excel...`);
-  // M2：先把实时写缓存落盘并使缓存失效，让下面的全量读以磁盘为权威来源（避免覆盖实时写结果）
+  // M2：先把实时写缓存落盘，让下面的全量读以磁盘为权威来源（避免覆盖实时写结果）
   flushExcel();
-  _excelWb = null;
-  _excelDirty = false;
   const wb = XLSX.readFile(EXCEL_FILE, { cellFormula: true, cellDates: true });
+  _excelWb = wb;          // 复用为权威缓存，供 finalizeExcel 在占用时重试
+  _excelDirty = false;
 
   /**
    * Write text values to a specific column, matching rows by id or title.
@@ -2148,10 +2196,17 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
     // Read header row only (via AOA for detection - we don't rebuild the sheet)
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1 });
     const headers = aoa[0];
-    const targetCol = headers.indexOf(colName);
+    let targetCol = headers.indexOf(colName);
     const idCol = headers.indexOf(COL_ID);
     const titleCol = headers.indexOf(COL_TITLE);
-    if (targetCol === -1) return;
+    if (targetCol === -1) {
+      // 缺失列自动在末列创建（Q1）
+      targetCol = headers.length;
+      ws[XLSX.utils.encode_cell({ r: 0, c: targetCol })] = { t: 's', v: colName };
+      headers.push(colName);
+      if (aoa[0]) aoa[0][targetCol] = colName;
+      logInfo(`[${sheetName}] 自动创建列 "${colName}"（末列 #${targetCol + 1}）`);
+    }
 
     for (const [key, text] of entries) {
       for (let r = 1; r < aoa.length; r++) {
@@ -2198,7 +2253,8 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
     }
   }
 
-  XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
+  _excelDirty = true;
+  _trySaveWb(wb);
   logInfo('Excel write done');
 }
 
@@ -4037,7 +4093,8 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     process.exit(0);
   }
 
-  run({
+  try {
+    await run({
     targetSheet: opts.sheet || null,
     excelFiles: excelFiles.length ? excelFiles : null,
     targetIds: opts.id || [],
@@ -4055,10 +4112,12 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     transcodeTimeout: opts.transcodeTimeout,
     transcribeTimeout: opts.transcribeTimeout,
     analyzeTimeout: opts.analyzeTimeout,
-  }).catch(err => {
+  });
+    await finalizeExcel();
+  } catch (err) {
     console.error('Fatal error:', err);
     process.exit(1);
-  });
+  }
 
   // Handle unhandled promise rejections
   process.on('unhandledRejection', (reason) => {
