@@ -1,6 +1,6 @@
 # 视频处理流水线 (Video Pipeline)
 
-基于 `process_videos.js` (Node.js) 或 `process_videos.py` (Python)，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → AI 关键词归纳 → 写回 Excel。
+基于 `process_videos.js` (Node.js) 或 `process_videos.py` (Python)，一键完成：yt-dlp 下载 → ffmpeg 转码 → whisper 识别 → **OCR 抽帧识别**（画面字幕兜底）→ AI 关键词归纳 → 写回 Excel。
 
 **五种使用方式，覆盖不同场景：**
 
@@ -14,11 +14,43 @@
 
 ---
 
-## 安装前准备
+# 一、项目介绍
 
-> 首次使用请按顺序完成以下 6 步，后续换电脑只需重复第一步和第六步。
+## 1.1 它能做什么
 
-### 第一步：获取代码
+把「视频网站链接 / 本地视频 / 已有文本」自动变成「可检索的结构化关键词」，中间链路全部自动：
+
+```
+下载(yt-dlp) → 转码(ffmpeg 16k mono wav) → 语音识别(Whisper/FunASR)
+                                                  ↓ 无音轨 / ASR 过短时兜底
+                                              画面文字识别(PaddleOCR 抽帧)
+                                                  ↓
+                                          择优合并 bestText
+                                                  ↓
+                                      AI 关键词归纳(OpenAI 兼容 API)
+                                                  ↓
+                                          写回 Excel 关键词列
+```
+
+- **语音识别**：支持 `local`(openai-whisper) / `faster-whisper`(CTranslate2, 速度 4×) / `service`(whisper.cpp server) / `funasr`(阿里, 中文 WER ~5%) 四种后端。
+- **画面文字兜底**：当视频**没有音轨**（录屏、图文轮播）或**音轨是水印循环 / 背景音乐、ASR 识别为空或极少**时，自动用 PaddleOCR 对关键帧做文字识别补回 transcript。
+- **AI 关键词归纳**：两步法（先语义修正 Whisper 同音/形近/术语错误，再提取关键词），结果写回 Excel。
+
+## 1.2 双端一致
+
+同一套 `.env` 配置、同一套命令行参数，Node.js 与 Python 双端行为、默认值、识别效果完全一致：
+
+- **Node.js 版**（推荐，npm 包 `video-pipeline`）：调用 `whisper-ctranslate2` CLI、`funasr` CLI、`python scripts/ocr_frames.py`。
+- **Python 版**：调用 `faster_whisper` / `funasr` Python API + `scripts/ocr_frames.py`。
+
+---
+
+# 二、安装与配置（逐步流程）
+
+> 首次使用请按以下步骤顺序完成，**后续换电脑只需重复第一步和第六步**。
+> 安装完成后，所有路径、字段映射、平台参数均通过 `.env` 文件配置，同一套脚本可直接套用其他 Excel。
+
+## 2.1 第一步：获取代码
 
 **Node.js 版本（推荐）**：
 ```bash
@@ -33,9 +65,7 @@ cd yt-dlp_ffmpeg_whisper_memo-ai
 pip install -r requirements.txt
 ```
 
----
-
-### 第二步：安装环境依赖（必装）
+## 2.2 第二步：安装环境依赖（必装）
 
 | 工具 | 版本要求 | 安装方式 | 用途 |
 |------|-----------|----------|------|
@@ -45,9 +75,7 @@ pip install -r requirements.txt
 
 > **验证安装**：在终端执行 `yt-dlp --version`、`ffmpeg -version`、`ffprobe -version`，确保均在 PATH 中。
 
----
-
-### 第三步：安装 Node.js（YouTube n-sig 挑战）
+## 2.3 第三步：安装 Node.js（YouTube n-sig 挑战）
 
 YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式。
 
@@ -58,9 +86,7 @@ YouTube 要求 JS 运行时解开 n-sig 挑战，否则无法提取视频格式�
 
 > 脚本默认使用 `--js-runtime node`，如果你装的是 deno，修改 `.env` 中 `YOUTUBE_JS_RUNTIMES=deno`。
 
----
-
-### 第四步：安装 Python 依赖
+## 2.4 第四步：安装 Python 依赖
 
 ```bash
 pip install -r requirements.txt
@@ -73,11 +99,11 @@ pip install pandas openpyxl requests python-dotenv colorama questionary
 
 > `questionary` 为可选依赖（交互式确认时使用），建议一并安装。
 
----
+## 2.5 第五步：安装识别后端（至少选一个）
 
-### 第五步：安装 ASR 后端（至少选一个）
+语音识别与画面文字识别都在此步安装。OCR 引擎（PaddleOCR）与 ASR 后端紧邻说明，方便对照安装。
 
-#### ① openai-whisper（local 后端）
+### ① openai-whisper（local 后端）
 ```bash
 pip install openai-whisper
 ```
@@ -87,17 +113,14 @@ pip install openai-whisper
   ```bash
   # Windows（临时）
   set XDG_CACHE_HOME=D:\models\whisper
-  
-  # Windows（永久）
-  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
-  # 变量名：XDG_CACHE_HOME，变量值：D:\models\whisper
-  
+  # Windows（永久）：控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  #   变量名：XDG_CACHE_HOME，变量值：D:\models\whisper
   # Linux/Mac
   export XDG_CACHE_HOME=/d/models/whisper
   ```
 - 配置：`WHISPER_BACKEND=local`
 
-#### ② faster-whisper（推荐，速度约 4×）
+### ② faster-whisper（推荐，速度约 4×）
 ```bash
 pip install faster-whisper
 ```
@@ -109,17 +132,14 @@ pip install faster-whisper
   ```bash
   # Windows（临时）
   set HF_HOME=D:\models\huggingface
-  
-  # Windows（永久）
-  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
-  # 变量名：HF_HOME，变量值：D:\models\huggingface
-  
+  # Windows（永久）：控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  #   变量名：HF_HOME，变量值：D:\models\huggingface
   # Linux/Mac
   export HF_HOME=/d/models/huggingface
   ```
 - 配置：`WHISPER_BACKEND=faster-whisper`
 
-#### ③ FunASR（中文推荐，中文 WER ~5%）
+### ③ FunASR（中文推荐，中文 WER ~5%）
 ```bash
 pip install funasr modelscope
 ```
@@ -138,7 +158,6 @@ pip install funasr modelscope
 
 **GPU 模式**（强烈推荐，中文 large 模型速度差距 10×+）：
 ```bash
-# 设置环境变量
 FUNASR_MODE=cli
 FUNASR_DEVICE=cuda
 ```
@@ -160,19 +179,48 @@ funasr-server --device cuda --port 8899
   ```bash
   # Windows（临时）
   set MODELSCOPE_CACHE=D:\models\modelscope
-  
-  # Windows（永久）
-  # 控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
-  # 变量名：MODELSCOPE_CACHE，变量值：D:\models\modelscope
-  
+  # Windows（永久）：控制面板 → 系统 → 高级系统设置 → 环境变量 → 新建系统变量
+  #   变量名：MODELSCOPE_CACHE，变量值：D:\models\modelscope
   # Linux/Mac
   export MODELSCOPE_CACHE=/d/models/modelscope
   ```
 - 配置：`WHISPER_BACKEND=funasr`
 
----
+### ④ PaddleOCR（OCR 抽帧识别，画面字幕兜底）
 
-### 第六步：配置环境变量
+当视频**没有音轨**（如纯 PPT 录屏、产品图轮播），或**音轨是水印循环 / 背景音乐、ASR 识别为空或极少**时，语音识别派不上用场。此类视频若画面中烧录了字幕 / 标题 / 关键词文字，可用 **PaddleOCR（百度，Apache 2.0 开源）** 对关键帧做文字识别，把画面文字补回 transcript。
+
+- 完全免费、全离线、无 API 调用费、无境外依赖（国内无 GFW 问题）
+- 默认语言 `en`（英文数字识别强），中文视频可在 `.env` 设 `OCR_LANG=ch`
+- 识别逻辑只在 `scripts/ocr_frames.py`（Python + PaddleOCR），JS / Python 双端统一 `subprocess` 调它——比 faster-whisper 的「JS 调 CLI / Py 调 API」更一致
+
+**安装**：
+```bash
+# CPU 版 paddlepaddle（推荐，无需 GPU）
+pip install paddlepaddle paddleocr
+
+# 如需 GPU（CUDA 11.8 示例）
+pip install paddlepaddle-gpu==2.6.1.post118 paddleocr
+```
+
+首次运行 `scripts/ocr_frames.py` 时，PaddleOCR 会自动下载检测(det) + 识别(rec) + 方向分类(cls) 三个模型并缓存。
+
+**模型默认位置 & 如何改位置避开 C 盘**
+
+- Windows 默认缓存目录：`C:\Users\{你的用户名}\.paddlex`（paddleocr 3.x 的 PaddleX 缓存目录；2.x 为 `.paddleocr`）。首次运行自动下载检测 / 识别 / 方向分类三类模型
+- 该目录可能占用 **数百 MB ~ 1GB+**，C 盘空间紧张时可改到其他盘：
+
+```bash
+# 方法一：环境变量（推荐，双端自动读取）
+PADDLE_OCR_BASE_DIR=D:\AI_Models\PaddleOCR
+
+# 方法二：CLI 参数（效果同 PADDLE_OCR_BASE_DIR）
+python scripts/ocr_frames.py --model-dir D:\AI_Models\PaddleOCR ...
+```
+
+> 设了 `PADDLE_OCR_BASE_DIR` 后，`scripts/ocr_frames.py` 会在 import 前把它设为 `PADDLE_PDX_CACHE_HOME`（3.x）/ `PADDLEOCR_HOME`（2.x），模型下载与加载都落到该目录，C 盘零占用。
+
+## 2.6 第六步：配置环境变量
 
 ```bash
 # 首次使用：复制模板
@@ -186,20 +234,9 @@ cp .env.example .env
 
 ---
 
+# 三、核心配置详解（.env）
 
-## 安装方式
-
-> 安装步骤详见上方「安装前准备」。
-
----
-
-## 环境依赖
-
-> 安装方法详见上方「安装前准备」。
-
-### 环境变量配置（.env）
-
-**从 v2 开始，所有路径、字段映射、平台参数均通过 `.env` 文件配置。** 这意味着同一套脚本可以直接用于其他 Excel 文件，只需修改 `.env` 中的值即可。
+从 v2 开始，所有路径、字段映射、平台参数均通过 `.env` 文件配置。这意味着同一套脚本可以直接用于其他 Excel 文件，只需修改 `.env` 中的值即可。
 
 ```bash
 # 首次使用：复制模板
@@ -209,7 +246,7 @@ cp .env.example .env
 # 详见 .env.example 中的注释
 ```
 
-**核心配置项说明：**
+## 3.1 核心配置项一览
 
 | 分类 | 变量 | 说明 |
 |------|------|------|
@@ -246,7 +283,7 @@ cp .env.example .env
 | OCR | `OCR_CONF_THRESH` / `OCR_TRIGGER_CPM` / `OCR_MIN_CHARS` | 文本块置信度下限（默认 `0.6`）/ auto 触发 CPM 阈值（默认 `2`）/ ocr 产物最短长度（默认 `30`） |
 | OCR | `PYTHON_BIN` / `PADDLE_OCR_BASE_DIR` | 调用 `scripts/ocr_frames.py` 的解释器（默认 `python`）/ PaddleOCR 模型目录（默认 `C:\Users\{user}\.paddlex`，改此处避 C 盘） |
 
-### .env 配置项变更权限
+## 3.2 配置项变更权限
 
 `.env.example` 中每个配置项都带有变更权限标记，含义如下：
 
@@ -259,9 +296,9 @@ cp .env.example .env
 
 > **最容易混淆的是【调序】**：`PLATFORM_PRIORITY` 可以调整顺序、增减条目，但只能用脚本已定义的 4 个 key，新增 `tiktok`、`douyin` 等无效 key 会导致脚本无法识别。
 
-### Whisper 语音识别
+## 3.3 Whisper 语音识别
 
-> ASR 后端的安装方法详见上方「安装前准备 · 第五步」。下方仅列出各后端的配置参数与行为差异。
+> ASR 后端的安装方法详见上方「2.5 第五步」。下方仅列出各后端的配置参数与行为差异。
 
 支持**四种后端**，通过 `WHISPER_BACKEND` 切换。所有 Whisper / FunASR 相关环境变量分多组管理：
 
@@ -427,48 +464,15 @@ API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: f
 
 > **WHISPER vs FunASR 选型**：Whisper 优势是 99 种语言覆盖 + 翻译任务 (`task=translate`)；FunASR 优势是中文 WER 显著更低、内置 VAD/标点/说话人/情感、中文场景速度更快。**纯中文识别强烈推荐 FunASR**。
 
-### OCR 抽帧识别（画面字幕 / 无音轨视频）
+## 3.4 OCR 抽帧识别（画面字幕 / 无音轨视频）
 
-> 当视频**没有音轨**（如纯 PPT 录屏、产品图轮播），或**音轨是水印循环 / 背景音乐、ASR 识别为空或极少**时，语音识别派不上用场。此类视频若画面中烧录了字幕 / 标题 / 关键词文字，可用 **PaddleOCR（百度）** 对关键帧做文字识别，把画面文字补回 transcript。
+> 安装方法见上方「2.5 第五步 · ④ PaddleOCR」。下方仅列配置参数、触发与择优逻辑。
 
 **适用场景**
 
 - 无音轨视频（录屏、图文轮播、静态海报视频）
 - 有音轨但 ASR 输出为空或过短（水印循环音、纯 BGM、VAD 把人声过滤成静音）
 - 画面中烧录了重要文字（字幕、标题、卖点、步骤说明）
-
-**OCR 引擎：PaddleOCR（百度，Apache 2.0 开源）**
-
-- 完全免费、全离线、无 API 调用费、无境外依赖（国内无 GFW 问题）
-- 默认语言 `en`（英文数字识别强），中文视频可在 `.env` 设 `OCR_LANG=ch`
-- 识别逻辑只在 `scripts/ocr_frames.py`（Python + PaddleOCR），JS / Python 双端统一 `subprocess` 调它——比 faster-whisper 的「JS 调 CLI / Py 调 API」更一致
-
-**安装 PaddleOCR**
-
-```bash
-# CPU 版 paddlepaddle（推荐，无需 GPU）
-pip install paddlepaddle paddleocr
-
-# 如需 GPU（CUDA 11.8 示例）
-pip install paddlepaddle-gpu==2.6.1.post118 paddleocr
-```
-
-首次运行 `scripts/ocr_frames.py` 时，PaddleOCR 会自动下载检测(det) + 识别(rec) + 方向分类(cls) 三个模型并缓存。
-
-**模型默认位置 & 如何改位置避开 C 盘**
-
-- Windows 默认缓存目录：`C:\Users\{你的用户名}\.paddlex`（paddleocr 3.x 的 PaddleX 缓存目录；2.x 为 `.paddleocr`）。首次运行自动下载检测 / 识别 / 方向分类三类模型
-- 该目录可能占用 **数百 MB ~ 1GB+**，C 盘空间紧张时可改到其他盘：
-
-```bash
-# 方法一：环境变量（推荐，双端自动读取）
-PADDLE_OCR_BASE_DIR=D:\AI_Models\PaddleOCR
-
-# 方法二：CLI 参数（效果同 PADDLE_OCR_BASE_DIR）
-python scripts/ocr_frames.py --model-dir D:\AI_Models\PaddleOCR ...
-```
-
-> 设了 `PADDLE_OCR_BASE_DIR` 后，`scripts/ocr_frames.py` 会在 import 前把它设为 `PADDLE_PDX_CACHE_HOME`（3.x）/ `PADDLEOCR_HOME`（2.x），模型下载与加载都落到该目录，C 盘零占用。
 
 **触发条件（`OCR_MODE=auto` 默认开启）**
 
@@ -499,72 +503,11 @@ python scripts/ocr_frames.py --model-dir D:\AI_Models\PaddleOCR ...
 - 续跑判定：`.ocr.txt` 与 ASR `.txt` 各自校验，互不影响；`progress` JSON 的 `content` 字段统一用 `bestText`
 - 跳过复用：前序已跑过 OCR 且文件存在 + 字符数 ≥ `OCR_MIN_CHARS`(默认 30) → 直接复用，不重跑
 
-### 目录结构
-
-```
-├── process_videos.js              # Node.js 主流程脚本（推荐）
-├── process_videos.py              # Python 主流程脚本（备选）
-├── package.json                   # Node.js 项目配置（npm 包）
-├── .env.example                  # 环境变量模板（可提交 Git）
-├── .env                          # 实际环境变量（已 gitignore，按需修改）
-├── data/                         # 数据源目录
-│   └── export_2026-06-10_split.xlsx   # Excel 数据源
-├── cookies/                     # 站点 cookie 文件（独立于 OUTPUT_DIR）
-│   ├── bilibili.txt            # B站 cookie（Netscape 格式）
-│   └── youtube.txt             # YouTube cookie 备用（Firefox 直读方案不需要）
-├── output/                       # 输出根目录（OUTPUT_DIR 控制，可通过 --output / env 覆盖）
-│   ├── downloads/                # yt-dlp 下载输出（mp4）
-│   │   ├── youtube/              # 按平台/sheet 分目录
-│   │   └── bilibili/
-│   ├── transcoded/               # ffmpeg 转码输出（wav 16kHz mono）
-│   │   ├── youtube/
-│   │   └── bilibili/
-│   ├── transcripts/              # whisper 识别文本（断点续跑校验依据）
-│   │   ├── youtube/
-│   │   └── bilibili/
-│   │   # 其中 {stem}.txt = ASR 语音识别结果；{stem}.ocr.txt = OCR 画面文字结果（两者独立共存，bestText 取较优者）
-│   ├── keywords/                 # AI 关键词归纳结果（断点续跑校验依据）
-│   │   ├── youtube/
-│   │   └── bilibili/
-│   ├── progress/                 # 增量进度 JSON（每任务完成即时写入）
-│   │   ├── youtube/
-│   │   └── bilibili/
-│   ├── reports/                 # 执行报告（按 sheet/平台分目录）
-│   │   ├── YouTube视频/
-│   │   │   ├── report_YYYYMMDD_HHMMSS.json   # JSON 报告（机器可读，用于重跑）
-│   │   │   └── tasks/                        # 人类可读文本摘要
-│   │   │       ├── 2143.txt
-│   │   │       └── ...
-│   │   ├── 普诺赛中文站/
-│   │   │   ├── report_YYYYMMDD_HHMMSS.json
-│   │   │   └── tasks/
-│   │   │       └── ...
-│   │   ├── youtube/                  # --url 模式按平台名分目录
-│   │   │   ├── report_YYYYMMDD_HHMMSS.json
-│   │   │   └── tasks/
-│   │   ├── local/                    # --input 模式默认目录
-│   │   │   ├── report_YYYYMMDD_HHMMSS.json
-│   │   │   └── tasks/
-│   │   └── content/                  # --content 模式固定目录
-│   │       ├── report_YYYYMMDD_HHMMSS.json
-│   │       └── tasks/
-│   └── logs/                       # 运行日志 / console-ui 输出
-├── scripts/                      # 辅助脚本
-│   ├── release.js                 # 版本发布脚本
-│   └── regenerate-changelog.js  # CHANGELOG 重建脚本
-├── .github/                      # GitHub Actions 工作流
-├── .husky/                      # Git hooks（commit 消息检查）
-├── node_modules/                 # Node.js 依赖（已 gitignore）
-├── CHANGELOG.md                  # 版本变更记录
-├── README.md                     # 使用文档
-└── LICENSE                       # MIT 许可证
-```
-
 ---
 
-## Cookie 设置（首次使用必须）
+# 四、Cookie 设置（首次使用必须）
 
-### YouTube（推荐：Firefox 浏览器直读）
+## 4.1 YouTube（推荐：Firefox 浏览器直读）
 
 yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 
@@ -586,7 +529,7 @@ yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 
 > ⚠️ YouTube cookie 有效期约 48 小时，过期后需重新导出。下载时如果报 `cookies does no longer seem to be valid`，说明 cookie 已失效。**优先用 Firefox 方案，免维护。**
 
-### B站（bilibili）
+## 4.2 B站（bilibili）
 
 **方案 A（推荐）：直接从 Firefox 浏览器读 cookie**
 
@@ -605,9 +548,9 @@ yt-dlp 可直接从 Firefox 浏览器读取 cookie，无需手动导出：
 
 ---
 
-## 使用方法
+# 五、使用方法
 
-### 单条测试
+## 5.1 单条测试
 
 ```bash
 # 下载 + 转码 + 识别 + AI分析，指定 sheet + extra.id
@@ -633,7 +576,7 @@ node process_videos.js --sheet "普诺赛中文站" --id 16 --step analyze
 node process_videos.js --sheet "YouTube视频" --id 2143 --force
 ```
 
-### 批量全量
+## 5.2 批量全量
 
 ```bash
 # 全量执行（2 个并发，失败重试 3 次）
@@ -650,7 +593,7 @@ node process_videos.js --offset 10 --limit 5 --dry-run  # 跳过前10条，预�
 node process_videos.js --limit 3 --concurrency 1        # 只处理前3条
 ```
 
-### 重跑失败
+## 5.3 重跑失败
 
 ```bash
 # 第一次跑完后生成 reports/{sheet名称}/report_xxx.json
@@ -661,7 +604,7 @@ node process_videos.js --retry-failed reports/YouTube视频/report_20260610_1430
 node process_videos.js --retry-failed reports/YouTube视频/report_20260610_143000.json --concurrency 2 --retry 3
 ```
 
-### 超时控制（防止任务卡死）
+## 5.4 超时控制（防止任务卡死）
 
 每个步骤都有独立超时，超时后自动 kill 子进程、标记失败并继续执行后续任务：
 
@@ -680,7 +623,7 @@ node process_videos.js \
 - 无论超时多少次，**不会阻塞其他并发任务**，失败项会记录到报告
 - 超时失败的任务可用 `--retry-failed` 单独重跑
 
-### 直接指定 URL 下载
+## 5.5 直接指定 URL 下载
 
 ```bash
 # 直接指定视频链接，自动识别平台（支持标准链接、短链接、内嵌链接）
@@ -707,7 +650,7 @@ node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c" --ste
 
 > **并发处理**：多 URL 时支持并发（受 `--concurrency` 控制）；非 `--force` 时建议单 URL 执行（避免交互阻塞）。
 
-### 处理本地文件
+## 5.6 处理本地文件
 
 ```bash
 # 指定本地视频文件，跳过下载，直接转码→识别→分析
@@ -729,7 +672,7 @@ node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 
 > **并发处理**：多文件时支持并发（受 `--concurrency` 控制）；非 `--force` 时建议单文件执行（避免交互阻塞）。
 
-### 处理纯文本内容（跳过视频步骤）
+## 5.7 处理纯文本内容（跳过视频步骤）
 
 如果你已经有了一段文本内容（比如爬虫爬取的、之前识别好的、或者从其他途径获取的），可以直接做 AI 分析，跳过下载、转码、识别三个步骤：
 
@@ -759,7 +702,7 @@ node process_videos.js --content "data/article.txt" --dry-run
 
 **输出位置：** `output/reports/content/tasks/{name}.txt` + `output/reports/content/report_xxx.json`
 
-### Excel 列文本批量 AI 分析
+## 5.8 Excel 列文本批量 AI 分析
 
 当 Excel 某列已经存好了文本内容（比如之前爬虫爬取的），可以批量对这些文本做 AI 关键词分析：
 
@@ -787,7 +730,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 > 文本为空的行会自动跳过。
 > 分析结果写入 Excel 的 `keywords` 列（由 `COL_KEYWORDS` 环境变量指定）。
 
-### 工具预检（执行前自动检测）
+## 5.9 工具预检（执行前自动检测）
 
 每次执行任务前，脚本会自动检测本次涉及步骤所需的工具/服务是否可用：
 
@@ -799,7 +742,7 @@ node process_videos.js --content-column "content" --concurrency 2 --retry 2
 | transcribe | whisper 后端可用（按 `WHISPER_BACKEND` 分支检测） | 同上 |
 | analyze | AI_ENABLED=true 且 API 配置完整 | 同上 |
 
-#### 代理预检（避免整批任务白跑）
+### 代理预检（避免整批任务白跑）
 
 YouTube 等站点必须走代理，而**换代理客户端后监听端口经常变化**。端口填错时 yt-dlp 每条任务都会重试到超时，最终「N 条全失败」，且错误信息埋在一堆重试日志里很难发现。
 
@@ -859,9 +802,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 - 所有模式（正常执行、重跑失败、单步运行）均执行预检
 - 即使工具不可用，用户仍可选择强制继续（但相应步骤大概率失败）
 
----
-
-## 参数说明
+## 5.10 命令行参数说明
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|---------|------|
@@ -895,7 +836,9 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 
 ---
 
-## 重试规则
+# 六、进阶机制
+
+## 6.1 重试规则
 
 | 可重试 | 不重试 |
 |----------|----------|
@@ -904,9 +847,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 | whisper 服务超时 | 无效 URL、文件不存在 |
 | **步骤级超时（任务卡死）** | 参数错误（ValueError/TypeError） |
 
----
-
-## 智能跳过与自动重转码
+## 6.2 智能跳过与自动重转码
 
 脚本默认不会重复处理已有文件，但会在以下情况自动触发重做：
 
@@ -918,9 +859,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 
 > 关键设计：即使不加 `--force`，只要视频重新下载过（MP4 的修改时间晚于 WAV），转码也会自动重新执行，**确保下载和转码内容始终保持一致**。
 
----
-
-## 断点续跑（Resume）机制
+## 6.3 断点续跑（Resume）机制
 
 从 v1.4 开始，脚本在「智能跳过」基础上引入了严格的**断点续跑校验**——四步产物要么完整落盘 + 校验通过，要么不留尾巴，确保断电/中断后可安全续跑。
 
@@ -1008,9 +947,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 
 > **核心原则**：transcribe / analyze 不允许"半成功"——要么完整产物落盘 + 校验通过，要么清理掉。
 
----
-
-## 错误信息透传
+## 6.4 错误信息透传
 
 从 v1.4.1 开始，失败时不再只显示 "Exit code 2" 这种无意义信息，而是**完整透传 stderr / traceback**。
 
@@ -1064,9 +1001,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
          3. 使用系统证书     → ...
 ```
 
----
-
-## 临时文件自动清理
+## 6.5 临时文件自动清理
 
 yt-dlp 下载过程中会生成 `.part`（未完成分片）和 `.ytdl`（元数据）临时文件。脚本在以下时机自动清理这些残留：
 
@@ -1078,9 +1013,7 @@ yt-dlp 下载过程中会生成 `.part`（未完成分片）和 `.ytdl`（元数
 
 > 例如：`2152.mp4.part` + `2152.mp4.ytdl` 会在下次下载该视频时自动删除，无需手动清理。
 
----
-
-## AI 关键词归纳
+## 6.6 AI 关键词归纳
 
 在识别完成后，脚本可自动调用 OpenAI 兼容 API 对识别文本做关键词归纳，结果写入 `keywords` 列。
 
@@ -1153,9 +1086,7 @@ video-pipeline --ai-prompt ./prompts/keyword-extract.txt --sheet "普诺赛中�
 video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-args "--beam_size 10 --verbose" --id 427
 ```
 
----
-
-## 文件名去重
+## 6.7 文件名去重
 
 脚本默认使用 `COL_ID`（即 `extra.id`）作为文件名 stem。当同一个 sheet 内出现重复 id 时，自动应用以下去重策略：
 
@@ -1167,9 +1098,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 > 去重仅在同 sheet 内生效，不同 sheet 之间允许同名文件（存放在不同子目录）。
 
----
-
-## 进度显示
+## 6.8 进度显示
 
 执行时会同时展示**总体进度**和**单视频进度**：
 
@@ -1211,7 +1140,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 ---
 
-## 输出结构速查表
+# 七、输出结构速查表
 
 五种输入来源在不同处理环节的输出路径汇总如下。所有路径均以 `output/` 为根，可通过 **`OUTPUT_DIR` 环境变量** 或 **`--output <dir>` CLI 参数** 整体覆盖（CLI > env > 默认 `output`）。子目录名（`downloads/` `transcoded/` `transcripts/` `keywords/` `reports/` `progress/` `logs/`）由代码硬编码，不支持单独覆盖。
 
@@ -1219,7 +1148,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 > `{platform}` = 视频平台标识（如 `youtube`、`bilibili`、`tencent`、`youku`）
 > `{stem}` = 去重后的安全文件名（不含扩展名）
 
-### ① Excel 批量模式（默认）
+## 7.1 ① Excel 批量模式（默认）
 
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
@@ -1234,7 +1163,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 > 多 sheet 同时执行时，每个 sheet 独立一个子目录，互不干扰。
 
-### ② --url 直链模式
+## 7.2 ② --url 直链模式
 
 > 支持**多个 URL**（可多次指定，或逗号/空格/中文逗号分隔），逐条下载处理。多 URL 时 `--name` 被忽略，每条使用各自解析出的文件名。
 
@@ -1249,7 +1178,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 文本报告 | `output/reports/{platform}/tasks/{name}.txt` | 文本 | 含识别原文 + AI 分析 |
 
 > `{platform}` 由脚本自动从 URL 解析，如 `https://www.youtube.com/watch?v=xxx` → `youtube`。
-> 
+>
 > **多 URL 示例**：
 > ```
 > # 多次指定
@@ -1260,7 +1189,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 > --url "https://youtu.be/aaa https://youtu.be/bbb"
 > ```
 
-### ③ --input 本地文件模式
+## 7.3 ③ --input 本地文件模式
 
 > 支持**多个本地文件**（可多次指定，或逗号/空格/中文逗号分隔），逐条处理。多文件时 `--name` 被忽略，每个文件使用自己的文件名。
 
@@ -1275,7 +1204,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 文本报告 | `output/reports/local/tasks/{stem}.txt` | 文本 | 含识别原文 + AI 分析 |
 
 > `local` 是 `--input` 模式的固定目录名（与 Excel 模式的 sheet 名无关），所有本地文件处理结果统一归入此目录。
-> 
+>
 > **多文件示例**：
 > ```
 > # 多次指定
@@ -1284,7 +1213,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 > --input "videos/a.mp4,videos/b.mp4"
 > ```
 
-### ④ --content 纯文本模式
+## 7.4 ④ --content 纯文本模式
 
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
@@ -1298,7 +1227,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 > `content` 是固定目录名。{stem} = `--name` 值 > 文件名 stem > 内联文本前 32 字符。
 
-### ⑤ --content-column Excel列文本批量模式
+## 7.5 ⑤ --content-column Excel列文本批量模式
 
 | 环节 | 输出路径 | 产物格式 | 说明 |
 |------|---------|---------|------|
@@ -1313,9 +1242,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 > 此模式自动设置 `--step analyze`，下载/转码/识别全跳过。AI 结果同时写入 Excel 和报告文件。
 
----
-
-### 五种来源对比一览
+## 7.6 五种来源对比一览
 
 | 维度 | Excel 批量 | --url 直链 | --input 本地文件 | --content 纯文本 | --content-column 列文本 |
 |------|-----------|-----------|-----------------|-----------------|------------------------|
@@ -1336,9 +1263,7 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 | 支持 --retry-failed | ✅ | ❌ | ❌ | ❌ | ❌ |
 | 适用场景 | 批量处理全流程 | 临时下载单个视频 | 处理已有视频文件 | 已有文本直接分析 | 批量分析Excel中的文本 |
 
----
-
-### JSON 报告结构
+## 7.7 JSON 报告结构
 
 ```json
 {
@@ -1373,9 +1298,9 @@ video-pipeline --whisper-initial-prompt "细胞冻存,复苏" --whisper-extra-ar
 
 ---
 
-## 典型工作流
+# 八、典型工作流
 
-### 场景一：Excel 批量处理视频
+## 场景一：Excel 批量处理视频
 
 ```bash
 # 1. 干跑预览
@@ -1393,7 +1318,7 @@ node process_videos.js --concurrency 3 --retry 3
 node process_videos.js --retry-failed reports/YouTube视频/report_xxx.json --concurrency 2 --retry 3
 ```
 
-### 场景二：临时下载单个视频
+## 场景二：临时下载单个视频
 
 ```bash
 # 从 URL 下载 → 转码 → 识别 → AI 分析，一条龙
@@ -1403,7 +1328,7 @@ node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c"
 node process_videos.js --url "https://www.bilibili.com/video/BV1xx411c7mD" --name "产品介绍视频"
 ```
 
-### 场景三：处理本地视频文件
+## 场景三：处理本地视频文件
 
 ```bash
 # 已有视频文件，直接转码分析
@@ -1413,7 +1338,7 @@ node process_videos.js --input "downloads/产品介绍.mp4"
 node process_videos.js --input "downloads/产品介绍.mp4" --step analyze
 ```
 
-### 场景四：纯文本 AI 分析
+## 场景四：纯文本 AI 分析
 
 ```bash
 # 已有文本内容，跳过所有视频步骤，直接做关键词提取
@@ -1423,7 +1348,7 @@ node process_videos.js --content "data/article.txt"
 node process_videos.js --content "今天我们要讨论的是普诺赛产品..." --name "产品讨论"
 ```
 
-### 场景五：批量分析 Excel 中的已有文本
+## 场景五：批量分析 Excel 中的已有文本
 
 ```bash
 # Excel 某列已有文本（如爬虫爬取的），批量做 AI 关键词分析
@@ -1433,7 +1358,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 
 ---
 
-## 平台适配说明
+# 九、平台适配说明
 
 脚本支持四个视频平台的下载，各有不同的反爬配置：
 
@@ -1447,12 +1372,12 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 > YouTube 反爬最强：需要 **代理** + **登录态 cookie** + **JS runtime 解 n-sig** 三者配合。
 > 脚本会自动给 yt-dlp 及其 node/ejs 子进程注入 `HTTPS_PROXY` 环境变量，确保所有流量走代理。
 
-### 各平台 URL 格式与视频 ID 提取
+## 9.1 各平台 URL 格式与视频 ID 提取
 
 脚本通过 `{平台}_URL_TPL` 生成下载链接，支持 yt-dlp 能识别的所有 URL 格式。
 下表列出各平台「标准页面 / 内嵌链接 / 短链接」格式及视频 ID 提取正则，方便从完整 URL 中解析视频 ID。
 
-#### YouTube
+### YouTube
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
 |----------|-----------|-------------------|
@@ -1472,7 +1397,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
   - 标准 → 内嵌：提取 `VIDEO_ID` → `https://www.youtube.com/embed/VIDEO_ID`
   - Shorts → 标准：提取 `VIDEO_ID` → `https://www.youtube.com/watch?v=VIDEO_ID`
 
-#### B站（bilibili）
+### B站（bilibili）
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
 |----------|-----------|-------------------|
@@ -1493,7 +1418,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
     → 内嵌 URL：`https://player.bilibili.com/player.html?bvid=BV_ID&cid=CID&page=1`
   - BV 号 → av 号：需调用 API（`https://api.bilibili.com/x/web-interface/view?bvid=BV_ID` 返回 `aid`）
 
-#### 腾讯视频
+### 腾讯视频
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
 |----------|-----------|-------------------|
@@ -1510,7 +1435,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 - **格式互转**：
   - 标准 → 内嵌：提取 `VIDEO_ID` → `https://v.qq.com/txp/iframe/player.html?vid=VIDEO_ID`
 
-#### 优酷（Youku）
+### 优酷（Youku）
 
 | 格式类型 | URL 示例 | 视频 ID 提取正则 |
 |----------|-----------|-------------------|
@@ -1528,7 +1453,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 
 > **脚本使用提示**：Excel 中只需填入视频 ID（如 `zzJmKPX8a3c`、`BV1pg411b7Ug`、`o0325y3hqh`、`XMzgxNzExNTY4MA==`），脚本自动替换 URL 模板中的 `{youtube}`、`{bilibili}` 等占位符生成下载链接。
 
-### 常见下载错误
+## 9.2 常见下载错误
 
 | 错误 | 平台 | 原因 | 解决方案 |
 |------|------|------|----------|
@@ -1545,7 +1470,9 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 
 ---
 
-## 换电脑使用
+# 十、换电脑与多项目适配
+
+## 10.1 换电脑使用
 
 ### Node.js 版本
 
@@ -1572,9 +1499,7 @@ node process_videos.js --content-column "content" --concurrency 2  # 执行
 7. 启动代理（Clash Verge 等），把 `YOUTUBE_PROXY` 改成代理客户端**实际监听**的混合/HTTP 端口
 8. `python process_videos.py --step download --dry-run` 验证（重点看「代理: ✅」那一行）
 
----
-
-## 适配其他 Excel
+## 10.2 适配其他 Excel
 
 如果需要用这套脚本处理**其他项目的 Excel**（列名不同、平台不同）：
 
