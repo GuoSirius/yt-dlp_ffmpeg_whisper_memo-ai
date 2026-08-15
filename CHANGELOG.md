@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.0.1] - 2026-08-15
+
+### Bug Fixes
+
+- 修复 Excel 自动建列因 !ref 未扩展导致列与内容落盘丢失（JS） ([`3bcbfbb`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/3bcbfbb))
+- 修复 ASR 语音识别失败未触发 OCR 抽帧兜底（续跑首跑双端一致） ([`c552f87`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/c552f87))
+
+### Documentation
+
+- 更新工作记忆（Excel !ref 坑 + CHANGELOG 不手改 + 纠错） ([`65a1d75`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/65a1d75))
+- 更新工作记忆（OCR 兜底修复记录 + MEMORY 精简） ([`cc0a11f`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/cc0a11f))
+
+### Reverts
+
+- 撤回手加的 CHANGELOG Unreleased 段（由 commit 自动生成） ([`dc6b498`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/dc6b498))
+
+
 ## [2.0.0] - 2026-08-15
 
 ### Features
