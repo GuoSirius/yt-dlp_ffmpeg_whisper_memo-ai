@@ -36,7 +36,7 @@ const __dirname = path.dirname(__filename);
 
 // 控制台单行动态显示
 import {
-  updateLine, clearLine, fmtSize, fmtTime, textBar,
+  updateLine, clearLine, fmtSize, fmtTime, textBar, SPINNER,
   startSpinner, stopSpinner,
   parseYtdlpLine, parseFfmpegProgress, makeFfmpegProgressParser, resetFfmpegState,
 } from './console-ui.mjs';
@@ -640,7 +640,7 @@ function shouldTriggerOcr(videoFile, asrText) {
 }
 
 // 调用 scripts/ocr_frames.py 抽帧+OCR，返回 { ok, text, chars, avgConf, note }
-async function runOcrFrames(videoFile, outTxt, outMeta) {
+async function runOcrFrames(videoFile, outTxt, outMeta, stem) {
   if (!fs.existsSync(OCR_SCRIPT)) {
     return { ok: false, text: '', chars: 0, avgConf: 0,
       note: `OCR 脚本未找到: ${OCR_SCRIPT}（请确认 scripts/ocr_frames.py 随包发布）` };
@@ -650,7 +650,26 @@ async function runOcrFrames(videoFile, outTxt, outMeta) {
     '--lang', OCR_LANG, '--scene-thresh', String(OCR_SCENE_THRESH),
     '--max-frames', String(OCR_MAX_FRAMES), '--conf-thresh', String(OCR_CONF_THRESH),
   ];
-  const r = await spawnWithTimeout(PYTHON_BIN, args, OCR_MAX_FRAMES > 0 ? 1800 : 600, { encoding: 'utf-8' });
+  // OCR 抽帧识别耗时较长（抽帧 + 逐帧 PaddleOCR），且全程无原生进度，
+  // 故读取 ocr_frames.py 写的进度侧车文件，实时刷新「帧数 + 已用时间」单行动画，
+  // 避免用户误以为卡死。
+  const progFile = outTxt + ".progress.json";
+  const ocrStart = Date.now();
+  const _ocrTimer = setInterval(() => {
+    let p = { phase: '', done: 0, total: 0, elapsed_sec: 0 };
+    try { p = JSON.parse(fs.readFileSync(progFile, 'utf-8')); } catch (e) { /* 文件尚未生成 */ }
+    const elapsed = Math.floor((Date.now() - ocrStart) / 1000);
+    const frameStr = p.total ? ` ${p.done}/${p.total} 帧` : '';
+    const phaseStr = p.phase ? ` · ${p.phase}` : '';
+    updateLine(`  ${SPINNER[Math.floor(Date.now() / 160) % SPINNER.length]} [${stem || ''}] OCR 抽帧识别中${frameStr}${phaseStr} · ${elapsed}s`);
+  }, 200);
+  let r;
+  try {
+    r = await spawnWithTimeout(PYTHON_BIN, args, OCR_MAX_FRAMES > 0 ? 1800 : 600, { encoding: 'utf-8' });
+  } finally {
+    clearInterval(_ocrTimer);
+    clearLine();
+  }
   let meta = { ok: false, chars: 0, avg_conf: 0, note: '' };
   try {
     if (fs.existsSync(outMeta)) meta = JSON.parse(fs.readFileSync(outMeta, 'utf-8'));
@@ -2787,7 +2806,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
       } else {
         const ocrStart = Date.now();
         lockedPrint(c('cyan', `  [${stem}] 开始 OCR 抽帧识别 (${trig.reason})`));
-        const r = await runOcrFrames(dlFile, ocrOut, ocrMeta);
+        const r = await runOcrFrames(dlFile, ocrOut, ocrMeta, stem);
         if (r.ok && validateOcrText(r.text).ok) {
           result.ocr = new StepResult('success', r.text, null, 0);
           const asrChars = asrText.trim().length;
@@ -3151,7 +3170,7 @@ async function runInputTask(opts) {
       lockedPrint(styleInfo(`[${usedStem}] ocr 未触发: ${trig.reason}`));
     } else {
       logStep(`[${usedStem}] 开始 OCR 抽帧识别 (${trig.reason})`);
-      const r = await runOcrFrames(inputPath, ocrOut, ocrMeta);
+      const r = await runOcrFrames(inputPath, ocrOut, ocrMeta, usedStem);
       if (r.ok && validateOcrText(r.text).ok) {
         result.ocr = new StepResult('success', r.text, null, 0);
         // 择优：ASR 成功时须 OCR 更优才采用；ASR 失败（兜底）时 OCR 通过校验即采用

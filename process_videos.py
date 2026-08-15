@@ -83,7 +83,7 @@ except Exception:
 
 # ── 控制台单行动态显示 ──
 from console_ui import (
-    update_line, clear_line, text_bar, Spinner,
+    update_line, clear_line, text_bar, Spinner, SPINNER,
     parse_ytdlp_line, parse_ffmpeg_progress, reset_ffmpeg_state,
     fmt_size,
 )
@@ -551,20 +551,61 @@ def should_trigger_ocr(video_file: str, asr_text: str) -> tuple[bool, str]:
     return False, f"ASR文本充足({asr_chars}字/{dur_min:.1f}min)"
 
 
-def run_ocr_frames(video_file: str, out_txt: str, out_meta: str) -> dict:
-    """调用 scripts/ocr_frames.py 抽帧+OCR，返回 {ok, text, chars, avg_conf, note}。"""
+def run_ocr_frames(video_file: str, out_txt: str, out_meta: str, stem: str = "") -> dict:
+    """调用 scripts/ocr_frames.py 抽帧+OCR，返回 {ok, text, chars, avg_conf, note}。
+
+    OCR 抽帧识别耗时较长（抽帧 + 逐帧 PaddleOCR），且 ocr_frames.py 全程无原生
+    进度输出，故这里用 Popen 启动子进程并由后台线程轮询其写的进度侧车
+    <out>.progress.json，实时刷新「帧数 + 已用时间」单行动画，避免用户误以为卡死。
+    """
     if not OCR_SCRIPT.exists():
         return {"ok": False, "text": "", "chars": 0, "avg_conf": 0,
                 "note": f"OCR 脚本未找到: {OCR_SCRIPT}（请确认 scripts/ocr_frames.py 随包发布）"}
     args = [PYTHON_BIN, str(OCR_SCRIPT), "--video", video_file, "--out", out_txt,
             "--meta", out_meta, "--lang", OCR_LANG, "--scene-thresh", str(OCR_SCENE_THRESH),
             "--max-frames", str(OCR_MAX_FRAMES), "--conf-thresh", str(OCR_CONF_THRESH)]
+    prog_file = out_txt + ".progress.json"
+    start = time.monotonic()
+    # 进度显示状态（后台线程与等待主线程共享）
+    prog_state = {"p": {"phase": "", "done": 0, "total": 0}, "running": True}
+
+    def _prog_loop() -> None:
+        idx = 0
+        while prog_state["running"]:
+            p = prog_state["p"]
+            elapsed = int(time.monotonic() - start)
+            frame_str = f" {p['done']}/{p['total']} 帧" if p["total"] else ""
+            phase_str = f" · {p['phase']}" if p["phase"] else ""
+            spin = SPINNER[idx % len(SPINNER)]
+            idx += 1
+            update_line(
+                f"  {spin} [{stem}] OCR 抽帧识别中{frame_str}{phase_str} · {elapsed}s"
+            )
+            # 读取最新侧车进度
+            try:
+                with open(prog_file, "r", encoding="utf-8") as f:
+                    prog_state["p"] = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+            time.sleep(0.16)
+
+    _thread = Thread(target=_prog_loop, daemon=True)
+    _thread.start()
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=1800)
-        code = r.returncode
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8", errors="replace")
+        stdout, stderr = proc.communicate(timeout=1800)
+        code = proc.returncode
     except Exception as e:
+        prog_state["running"] = False
+        _thread.join(timeout=1)
+        clear_line()
         return {"ok": False, "text": "", "chars": 0, "avg_conf": 0.0,
                 "note": f"spawn failed: {e}"}
+    finally:
+        prog_state["running"] = False
+        _thread.join(timeout=1)
+        clear_line()
     meta = {"ok": False, "chars": 0, "avg_conf": 0.0, "note": ""}
     try:
         if os.path.exists(out_meta):
@@ -582,7 +623,7 @@ def run_ocr_frames(video_file: str, out_txt: str, out_meta: str) -> dict:
     return {"ok": bool(meta.get("ok")) and code == 0, "text": text,
             "chars": meta.get("chars", len(text.strip())),
             "avg_conf": meta.get("avg_conf", 0.0),
-            "note": meta.get("note", (r.stderr or "")[-300:])}
+            "note": meta.get("note", (stderr or "")[-300:])}
 
 
 
@@ -3017,7 +3058,7 @@ def process_one_task(
             else:
                 with _print_lock:
                     print(c("cyan", f"  [{stem}] 开始 OCR 抽帧识别 ({trig_reason})"), flush=True)
-                r = run_ocr_frames(str(dl_file), str(ocr_out), str(ocr_meta))
+                r = run_ocr_frames(str(dl_file), str(ocr_out), str(ocr_meta), stem)
                 if r["ok"] and validate_ocr_text(r["text"])[0]:
                     result.ocr = StepResult("success", file=r["text"])
                     asr_chars = len(asr_text.strip())
@@ -3847,7 +3888,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             print(c("dim", f"  [{result.stem}] ocr 未触发: {trig_reason}"), flush=True)
         else:
             print(c("cyan", f"  [{result.stem}] 开始 OCR 抽帧识别 ({trig_reason})"), flush=True)
-            r = run_ocr_frames(str(input_path), str(ocr_out), str(ocr_meta))
+            r = run_ocr_frames(str(input_path), str(ocr_out), str(ocr_meta), result.stem)
             if r["ok"] and validate_ocr_text(r["text"])[0]:
                 result.ocr = StepResult("success", file=r["text"])
                 # 择优：ASR 成功时 OCR 字符数≥ASR 且置信度达标才采用；ASR 失败（兜底）时 OCR 已通过校验即采用

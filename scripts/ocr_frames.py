@@ -20,6 +20,19 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+
+
+def _write_prog(prog_path, phase, done, total, elapsed):
+    """写进度侧车文件，供调用方（process_videos.js/py）实时显示。"""
+    if not prog_path:
+        return
+    try:
+        with open(prog_path, "w", encoding="utf-8") as f:
+            json.dump({"phase": phase, "done": done, "total": total,
+                       "elapsed_sec": round(float(elapsed), 1)}, f)
+    except Exception:
+        pass
 
 
 def _probe_duration(video):
@@ -96,7 +109,7 @@ def extract_frames(video, out_dir, scene_thresh, max_frames, duration=0.0):
     return frames
 
 
-def run_ocr(frames, lang, conf_thresh, model_dir):
+def run_ocr(frames, lang, conf_thresh, model_dir, prog_path=None):
     """逐帧 PaddleOCR，返回 (final_text, avg_conf, kept_blocks)。"""
     # 指定模型根目录时，在 import 前通过环境变量把 PaddleOCR/PaddleX 的模型缓存
     # 重定向到该目录（避免占用 C 盘）。paddleocr 3.x 用 PADDLE_PDX_CACHE_HOME，
@@ -104,9 +117,12 @@ def run_ocr(frames, lang, conf_thresh, model_dir):
     if model_dir:
         os.environ["PADDLEOCR_HOME"] = model_dir
         os.environ["PADDLE_PDX_CACHE_HOME"] = model_dir
-    # paddle 3.x 在部分 CPU 上会因 oneDNN + PIR 推理指令未实现而崩溃，
-    # 关闭 MKLDNN 走原生 CPU 内核即可绕过（CPU 离线 OCR 速度足够）。
+    # paddle 3.x + PP-OCRv6 + oneDNN 在 CPU 上会触发 PIR 执行器 NotImplementedError
+    # （Paddle#77340）。PaddleX 的 MKLDNN 开关独立于 FLAGS_use_mkldnn 与构造器的
+    # enable_mkldnn —— 必须用 PaddleX 专用环境变量才能真正关闭，否则即便
+    # enable_mkldnn=False 也会被 PaddleX 内部覆盖，仍会崩。
     os.environ["FLAGS_use_mkldnn"] = "0"
+    os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
 
     # 懒加载：未安装 paddleocr 时给出明确错误，而非 import 期崩溃
     try:
@@ -140,7 +156,7 @@ def run_ocr(frames, lang, conf_thresh, model_dir):
     if _major >= 3:
         # 3.x 模型由 PaddleX 统一管理（落在 PADDLE_PDX_CACHE_HOME），无需手动指定子目录
         ocr = PaddleOCR(use_textline_orientation=True, lang=lang)
-        _ocr_cls_kw = {"use_textline_orientation": True}
+        _use_predict = True
     else:
         det = rec = cls = None
         if model_dir:
@@ -152,27 +168,57 @@ def run_ocr(frames, lang, conf_thresh, model_dir):
             det_model_dir=det, rec_model_dir=rec, cls_model_dir=cls,
             show_log=False,
         )
-        _ocr_cls_kw = {"cls": True}
+        _use_predict = False
 
     lines = []
     confs = []
-    for fp in frames:
-        res = ocr.ocr(fp, **_ocr_cls_kw)
-        if not res or not res[0]:
-            lines.append("")
-            continue
-        parts = []
-        for item in res[0]:
-            if not item or len(item) < 2:
+    _t0 = time.time()
+    total = len(frames)
+    for i, fp in enumerate(frames, 1):
+        if prog_path:
+            _write_prog(prog_path, "识别中", i - 1, total, time.time() - _t0)
+        if _use_predict:
+            # PaddleOCR 3.x：用 predict()（ocr() 已废弃并会回连 ModelHub），
+            # 返回 OCRResult，文本/置信度分别在 rec_texts / rec_scores。
+            try:
+                out = ocr.predict(input=fp)
+                r0 = out[0] if out else None
+                rec_texts = r0.get("rec_texts", []) if r0 is not None else []
+                rec_scores = r0.get("rec_scores", []) if r0 is not None else []
+            except Exception:
+                rec_texts, rec_scores = [], []
+            if rec_texts:
+                parts = []
+                for text, sc in zip(rec_texts, rec_scores):
+                    try:
+                        conf = float(sc)
+                    except Exception:
+                        conf = 0.0
+                    if conf >= conf_thresh and text.strip():
+                        parts.append(text.strip())
+                        confs.append(conf)
+                lines.append(" ".join(parts))
+            else:
+                lines.append("")
+        else:
+            res = ocr.ocr(fp, cls=True)
+            if not res or not res[0]:
+                lines.append("")
                 continue
-            text_conf = item[1]
-            if not text_conf or len(text_conf) < 2:
-                continue
-            text, conf = text_conf[0], float(text_conf[1])
-            if conf >= conf_thresh and text.strip():
-                parts.append(text.strip())
-                confs.append(conf)
-        lines.append(" ".join(parts))
+            parts = []
+            for item in res[0]:
+                if not item or len(item) < 2:
+                    continue
+                text_conf = item[1]
+                if not text_conf or len(text_conf) < 2:
+                    continue
+                text, conf = text_conf[0], float(text_conf[1])
+                if conf >= conf_thresh and text.strip():
+                    parts.append(text.strip())
+                    confs.append(conf)
+            lines.append(" ".join(parts))
+    if prog_path:
+        _write_prog(prog_path, "完成", total, total, time.time() - _t0)
 
     # 相邻重复去重（烧录字幕常跨多帧不变）
     deduped = []
@@ -199,6 +245,7 @@ def main():
     args = ap.parse_args()
 
     meta_path = args.meta or (args.out + ".meta.json")
+    prog_path = args.out + ".progress.json"
     note = ""
     nframes = 0
     try:
@@ -211,13 +258,14 @@ def main():
         note = f"duration={duration:.1f}s audio={has_audio}"
 
         with tempfile.TemporaryDirectory() as tmp:
+            _write_prog(prog_path, "抽帧中", 0, 0, 0)
             frames = extract_frames(args.video, tmp, args.scene_thresh, args.max_frames, duration)
             nframes = len(frames)
             if not frames:
                 final_text, avg_conf = "", 0.0
                 note += " no_frames"
             else:
-                final_text, avg_conf, _ = run_ocr(frames, args.lang, args.conf_thresh, model_dir)
+                final_text, avg_conf, _ = run_ocr(frames, args.lang, args.conf_thresh, model_dir, prog_path)
                 note += f" frames={nframes}"
 
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -239,6 +287,14 @@ def main():
 
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
+
+    # 清理进度侧车文件（调用方已在子进程退出后停止读取）
+    try:
+        if prog_path and os.path.exists(prog_path):
+            os.remove(prog_path)
+    except Exception:
+        pass
+
     # 退出码：ok=0 / fail=1，便于调用方判定
     sys.exit(0 if meta["ok"] else 1)
 
