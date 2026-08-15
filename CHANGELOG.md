@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.0.3] - 2026-08-15
+
+### Bug Fixes
+
+- 增强 OCR 去重(剥离水印+合并噪声变体)，修复续跑幂等与 content 变更关键词失效 ([`ca03729`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/ca03729))
+- 修复 runOcrFrames 误用 r.code 致 OCR 成功判失败、失败抛异常 ([`583d47a`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/583d47a))
+- 导出 SPINNER 并同步 console-ui.mjs 到全局副本（修复导入报错） ([`e6093bc`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/e6093bc))
+
+### Documentation
+
+- 记录 OCR 去重增强、续跑幂等与 analyze 失效设计及验证手段 ([`c9132d9`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/c9132d9))
+- 记录 spawnWithTimeout 契约坑与 runOcrFrames r.code 自查修复 ([`345948b`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/345948b))
+- 记录 console-ui.mjs 未导出 SPINNER 的导入回归与同步教训 ([`a160fde`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/a160fde))
+
+
 ## [2.0.2] - 2026-08-15
 
 ### Bug Fixes
