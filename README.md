@@ -240,6 +240,11 @@ cp .env.example .env
 | AI 分析 | `AI_PROMPT_TPL` | 提示词模板，必须包含 `{content}` 占位符。支持文件路径（try-file-first），CLI 覆盖：`--ai-prompt <text|path>`（CLI > .env > 内置默认） |
 | AI 分析 | `AI_TEMPERATURE` | AI 推理温度 (0.0~2.0) |
 | AI 分析 | `AI_DEBUG` | `true` 时打印实际发送的 prompt 前 500 字符 + AI 返回内容前 500 字符，用于排查关键词质量问题（默认 `false`） |
+| OCR | `OCR_MODE` | `auto`（默认，按需触发）/ `always`（全量跑 OCR）/ `off`（关闭）。auto 下仅「无音轨」或「ASR 字符数/时长分钟 < `OCR_TRIGGER_CPM`」才跑 |
+| OCR | `OCR_BACKEND` / `OCR_LANG` | 引擎（仅 `paddleocr`）/ 语言 `en`/`ch` |
+| OCR | `OCR_SCENE_THRESH` / `OCR_MAX_FRAMES` | 场景切换抽帧阈值（默认 `0.3`）/ 抽帧保护上限（默认 `2000`，超则放宽阈值重抽，不丢字幕帧） |
+| OCR | `OCR_CONF_THRESH` / `OCR_TRIGGER_CPM` / `OCR_MIN_CHARS` | 文本块置信度下限（默认 `0.6`）/ auto 触发 CPM 阈值（默认 `2`）/ ocr 产物最短长度（默认 `30`） |
+| OCR | `PYTHON_BIN` / `PADDLE_OCR_BASE_DIR` | 调用 `scripts/ocr_frames.py` 的解释器（默认 `python`）/ PaddleOCR 模型目录（默认 `C:\Users\{user}\.paddleocr`，改此处避 C 盘） |
 
 ### .env 配置项变更权限
 
@@ -422,6 +427,78 @@ API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: f
 
 > **WHISPER vs FunASR 选型**：Whisper 优势是 99 种语言覆盖 + 翻译任务 (`task=translate`)；FunASR 优势是中文 WER 显著更低、内置 VAD/标点/说话人/情感、中文场景速度更快。**纯中文识别强烈推荐 FunASR**。
 
+### OCR 抽帧识别（画面字幕 / 无音轨视频）
+
+> 当视频**没有音轨**（如纯 PPT 录屏、产品图轮播），或**音轨是水印循环 / 背景音乐、ASR 识别为空或极少**时，语音识别派不上用场。此类视频若画面中烧录了字幕 / 标题 / 关键词文字，可用 **PaddleOCR（百度）** 对关键帧做文字识别，把画面文字补回 transcript。
+
+**适用场景**
+
+- 无音轨视频（录屏、图文轮播、静态海报视频）
+- 有音轨但 ASR 输出为空或过短（水印循环音、纯 BGM、VAD 把人声过滤成静音）
+- 画面中烧录了重要文字（字幕、标题、卖点、步骤说明）
+
+**OCR 引擎：PaddleOCR（百度，Apache 2.0 开源）**
+
+- 完全免费、全离线、无 API 调用费、无境外依赖（国内无 GFW 问题）
+- 默认语言 `en`（英文数字识别强），中文视频可在 `.env` 设 `OCR_LANG=ch`
+- 识别逻辑只在 `scripts/ocr_frames.py`（Python + PaddleOCR），JS / Python 双端统一 `subprocess` 调它——比 faster-whisper 的「JS 调 CLI / Py 调 API」更一致
+
+**安装 PaddleOCR**
+
+```bash
+# CPU 版 paddlepaddle（推荐，无需 GPU）
+pip install paddlepaddle paddleocr
+
+# 如需 GPU（CUDA 11.8 示例）
+pip install paddlepaddle-gpu==2.6.1.post118 paddleocr
+```
+
+首次运行 `scripts/ocr_frames.py` 时，PaddleOCR 会自动下载检测(det) + 识别(rec) + 方向分类(cls) 三个模型并缓存。
+
+**模型默认位置 & 如何改位置避开 C 盘**
+
+- Windows 默认缓存目录：`C:\Users\{你的用户名}\.paddleocr`
+- 该目录可能占用 **数百 MB ~ 1GB+**，C 盘空间紧张时可改到其他盘：
+
+```bash
+# 方法一：环境变量（推荐，双端自动读取）
+PADDLE_OCR_BASE_DIR=D:\AI_Models\PaddleOCR
+
+# 方法二：直接指定三个模型子目录（scripts/ocr_frames.py 透传 --model-dir）
+PaddleOCR(det_model_dir=..., rec_model_dir=..., cls_model_dir=...)
+```
+
+> 设了 `PADDLE_OCR_BASE_DIR` 后，`scripts/ocr_frames.py` 会自动把它作为 `PADDLEOCR_HOME` 传给 PaddleOCR，模型下载与加载都落到该目录，C 盘零占用。
+
+**触发条件（`OCR_MODE=auto` 默认开启）**
+
+- `auto`：仅当视频「**无音轨**」或「**ASR 字符数 / 时长(分钟) < `OCR_TRIGGER_CPM`(默认 2)**」时才跑 OCR；ASR 充足时跳过，零额外开销
+- `always`：无视 ASR 结果，强制跑 OCR（调试 / 对比用）
+- `off`：完全关闭 OCR
+
+**OCR / ASR 择优规则（OCR 始终是兜底）**
+
+`bestText` 的选取逻辑（**OCR 绝不喧宾夺主**）：
+
+- 若 `OCR_MODE=off` 或未触发 → `bestText = ASR 文本`
+- 触发 OCR 后，仅当 **OCR 字符数 ≥ ASR 字符数** 且 **OCR 平均置信度 ≥ `OCR_CONF_THRESH`(默认 0.6)** 才用 OCR 覆盖 ASR
+- 否则回退 ASR（OCR 质量不达标 → 信任语音识别结果）
+
+> 即「OCR 不如 ASR」时自动回退，阈值已放宽到足够包容；画面文字确实比语音多且清晰时才采用 OCR。
+
+**抽帧策略（不丢字幕、支持长视频）**
+
+- 用 ffmpeg 场景切换抽帧：`select='gt(scene,0.3)'` + `scale=-1:720`，只在画面显著变化时才抽帧
+- 烧录字幕随场景切换出现，会天然卡帧被抽中，**不丢文字**
+- `-fps_mode passthrough` 保持帧序；完全静止视频退化为均匀抽帧兜底
+- 抽帧数超过 `OCR_MAX_FRAMES`(默认 2000) 时自动放宽场景阈值重抽 / 按步长抽稀，**绝不丢字幕内容**，也不因 1~2h 长视频超时
+
+**产物命名 & 断点续跑兼容**
+
+- OCR 输出：`transcripts/{sheet}/{stem}.ocr.txt`（与 ASR 的 `{stem}.txt` **完全独立**，互不覆盖）
+- 续跑判定：`.ocr.txt` 与 ASR `.txt` 各自校验，互不影响；`progress` JSON 的 `content` 字段统一用 `bestText`
+- 跳过复用：前序已跑过 OCR 且文件存在 + 字符数 ≥ `OCR_MIN_CHARS`(默认 30) → 直接复用，不重跑
+
 ### 目录结构
 
 ```
@@ -445,6 +522,7 @@ API 端点（OpenAI 兼容）：`POST {URL}/v1/audio/transcriptions`（参数: f
 │   ├── transcripts/              # whisper 识别文本（断点续跑校验依据）
 │   │   ├── youtube/
 │   │   └── bilibili/
+│   │   # 其中 {stem}.txt = ASR 语音识别结果；{stem}.ocr.txt = OCR 画面文字结果（两者独立共存，bestText 取较优者）
 │   ├── keywords/                 # AI 关键词归纳结果（断点续跑校验依据）
 │   │   ├── youtube/
 │   │   └── bilibili/
@@ -791,7 +869,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 | `--id <id>` | str | — | 指定 extra.id 或 title（可多次指定，或逗号/空格/中文逗号分隔） |
 | `--offset <n>` | int | 0 | 跳过前 N 条任务（从 0 开始），适合调试大量数据 |
 | `--limit <n>` | int | 0 | 最多处理 N 条任务，0 表示无限制 |
-| `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `analyze` |
+| `--step <step>` | str | 全跑 | 只执行某步：`download` / `transcode` / `transcribe` / `ocr` / `analyze`（`ocr` 为可选步骤，默认随 transcribe 之后自动运行，仅对无音轨/ASR 过短的视频补画面文字） |
 | `--force` | flag | off | 强制重做下载+转码，忽略已有文件 |
 | `--concurrency <n>` | int | 1 | 并发数，建议 2~3。适用于：Excel 批量模式（已支持）、`--url` 多 URL（JS/Py 均支持）、`--input` 多文件（Py 支持；JS 需 `--force` 跳过交互冲突） |
 | `--retry <n>` | int | 0 | 每步失败最大重试次数 |
@@ -853,6 +931,7 @@ YouTube 等站点必须走代理，而**换代理客户端后监听端口经常�
 | download | `downloads/{sheet}/{stem}.mp4` | 文件存在 + size>0 | 清理 `.part`/`.ytdl`，重做 |
 | transcode | `transcoded/{sheet}/{stem}.wav`（扩展名由 `TRANSCODE_EXT` 决定） | 文件存在 + size>0 | 清理 0 字节产物，重做 |
 | transcribe | `transcripts/{sheet}/{stem}.txt` | 长度 ≥ `MIN_TRANSCRIPT_CHARS`（默认 50） | 清理文本，重做 |
+| ocr | `transcripts/{sheet}/{stem}.ocr.txt` | 长度 ≥ `OCR_MIN_CHARS`（默认 30）且与 ASR 独立校验；仅当 `OCR_MODE≠off` 且触发条件成立才跑 | 清理 `.ocr.txt` + `.meta.json`，重做；未触发则标记 `skipped` 直接复用 |
 | analyze | `keywords/{sheet}/{stem}.txt` | 长度 ≥ `MIN_KEYWORDS_CHARS`（默认 5） | 清理关键词，重做 |
 
 ### 跳过判定（每次 `process_one_task` 入口）
