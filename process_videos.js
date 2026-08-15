@@ -15,7 +15,7 @@
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
-import { spawn, execSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 import readline from 'readline';
 import XLSX from 'xlsx';
 import pLimit from 'p-limit';
@@ -94,6 +94,18 @@ applyOutputDir(OUTPUT_DIR);
 // 断点续跑：产物最小长度阈值
 const MIN_TRANSCRIPT_CHARS = parseInt(process.env.MIN_TRANSCRIPT_CHARS || '50', 10);
 const MIN_KEYWORDS_CHARS = parseInt(process.env.MIN_KEYWORDS_CHARS || '5', 10);
+
+// ── OCR 抽帧识别配置（PaddleOCR 分支） ──
+const OCR_MODE = process.env.OCR_MODE || 'auto';            // auto / always / off
+const OCR_BACKEND = process.env.OCR_BACKEND || 'paddleocr';  // 当前仅 paddleocr
+const OCR_LANG = process.env.OCR_LANG || 'en';               // en / ch
+const OCR_SCENE_THRESH = parseFloat(process.env.OCR_SCENE_THRESH || '0.3'); // 场景切换抽帧阈值
+const OCR_MAX_FRAMES = parseInt(process.env.OCR_MAX_FRAMES || '2000', 10);   // 抽帧保护上限
+const OCR_CONF_THRESH = parseFloat(process.env.OCR_CONF_THRESH || '0.6');    // 文本块置信度下限
+const OCR_TRIGGER_CPM = parseFloat(process.env.OCR_TRIGGER_CPM || '2');      // auto 触发：每分钟最少有效字符
+const OCR_MIN_CHARS = parseInt(process.env.OCR_MIN_CHARS || '30', 10);       // ocr 产物最短长度（续跑校验）
+const OCR_SCRIPT = path.join(BASE_DIR, 'scripts', 'ocr_frames.py');          // 双端共用的抽帧+OCR 脚本
+const PYTHON_BIN = process.env.PYTHON_BIN || 'python';                       // 调用 ocr_frames.py 的解释器
 
 // 代理预检：TCP 探测超时（毫秒），设为 0 可关闭代理预检
 const PROXY_PROBE_TIMEOUT = parseInt(process.env.PROXY_PROBE_TIMEOUT || '2000', 10);
@@ -474,6 +486,7 @@ class TaskResult {
     this.transcode = new StepResult('skipped');
     this.transcribe = new StepResult('skipped');
     this.analyze = new StepResult('skipped');
+    this.ocr = new StepResult('skipped');
     this.overall_status = 'pending';
     this.error = null;
   }
@@ -561,6 +574,74 @@ function validateKeywordsText(text) {
     return { ok: false, err: `关键词过短(${String(text).trim().length}<${MIN_KEYWORDS_CHARS})` };
   }
   return { ok: true, err: null };
+}
+
+// ── OCR 抽帧识别辅助（PaddleOCR 分支） ──
+function ocrTextPath(sheetName, stem) {
+  const d = path.join(TRANSCRIPTS_DIR, sheetName);
+  fs.mkdirSync(d, { recursive: true });
+  return path.join(d, `${stem}.ocr.txt`);
+}
+
+function validateOcrText(text) {
+  if (!text || !String(text).trim()) return { ok: false, err: 'OCR 文本为空' };
+  if (String(text).trim().length < OCR_MIN_CHARS) {
+    return { ok: false, err: `OCR 文本过短(${String(text).trim().length}<${OCR_MIN_CHARS})` };
+  }
+  return { ok: true, err: null };
+}
+
+function hasAudioTrack(videoFile) {
+  try {
+    const out = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'a',
+      '-show_entries', 'stream=index', '-of', 'csv=p=0', videoFile]);
+    return !!(out.stdout && out.stdout.toString().trim());
+  } catch (e) {
+    return true; // 探测失败按"有音轨"处理，避免误触发 OCR
+  }
+}
+
+function videoDurationSec(videoFile) {
+  try {
+    const out = spawnSync(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', videoFile]);
+    const v = (out.stdout || '').toString().trim();
+    return v ? parseFloat(v) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// auto 模式下是否应触发 OCR：无音轨 或 ASR 文本与时长明显不符常理
+function shouldTriggerOcr(videoFile, asrText) {
+  if (OCR_MODE === 'always') return { trigger: true, reason: 'OCR_MODE=always' };
+  if (OCR_MODE === 'off') return { trigger: false, reason: 'OCR_MODE=off' };
+  // auto
+  const noAudio = !hasAudioTrack(videoFile);
+  if (noAudio) return { trigger: true, reason: '无音轨' };
+  const durMin = videoDurationSec(videoFile) / 60;
+  const asrChars = (asrText || '').trim().length;
+  if (durMin > 0 && asrChars / durMin < OCR_TRIGGER_CPM) {
+    return { trigger: true, reason: `ASR字符/时长=${asrChars}/${durMin.toFixed(1)}min<${OCR_TRIGGER_CPM}` };
+  }
+  return { trigger: false, reason: `ASR文本充足(${asrChars}字/${durMin.toFixed(1)}min)` };
+}
+
+// 调用 scripts/ocr_frames.py 抽帧+OCR，返回 { ok, text, chars, avgConf, note }
+async function runOcrFrames(videoFile, outTxt, outMeta) {
+  const args = [
+    OCR_SCRIPT, '--video', videoFile, '--out', outTxt, '--meta', outMeta,
+    '--lang', OCR_LANG, '--scene-thresh', String(OCR_SCENE_THRESH),
+    '--max-frames', String(OCR_MAX_FRAMES), '--conf-thresh', String(OCR_CONF_THRESH),
+  ];
+  const r = await spawnWithTimeout(PYTHON_BIN, args, OCR_MAX_FRAMES > 0 ? 1800 : 600, { encoding: 'utf-8' });
+  let meta = { ok: false, chars: 0, avg_conf: 0, note: '' };
+  try {
+    if (fs.existsSync(outMeta)) meta = JSON.parse(fs.readFileSync(outMeta, 'utf-8'));
+  } catch (e) { /* ignore */ }
+  const text = fs.existsSync(outTxt) ? fs.readFileSync(outTxt, 'utf-8') : '';
+  return { ok: !!meta.ok && r.code === 0, text, chars: meta.chars || text.trim().length,
+    avgConf: meta.avg_conf || 0, note: meta.note || (r.stderr || '').toString().slice(0, 300) };
 }
 
 function loadTaskProgress(sheetName, stem) {
@@ -2104,8 +2185,10 @@ async function saveTaskProgress(result) {
   fs.mkdirSync(progressDir, { recursive: true });
   const progressFile = path.join(progressDir, `task_${result.stem}.json`);
 
-  const content = (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string')
-    ? result.transcribe.file : null;
+  const content = (result.bestText != null)
+    ? result.bestText
+    : ((result.transcribe.status === 'success' && typeof result.transcribe.file === 'string')
+      ? result.transcribe.file : null);
   const keywords = (result.analyze.status === 'success' && typeof result.analyze.file === 'string')
     ? result.analyze.file : null;
 
@@ -2141,6 +2224,13 @@ async function saveTaskProgress(result) {
       status: result.analyze.status,
       error: result.analyze.error,
       retries_used: result.analyze.retries_used,
+    },
+    ocr: {
+      status: result.ocr ? result.ocr.status : 'not_run',
+      error: result.ocr ? result.ocr.error : null,
+      chars: (result.ocr && typeof result.ocr.file === 'string') ? result.ocr.file.trim().length : 0,
+      triggered: !!result.ocr && result.ocr.status !== 'skipped',
+      retries_used: result.ocr ? result.ocr.retries_used : 0,
     },
     timestamp: new Date().toISOString(),
   };
@@ -2473,6 +2563,20 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
         }
       }
     }
+    if (prior.ocr && prior.ocr.status === 'success') {
+      const op = ocrTextPath(sheetName, stem);
+      if (fs.existsSync(op)) {
+        const cachedOcr = fs.readFileSync(op, 'utf-8');
+        if (validateOcrText(cachedOcr).ok) {
+          skipSteps.add('ocr');
+          result.ocr = new StepResult('success', cachedOcr, null, 0);
+        }
+      }
+    } else if (prior.ocr && prior.ocr.status === 'skipped') {
+      // auto 模式未触发：直接跳过，复用 ASR
+      skipSteps.add('ocr');
+      result.ocr = new StepResult('skipped', null, prior.ocr.reason || 'prior skipped');
+    }
     if (skipSteps.size) {
       lockedPrint(c('cyan', `  ♻️ 断点续跑：跳过已完成步骤 ${[...skipSteps].sort()}`)
         + c('dim', `  [来源: progress JSON]`));
@@ -2608,6 +2712,62 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
     }
   }
 
+  // ── ocr（抽帧识别，PaddleOCR 分支）──
+  // bestText：最终写入 Excel 内容列 / progress content 的文本（OCR 与 ASR 择优后的结果）
+  let bestText = (result.transcribe && result.transcribe.status === 'success' && typeof result.transcribe.file === 'string')
+    ? result.transcribe.file : null;
+
+  if (steps.includes('ocr')) {
+    const ocrOut = ocrTextPath(sheetName, stem);
+    const ocrMeta = ocrOut + '.meta.json';
+    const asrText = (result.transcribe && result.transcribe.status === 'success') ? result.transcribe.file : '';
+    if (skipSteps.has('ocr')) {
+      // 续跑：从磁盘加载已落盘的 OCR 文本
+      if (fs.existsSync(ocrOut)) {
+        const cached = fs.readFileSync(ocrOut, 'utf-8');
+        if (validateOcrText(cached).ok) {
+          result.ocr = new StepResult('success', cached, null, 0);
+          lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 ocr，复用 OCR 文本(${cached.length}字符)`));
+        } else {
+          result.ocr = new StepResult('skipped', null, 'cached ocr invalid');
+        }
+      } else {
+        result.ocr = new StepResult('skipped', null, 'no cached ocr file');
+      }
+    } else {
+      const trig = shouldTriggerOcr(dlFile, asrText);
+      if (!trig.trigger) {
+        result.ocr = new StepResult('skipped', null, trig.reason);
+        lockedPrint(c('dim', `  [${stem}] ocr 未触发: ${trig.reason}`));
+      } else {
+        const ocrStart = Date.now();
+        lockedPrint(c('cyan', `  [${stem}] 开始 OCR 抽帧识别 (${trig.reason})`));
+        const r = await runOcrFrames(dlFile, ocrOut, ocrMeta);
+        if (r.ok && validateOcrText(r.text).ok) {
+          result.ocr = new StepResult('success', r.text, null, 0);
+          const asrChars = asrText.trim().length;
+          const ocrChars = r.chars;
+          // 择优：OCR 字符数 ≥ ASR 且 置信度达标 → 采用 OCR，否则回退 ASR
+          const useOcr = ocrChars >= asrChars && r.avgConf >= OCR_CONF_THRESH;
+          bestText = useOcr ? r.text : asrText;
+          lockedPrint(`  [${stem}] ${c('green', 'OCR done')} (${ocrChars}字, conf=${r.avgConf.toFixed(2)}) → ${useOcr ? '采用OCR' : '回退ASR'})`);
+        } else {
+          result.ocr = new StepResult('failed', null, r.note || 'OCR 失败', 0);
+          bestText = asrText; // OCR 失败回退 ASR
+          logWarn(`[${stem}] OCR 失败: ${r.note}`);
+        }
+      }
+    }
+  } else {
+    // ocr 不在 steps 中：从磁盘加载已有 OCR 文本（不重跑），bestText 维持 ASR
+    const _op = ocrTextPath(sheetName, stem);
+    if (fs.existsSync(_op)) {
+      const _c = fs.readFileSync(_op, 'utf-8');
+      if (validateOcrText(_c).ok) result.ocr = new StepResult('success', _c, null, 0);
+    }
+  }
+  result.bestText = bestText; // 供 saveTaskProgress / analyze 使用
+
   // ── AI analyze ──
   if (steps.includes('analyze') && result.transcribe.status === 'success') {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
@@ -2617,7 +2777,7 @@ async function processOneTask(row, sheetName, steps, maxRetries, retryDelay, for
         lockedPrint(c('dim', `  [${stem}] ♻️ 跳过 analyze，复用缓存关键词(${cached.length}字符)`));
         result.analyze = new StepResult('success', cached, null, 0);
       } else {
-        const txt = result.transcribe.file;
+        const txt = (result.bestText != null) ? result.bestText : result.transcribe.file;
         if (txt) {
           let kw = null, retries = 0, error = null;
           try {
@@ -2927,15 +3087,47 @@ async function runInputTask(opts) {
     }
   }
 
+  // ── ocr（抽帧识别，PaddleOCR 分支，--input 模式）──
+  let bestText = transcribeText || null;
+  if (steps.includes('ocr')) {
+    const ocrOut = ocrTextPath(sheetName, usedStem);
+    const ocrMeta = ocrOut + '.meta.json';
+    const trig = shouldTriggerOcr(inputPath, transcribeText);
+    if (!trig.trigger) {
+      result.ocr = new StepResult('skipped', null, trig.reason);
+      lockedPrint(styleInfo(`[${usedStem}] ocr 未触发: ${trig.reason}`));
+    } else {
+      logStep(`[${usedStem}] 开始 OCR 抽帧识别 (${trig.reason})`);
+      const r = await runOcrFrames(inputPath, ocrOut, ocrMeta);
+      if (r.ok && validateOcrText(r.text).ok) {
+        result.ocr = new StepResult('success', r.text, null, 0);
+        const useOcr = r.chars >= transcribeText.trim().length && r.avgConf >= OCR_CONF_THRESH;
+        bestText = useOcr ? r.text : transcribeText;
+        lockedPrint(styleDone(`[${usedStem}] OCR done (${r.chars}字, conf=${r.avgConf.toFixed(2)}) → ${useOcr ? '采用OCR' : '回退ASR'}`));
+      } else {
+        result.ocr = new StepResult('failed', null, r.note || 'OCR 失败', 0);
+        bestText = transcribeText;
+        logWarn(`[${usedStem}] OCR 失败: ${r.note}`);
+      }
+    }
+  } else {
+    const _op = ocrTextPath(sheetName, usedStem);
+    if (fs.existsSync(_op)) {
+      const _c = fs.readFileSync(_op, 'utf-8');
+      if (validateOcrText(_c).ok) result.ocr = new StepResult('success', _c, null, 0);
+    }
+  }
+  result.bestText = bestText;
+
   // ── AI analyze ──
   let analyzeText = '';
-  if (steps.includes('analyze') && transcribeText) {
+  if (steps.includes('analyze') && bestText) {
     const aiEnabled = (process.env.AI_ENABLED || 'true').toLowerCase() === 'true';
     if (aiEnabled) {
       logStep(`[${usedStem}] 开始 AI 分析...`);
       try {
         const aiStart = Date.now();
-        const { text: kw, error } = await stepAnalyze(transcribeText, maxRetries, retryDelay, analyzeTimeout, usedStem);
+        const { text: kw, error } = await stepAnalyze(bestText, maxRetries, retryDelay, analyzeTimeout, usedStem);
         if (kw && typeof kw === 'string') {
           analyzeText = kw;
           lockedPrint(styleDone(`[${usedStem}] AI 分析完成 (${fmtElapsed(Date.now() - aiStart)}, ${kw.length} 字符)`));
@@ -3392,7 +3584,9 @@ async function run({
       results.push(result);
       overall.addResult(result.overall_status);
       // ── 收集 content / keywords 再保存进度（保存后会释放内存）──
-      if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
+      if (result.bestText != null) {
+        contentMap.set(`${result.sheet}|${result.id_val}`, result.bestText);
+      } else if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
         contentMap.set(`${result.sheet}|${result.id_val}`, result.transcribe.file);
       }
       if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
@@ -3621,7 +3815,9 @@ async function runFromReport(reportPath, steps, maxRetries, retryDelay, concurre
       results.push(result);
       overall.addResult(result.overall_status);
       // ── 收集 content / keywords 再保存进度（保存后会释放内存）──
-      if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
+      if (result.bestText != null) {
+        contentMap.set(`${result.sheet}|${result.id_val}`, result.bestText);
+      } else if (result.transcribe.status === 'success' && typeof result.transcribe.file === 'string') {
         contentMap.set(`${result.sheet}|${result.id_val}`, result.transcribe.file);
       }
       if (result.analyze.status === 'success' && typeof result.analyze.file === 'string') {
@@ -3666,7 +3862,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
     .option('--offset <n>', '跳过前 N 条任务（从 0 开始），默认 0', v => parseInt(v, 10), 0)
     .option('--limit <n>', '最多处理 N 条任务，默认无限制', v => parseInt(v, 10), 0)
     .option('--step <step>', '指定执行步骤（可多次指定），如 --step transcode --step transcribe', (val, prev) => {
-      const allowed = ['download', 'transcode', 'transcribe', 'analyze'];
+      const allowed = ['download', 'transcode', 'transcribe', 'analyze', 'ocr'];
       if (!allowed.includes(val)) {
         console.error(`Invalid step: ${val}. Must be one of: ${allowed.join(', ')}`);
         process.exit(1);
@@ -3778,7 +3974,7 @@ if (process.argv[1] === __filename || process.argv[1]?.endsWith('process_videos.
       applyOutputDir(newRoot, logInfo);
     }
   }
-  const steps = opts.step?.length ? opts.step : ['download', 'transcode', 'transcribe', 'analyze'];
+  const steps = opts.step?.length ? opts.step : ['download', 'transcode', 'transcribe', 'analyze', 'ocr'];
   // --content-column 模式：默认只跑 AI 分析
   if (opts.contentColumn && !opts.step?.length) {
     steps.length = 0;
