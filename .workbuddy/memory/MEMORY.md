@@ -28,6 +28,11 @@
 - **三重落盘兜底**：周期（Py daemon 线程 `_excel_flush_loop` / JS `setInterval`）+ 正常退出（`atexit` / `process.on('exit')`）+ 信号（双端 `SIGINT`/`SIGTERM`）
 - **`EXCEL_FLUSH_INTERVAL` 单位统一为「秒」**，默认 `3`；JS 内部 ×1000 转毫秒。同一份 `.env` 双端通用（用户明确要求不区分语言）
 - 强杀最坏丢一个间隔内修改；`write_all_contents_to_excel` 末尾先 flush 再失效缓存（磁盘为权威源）
+- **缺失列自动创建 + 文件占用等待（2026-08-15 增强，commit 9fe8ca4）**：
+  - 写入时若 `COL_CONTENT`/`COL_KEYWORDS` 等列不存在，自动在**末列**创建该列表头再写单元格（双端对称：`writeExcelCellByKey`/`writeColumn`(JS) / `_excel_set_cell`(Py)；Py 用 `ws.cell(row=row[0].row, column=target_col)` 避免新列索引越界）
+  - **文件被占用（中途用 Excel 打开查看）**：`flushExcel`/`flush_excel` 失败只告警一次（`_excelLockWarned`），脏数据留内存；关闭 Excel 后下次落盘自动恢复（`✅ Excel 已恢复写入`）
+  - **收尾不丢数据**：新增 `EXCEL_LOCK_MAX_WAIT`（秒，默认 `300`，`0`=无限）。任务跑完仍占用 → `finalizeExcel`/`finalize_excel` 阻塞等待至写成功再退出；超时仍占用则另存 `<Excel名>.pending.xlsx` 兜底（绝不静默丢）
+  - 新增 `_trySaveWb`/`_trySaveExcel`(JS) / `_try_save_excel`(Py) 统一 save + 占用告警去重；`process.on('exit')`/`atexit` 仍做 best-effort 兜底
 
 ## 并发安全修复（2026-08-14，v1.6，commit 8f993c7）
 - **B1 每任务独立 ffmpeg 进度 state**：`parse_ffmpeg_progress` 增 `state` 参数；`make_ffmpeg_parser`(Py) / `makeFfmpegProgressParser`(JS) 工厂为每任务建独立 dict。此前模块级 `_ffmpeg_state` 全局共享 → `--concurrency 2+` 百分比串扰
