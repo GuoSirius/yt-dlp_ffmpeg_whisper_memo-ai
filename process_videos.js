@@ -1217,9 +1217,20 @@ async function checkEnvironmentAsync(steps, tasks = [], force = false) {
 // ============================== 进度显示辅助 ==============================
 function spawnWithTimeout(cmd, args, timeout, options = {}) {
   const { onProgress, ...spawnOpts } = options;
+  // 子进程统一注入 utf-8 环境，避免 Windows 下 gbk 编码崩溃。
+  // whisper-ctranslate2 等 Python CLI 向 stdout/stderr print 中文路径或字幕时，
+  // 若 stdout 编码为 gbk 会抛 UnicodeEncodeError 直接挂掉，导致真实 stderr 丢失、
+  // 输出文件未生成；PYTHONUTF8=1 同时修正中文路径的 argv 解码。
+  const childEnv = {
+    ...process.env,
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
+    ...(spawnOpts.env || {}),
+  };
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       ...spawnOpts,
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -1248,10 +1259,12 @@ function spawnWithTimeout(cmd, args, timeout, options = {}) {
       if (timer) clearTimeout(timer);
       if (code === 0) resolve({ stdout, stderr });
       else {
-        // 把 stderr 末尾也写进 message，方便直接打印 e.message 就能看到原因
-        const preview = stderr.trim().slice(-3000);
+        // 把 stderr（必要时含 stdout）末尾写进 message，方便直接打印 e.message 看到原因。
+        // whisper-ctranslate2 崩溃时的 traceback 通常在 stderr，但个别场景落到 stdout。
+        const combined = `${stderr}\n${stdout}`.trim();
+        const preview = combined.slice(-3000);
         const msg = `Exit code ${code}` + (preview ? `\nstderr:\n${preview}` : '');
-        reject(Object.assign(new Error(msg), { code, stderr }));
+        reject(Object.assign(new Error(msg), { code, stderr, stdout }));
       }
     });
     child.on('error', err => {
@@ -1685,7 +1698,9 @@ async function stepTranscribe(audioFile, maxRetries, retryDelay, timeout = 0) {
   if (result.text) {
     lockedPrint(styleDone(`[${stem}] 识别完成 (${fmtElapsed(transcribeElapsed)}, ${result.text.length} 字符)`));
   } else {
-    lockedPrint(styleFail(`[${stem}] 识别失败: ${result.error}`));
+    const _errMsg = result.error
+      || '(无错误信息：whisper-ctranslate2 可能在加载模型或 print 中文时崩溃，建议确认已设置 PYTHONUTF8=1)';
+    lockedPrint(styleFail(`[${stem}] 识别失败: ${_errMsg}`));
   }
   return result;
 }
@@ -1822,11 +1837,19 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
   try {
     const { result: text, retriesUsed, error } = await retryCall(doTranscribe, maxRetries, retryDelay, stem);
     if (error) return { text: null, retries: retriesUsed, error };
+    if (!text) {
+      // whisper-ctranslate2 退出码 0 但返回空文本/未生成输出文件。
+      // （gbk 崩溃已通过 PYTHONUTF8 修复，这里仍兜底，避免显示裸 null）
+      return { text: null, retries: retriesUsed, error: 'whisper-ctranslate2 返回空文本或未生成输出文件' };
+    }
     return { text, retries: 0, error: null };
   } catch (e) {
-    // e.stderr 来自 spawnWithTimeout（已包含 stderr 预览）
+    // e.stderr / e.stdout 来自 spawnWithTimeout（已包含崩溃预览）
     // e.message 在 spawnWithTimeout 修复后也已包含 stderr
-    const _detail = String(e.stderr || e.message || e).slice(0, 5000);
+    const _src = e.stdout || e.stderr || e.message || '';
+    const _detail = _src
+      ? String(_src).slice(0, 5000)
+      : `whisper-ctranslate2 未返回任何错误信息（退出码 ${e.code ?? '?'}），可能子进程在加载模型或 print 时崩溃`;
     logError(_detail);
     return { text: null, retries: maxRetries, error: _detail };
   }

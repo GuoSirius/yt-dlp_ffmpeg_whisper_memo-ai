@@ -1611,7 +1611,8 @@ def step_transcribe(
         with _print_lock:
             print(f"  [{stem}] {c('green', '识别完成')} ({elapsed_str}, {len(text)} 字符)", flush=True)
     else:
-        log.error(f"[{stem}] 识别失败: {err}")
+        _err_msg = err or "(无错误信息：whisper 子进程可能在加载模型或 print 中文时崩溃，建议确认已设置 PYTHONUTF8=1)"
+        log.error(f"[{stem}] 识别失败: {_err_msg}")
     return text, retries, err
 
 
@@ -1658,6 +1659,7 @@ def _transcribe_local(
 
         # Show segment progress from stderr (whisper outputs "[00:00.000 --> 00:30.000] ...")
         env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
             cmd,
