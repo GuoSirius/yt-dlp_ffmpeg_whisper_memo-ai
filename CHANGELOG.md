@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.0.2] - 2026-08-15
+
+### Bug Fixes
+
+- 修复 OCR 崩溃(oneDNN) 并增加抽帧识别进度指示 ([`06b8cf7`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/06b8cf7))
+- 修复 OCR 脚本定位（改用脚本自身目录，独立于 cwd） ([`03dba21`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/03dba21))
+
+### Documentation
+
+- 更新记忆——记录 PaddleOCR oneDNN 崩溃修复(进度侧车+PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT) ([`f55001e`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/f55001e))
+- 更新工作记忆（npm 发布配置缺陷修复备忘） ([`4e749e8`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/4e749e8))
+- 更新工作记忆（OCR 脚本定位坑 + 全局副本同步教训） ([`a3a840d`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/a3a840d))
+
+### Build
+
+- 完善 npm 发布配置（files 补双语言入口与 OCR 脚本，npmignore 去掉误杀） ([`cf67fe9`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/cf67fe9))
+
+### Chores
+
+- optimize ([`237e9a2`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/237e9a2))
+
+
 ## [2.0.1] - 2026-08-15
 
 ### Bug Fixes
