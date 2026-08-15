@@ -104,7 +104,19 @@ const OCR_MAX_FRAMES = parseInt(process.env.OCR_MAX_FRAMES || '2000', 10);   // 
 const OCR_CONF_THRESH = parseFloat(process.env.OCR_CONF_THRESH || '0.6');    // 文本块置信度下限
 const OCR_TRIGGER_CPM = parseFloat(process.env.OCR_TRIGGER_CPM || '2');      // auto 触发：每分钟最少有效字符
 const OCR_MIN_CHARS = parseInt(process.env.OCR_MIN_CHARS || '30', 10);       // ocr 产物最短长度（续跑校验）
-const OCR_SCRIPT = path.join(BASE_DIR, 'scripts', 'ocr_frames.py');          // 双端共用的抽帧+OCR 脚本
+// 定位双端共用的抽帧+OCR 脚本：优先取与 process_videos.js 同目录的 scripts/（随包发布），
+// 其次兼容旧行为（BASE_DIR/cwd 下的 scripts/），首个存在者优先，全部缺失则回退首选以便报错指向正确位置。
+function resolveOcrScript() {
+  const candidates = [
+    path.join(__dirname, 'scripts', 'ocr_frames.py'),
+    path.join(BASE_DIR, 'scripts', 'ocr_frames.py'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return candidates[0];
+}
+const OCR_SCRIPT = resolveOcrScript();                                       // 双端共用的抽帧+OCR 脚本
 const PYTHON_BIN = process.env.PYTHON_BIN || 'python';                       // 调用 ocr_frames.py 的解释器
 
 // 代理预检：TCP 探测超时（毫秒），设为 0 可关闭代理预检
@@ -629,6 +641,10 @@ function shouldTriggerOcr(videoFile, asrText) {
 
 // 调用 scripts/ocr_frames.py 抽帧+OCR，返回 { ok, text, chars, avgConf, note }
 async function runOcrFrames(videoFile, outTxt, outMeta) {
+  if (!fs.existsSync(OCR_SCRIPT)) {
+    return { ok: false, text: '', chars: 0, avgConf: 0,
+      note: `OCR 脚本未找到: ${OCR_SCRIPT}（请确认 scripts/ocr_frames.py 随包发布）` };
+  }
   const args = [
     OCR_SCRIPT, '--video', videoFile, '--out', outTxt, '--meta', outMeta,
     '--lang', OCR_LANG, '--scene-thresh', String(OCR_SCENE_THRESH),

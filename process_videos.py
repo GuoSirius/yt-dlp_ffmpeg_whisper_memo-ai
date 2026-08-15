@@ -433,7 +433,19 @@ OCR_MAX_FRAMES = int(os.getenv("OCR_MAX_FRAMES", "2000"))
 OCR_CONF_THRESH = float(os.getenv("OCR_CONF_THRESH", "0.6"))
 OCR_TRIGGER_CPM = float(os.getenv("OCR_TRIGGER_CPM", "2"))
 OCR_MIN_CHARS = int(os.getenv("OCR_MIN_CHARS", "30"))
-OCR_SCRIPT = BASE_DIR / "scripts" / "ocr_frames.py"   # 双端共用的抽帧+OCR 脚本
+def _resolve_ocr_script() -> Path:
+    """定位双端共用的抽帧+OCR 脚本：优先取与 process_videos.py 同目录的 scripts/（随包发布），
+    其次兼容旧行为（BASE_DIR/cwd 下的 scripts/），首个存在者优先，全部缺失则回退首选以便报错指向正确位置。"""
+    candidates = [
+        SCRIPT_DIR / "scripts" / "ocr_frames.py",
+        BASE_DIR / "scripts" / "ocr_frames.py",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]
+
+OCR_SCRIPT = _resolve_ocr_script()   # 双端共用的抽帧+OCR 脚本
 PYTHON_BIN = os.getenv("PYTHON_BIN", "python")
 
 
@@ -541,6 +553,9 @@ def should_trigger_ocr(video_file: str, asr_text: str) -> tuple[bool, str]:
 
 def run_ocr_frames(video_file: str, out_txt: str, out_meta: str) -> dict:
     """调用 scripts/ocr_frames.py 抽帧+OCR，返回 {ok, text, chars, avg_conf, note}。"""
+    if not OCR_SCRIPT.exists():
+        return {"ok": False, "text": "", "chars": 0, "avg_conf": 0,
+                "note": f"OCR 脚本未找到: {OCR_SCRIPT}（请确认 scripts/ocr_frames.py 随包发布）"}
     args = [PYTHON_BIN, str(OCR_SCRIPT), "--video", video_file, "--out", out_txt,
             "--meta", out_meta, "--lang", OCR_LANG, "--scene-thresh", str(OCR_SCENE_THRESH),
             "--max-frames", str(OCR_MAX_FRAMES), "--conf-thresh", str(OCR_CONF_THRESH)]
