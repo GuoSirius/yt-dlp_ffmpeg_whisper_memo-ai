@@ -98,36 +98,66 @@ def extract_frames(video, out_dir, scene_thresh, max_frames, duration=0.0):
 
 def run_ocr(frames, lang, conf_thresh, model_dir):
     """逐帧 PaddleOCR，返回 (final_text, avg_conf, kept_blocks)。"""
+    # 指定模型根目录时，在 import 前通过环境变量把 PaddleOCR/PaddleX 的模型缓存
+    # 重定向到该目录（避免占用 C 盘）。paddleocr 3.x 用 PADDLE_PDX_CACHE_HOME，
+    # 2.x 用 PADDLEOCR_HOME；两者都设以兼容。
+    if model_dir:
+        os.environ["PADDLEOCR_HOME"] = model_dir
+        os.environ["PADDLE_PDX_CACHE_HOME"] = model_dir
+    # paddle 3.x 在部分 CPU 上会因 oneDNN + PIR 推理指令未实现而崩溃，
+    # 关闭 MKLDNN 走原生 CPU 内核即可绕过（CPU 离线 OCR 速度足够）。
+    os.environ["FLAGS_use_mkldnn"] = "0"
+
     # 懒加载：未安装 paddleocr 时给出明确错误，而非 import 期崩溃
     try:
         from paddleocr import PaddleOCR  # noqa: F401
+        # 必须在 paddleocr 内部完成 paddle/torch 的导入之后再 set_flags，
+        # 否则先 import paddle 会改变 DLL 搜索顺序，导致 torch 的 shm.dll 加载失败。
+        import paddle
+        try:
+            paddle.set_flags({"FLAGS_use_mkldnn": False})
+        except Exception:
+            pass
     except ImportError as e:
         raise RuntimeError(
             "未安装 paddleocr/paddlepaddle，请先执行: "
             "pip install paddlepaddle paddleocr  （国内建议用清华源）"
         ) from e
 
-    det = rec = cls = None
-    if model_dir:
-        det = os.path.join(model_dir, "det")
-        rec = os.path.join(model_dir, "rec")
-        cls = os.path.join(model_dir, "cls")
-
     # 抑制 PaddleOCR/Paddle 的初始化日志噪音
     import logging
     for name in ("ppocr", "paddle", "paddleocr"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
-    ocr = PaddleOCR(
-        use_angle_cls=True, lang=lang,
-        det_model_dir=det, rec_model_dir=rec, cls_model_dir=cls,
-        show_log=False,
-    )
+    # paddleocr 3.x 重命名了方向分类参数并移除了 show_log；2.x 需手动拼 det/rec/cls 子目录。
+    # 按主版本号自适应，兼容 2.x 与 3.x。
+    _ver = getattr(__import__("paddleocr"), "__version__", "0")
+    _major = 0
+    try:
+        _major = int(str(_ver).split(".")[0])
+    except Exception:
+        pass
+    if _major >= 3:
+        # 3.x 模型由 PaddleX 统一管理（落在 PADDLE_PDX_CACHE_HOME），无需手动指定子目录
+        ocr = PaddleOCR(use_textline_orientation=True, lang=lang)
+        _ocr_cls_kw = {"use_textline_orientation": True}
+    else:
+        det = rec = cls = None
+        if model_dir:
+            det = os.path.join(model_dir, "det")
+            rec = os.path.join(model_dir, "rec")
+            cls = os.path.join(model_dir, "cls")
+        ocr = PaddleOCR(
+            use_angle_cls=True, lang=lang,
+            det_model_dir=det, rec_model_dir=rec, cls_model_dir=cls,
+            show_log=False,
+        )
+        _ocr_cls_kw = {"cls": True}
 
     lines = []
     confs = []
     for fp in frames:
-        res = ocr.ocr(fp, cls=True)
+        res = ocr.ocr(fp, **_ocr_cls_kw)
         if not res or not res[0]:
             lines.append("")
             continue

@@ -244,7 +244,7 @@ cp .env.example .env
 | OCR | `OCR_BACKEND` / `OCR_LANG` | 引擎（仅 `paddleocr`）/ 语言 `en`/`ch` |
 | OCR | `OCR_SCENE_THRESH` / `OCR_MAX_FRAMES` | 场景切换抽帧阈值（默认 `0.3`）/ 抽帧保护上限（默认 `2000`，超则放宽阈值重抽，不丢字幕帧） |
 | OCR | `OCR_CONF_THRESH` / `OCR_TRIGGER_CPM` / `OCR_MIN_CHARS` | 文本块置信度下限（默认 `0.6`）/ auto 触发 CPM 阈值（默认 `2`）/ ocr 产物最短长度（默认 `30`） |
-| OCR | `PYTHON_BIN` / `PADDLE_OCR_BASE_DIR` | 调用 `scripts/ocr_frames.py` 的解释器（默认 `python`）/ PaddleOCR 模型目录（默认 `C:\Users\{user}\.paddleocr`，改此处避 C 盘） |
+| OCR | `PYTHON_BIN` / `PADDLE_OCR_BASE_DIR` | 调用 `scripts/ocr_frames.py` 的解释器（默认 `python`）/ PaddleOCR 模型目录（默认 `C:\Users\{user}\.paddlex`，改此处避 C 盘） |
 
 ### .env 配置项变更权限
 
@@ -457,18 +457,18 @@ pip install paddlepaddle-gpu==2.6.1.post118 paddleocr
 
 **模型默认位置 & 如何改位置避开 C 盘**
 
-- Windows 默认缓存目录：`C:\Users\{你的用户名}\.paddleocr`
+- Windows 默认缓存目录：`C:\Users\{你的用户名}\.paddlex`（paddleocr 3.x 的 PaddleX 缓存目录；2.x 为 `.paddleocr`）。首次运行自动下载检测 / 识别 / 方向分类三类模型
 - 该目录可能占用 **数百 MB ~ 1GB+**，C 盘空间紧张时可改到其他盘：
 
 ```bash
 # 方法一：环境变量（推荐，双端自动读取）
 PADDLE_OCR_BASE_DIR=D:\AI_Models\PaddleOCR
 
-# 方法二：直接指定三个模型子目录（scripts/ocr_frames.py 透传 --model-dir）
-PaddleOCR(det_model_dir=..., rec_model_dir=..., cls_model_dir=...)
+# 方法二：CLI 参数（效果同 PADDLE_OCR_BASE_DIR）
+python scripts/ocr_frames.py --model-dir D:\AI_Models\PaddleOCR ...
 ```
 
-> 设了 `PADDLE_OCR_BASE_DIR` 后，`scripts/ocr_frames.py` 会自动把它作为 `PADDLEOCR_HOME` 传给 PaddleOCR，模型下载与加载都落到该目录，C 盘零占用。
+> 设了 `PADDLE_OCR_BASE_DIR` 后，`scripts/ocr_frames.py` 会在 import 前把它设为 `PADDLE_PDX_CACHE_HOME`（3.x）/ `PADDLEOCR_HOME`（2.x），模型下载与加载都落到该目录，C 盘零占用。
 
 **触发条件（`OCR_MODE=auto` 默认开启）**
 
