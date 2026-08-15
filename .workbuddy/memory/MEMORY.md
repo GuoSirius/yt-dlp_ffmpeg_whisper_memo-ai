@@ -20,6 +20,7 @@
 - **faster-whisper（JS 子进程）**：Windows 须注入 `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` 防 gbk 崩溃；CLI 无 `--num_workers`，VAD 阈值是 `--vad_threshold`。
 - **PaddleOCR 3.x**：参数重命名(det/rec/cls→text_*)、模型缓存改 `PADDLE_PDX_CACHE_HOME`(~/.paddlex)、关 `FLAGS_use_mkldnn=0`、import 顺序 PaddleOCR 在前；2.x 才是 ~/.paddleocr。
 - **代理预检按需触发**：仅当确有需代理下载的任务才 TCP 探测（computeNeededProxyUrls），否则整段跳过。
+- **OCR_SCRIPT 定位 & 全局副本同步（2026-08-15 踩坑）**：`ocr_frames.py` 随项目发布在 `scripts/`，必须用**脚本自身目录**（`__dirname`/`SCRIPT_DIR`）定位，绝不能用 `BASE_DIR`(=cwd)——否则从数据目录运行时找不到（报错 `can't open file .../cwd/scripts/ocr_frames.py`）。且**全局安装副本原本缺整个 `scripts/` 目录**：改了工作区源码后，必须按同步约定（先 `.bak` 备份 + CRLF→LF）把 `process_videos.js`/`process_videos.py`/`scripts/ocr_frames.py` 一并同步进 `D:/Programs/node_npm/node_global/node_modules/video-pipeline/`，否则修复对"实跑的全局副本"无效（`git push` 只覆盖工作区，全局副本是独立文件系统同步）。
 - **ASR 后端预检**：CLI 后端查可执行文件存在（<0.3s），service 走 HTTP GET 3s 超时。
 
 ## 测试约束
