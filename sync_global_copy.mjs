@@ -9,6 +9,7 @@ const GLOBAL = 'D:/Programs/node_npm/node_global/node_modules/video-pipeline';
 const FILES = [
   'process_videos.js',
   'process_videos.py',
+  'console-ui.mjs',
   'scripts/ocr_frames.py',
 ];
 

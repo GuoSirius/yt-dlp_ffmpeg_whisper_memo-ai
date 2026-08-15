@@ -155,6 +155,7 @@ function resetFfmpegState() {
 
 // ── 导出 ──────────────────────────────────────────────────────────────────────────
 export {
+  SPINNER,
   updateLine,
   clearLine,
   fmtSize,
