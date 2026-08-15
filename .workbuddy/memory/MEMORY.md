@@ -8,14 +8,14 @@
 ## 关键架构决策
 - **输出根 OUTPUT_DIR**（默认 `output`）+ 7 固定子目录 `downloads/transcoded/transcripts/keywords/reports/progress/logs/`；COOKIES_DIR 独立。
 - **断点续跑**：`progress/{sheet}/task_{stem}.json` 记录各步 status；`success` 步骤加入 skipSteps 复用产物。transcribe/analyze 不允许半成功。
-- **Excel 实时写回**（v1.6）：内存缓存 + 周期落盘（EXCEL_FLUSH_INTERVAL 秒，默认 3）+ 退出/信号兜底；缺失列末列自动建；文件占用告警一次 + EXCEL_LOCK_MAX_WAIT 阻塞等待，绝不静默丢。
+- **Excel 实时写回**（v1.6）：内存缓存 + 周期落盘（EXCEL_FLUSH_INTERVAL 秒，默认 3）+ 退出/信号兜底；缺失列末列自动建；文件占用告警一次 + EXCEL_LOCK_MAX_WAIT 阻塞等待，绝不静默丢。⚠️ **JS 自动建列须用 `_ensureRefCovers` 扩展 `!ref`**（SheetJS 直接 `ws[cellRef]=...` 不自动扩展范围，新列落盘被整片丢弃；2026-08-15 修复 commit `3bcbfbb`）；Py(openpyxl) `ws.cell(...)` 自动跟踪 `max_column`，不受影响。
 - **并发安全**（v1.6）：每任务独立 ffmpeg 进度 state；终端刷新加锁；模型双检锁。
 - **错误信息透传**原则：失败必输出真实 stderr/traceback，禁止硬截断（用 _print_long/printLong）。
 - **OCR 抽帧兜底（2026-08-15 修复，commit c552f87）**：ASR 失败（异常/空文本/无输出）时，若步骤含 ocr 且源视频已下载，自动转 OCR 抽帧（auto 因空文本自然触发、always 强制、off 则 partial）。续跑时 ocr=skipped 旧判定会在本次 ASR 失败后**重新评估 shouldTriggerOcr** 重新触发。择优：ASR 失败时空文本直接采用 OCR（不再要求 OCR≥ASR）。
 
 ## 非显性坑（改前必看）
 - **commitlint start-case**：subject 行首不得为英文大写词（如 "ASR..."/"Excel..."），**commit message 直接用中文开头**。
-- **CHANGELOG**：发版由 `scripts/regenerate-changelog.js` 从 commit 重写版本段；但**日常手动维护顶部 `## [Unreleased]` 段**记录已修未发版项（README 同步规范明确列为同步点）。不要手改已发布版本段。
+- **CHANGELOG**：由 commit 自动生成（`scripts/regenerate-changelog.js` 重写版本段），**不要手改任何内容**（包括 `## [Unreleased]` 段也不加；2026-08-15 用户明确指出，曾手加 Unreleased 被要求撤回）。
 - **FunASR CLI**：`++input=path` 不支持非 ASCII 路径 → 含非 ASCII 时复制到 os.tmpdir()；结果 print 到 stdout 不写文件。
 - **faster-whisper（JS 子进程）**：Windows 须注入 `PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` 防 gbk 崩溃；CLI 无 `--num_workers`，VAD 阈值是 `--vad_threshold`。
 - **PaddleOCR 3.x**：参数重命名(det/rec/cls→text_*)、模型缓存改 `PADDLE_PDX_CACHE_HOME`(~/.paddlex)、关 `FLAGS_use_mkldnn=0`、import 顺序 PaddleOCR 在前；2.x 才是 ~/.paddleocr。
