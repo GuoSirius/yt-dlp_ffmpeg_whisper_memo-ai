@@ -424,6 +424,18 @@ MIN_KEYWORDS_CHARS = int(os.getenv("MIN_KEYWORDS_CHARS", "5"))
 # 代理预检：TCP 探测超时（毫秒，与 JS 端同名同单位）。设为 0 可关闭代理预检。
 PROXY_PROBE_TIMEOUT = int(os.getenv("PROXY_PROBE_TIMEOUT", "2000"))
 
+# ── OCR 抽帧识别配置（PaddleOCR 分支，与 JS 端同名同义） ──
+OCR_MODE = os.getenv("OCR_MODE", "auto")            # auto / always / off
+OCR_BACKEND = os.getenv("OCR_BACKEND", "paddleocr")  # 当前仅 paddleocr
+OCR_LANG = os.getenv("OCR_LANG", "en")              # en / ch
+OCR_SCENE_THRESH = float(os.getenv("OCR_SCENE_THRESH", "0.3"))
+OCR_MAX_FRAMES = int(os.getenv("OCR_MAX_FRAMES", "2000"))
+OCR_CONF_THRESH = float(os.getenv("OCR_CONF_THRESH", "0.6"))
+OCR_TRIGGER_CPM = float(os.getenv("OCR_TRIGGER_CPM", "2"))
+OCR_MIN_CHARS = int(os.getenv("OCR_MIN_CHARS", "30"))
+OCR_SCRIPT = BASE_DIR / "scripts" / "ocr_frames.py"   # 双端共用的抽帧+OCR 脚本
+PYTHON_BIN = os.getenv("PYTHON_BIN", "python")
+
 
 def transcript_path(sheet_name: str, stem: str) -> Path:
     """识别文本落盘路径。"""
@@ -473,6 +485,90 @@ def validate_keywords_text(text: str | None) -> tuple[bool, str | None]:
     if len(text.strip()) < MIN_KEYWORDS_CHARS:
         return False, f"关键词过短({len(text.strip())}<{MIN_KEYWORDS_CHARS})"
     return True, None
+
+
+# ── OCR 抽帧识别辅助（PaddleOCR 分支） ──
+def ocr_text_path(sheet_name: str, stem: str) -> Path:
+    d = TRANSCRIPTS_DIR / sheet_name
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{stem}.ocr.txt"
+
+
+def validate_ocr_text(text: str | None) -> tuple[bool, str | None]:
+    if not text or not text.strip():
+        return False, "OCR 文本为空"
+    if len(text.strip()) < OCR_MIN_CHARS:
+        return False, f"OCR 文本过短({len(text.strip())}<{OCR_MIN_CHARS})"
+    return True, None
+
+
+def has_audio_track(video_file: str) -> bool:
+    try:
+        out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "a",
+                              "-show_entries", "stream=index", "-of", "csv=p=0", video_file],
+                             capture_output=True, text=True, timeout=60)
+        return bool(out.stdout and out.stdout.strip())
+    except Exception:
+        return True  # 探测失败按"有音轨"处理，避免误触发 OCR
+
+
+def video_duration_sec(video_file: str) -> float:
+    try:
+        out = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                              "-of", "default=noprint_wrappers=1:nokey=1", video_file],
+                             capture_output=True, text=True, timeout=60)
+        v = (out.stdout or "").strip()
+        return float(v) if v else 0.0
+    except Exception:
+        return 0.0
+
+
+def should_trigger_ocr(video_file: str, asr_text: str) -> tuple[bool, str]:
+    """auto 模式下是否应触发 OCR：无音轨 或 ASR 文本与时长明显不符常理。"""
+    if OCR_MODE == "always":
+        return True, "OCR_MODE=always"
+    if OCR_MODE == "off":
+        return False, "OCR_MODE=off"
+    no_audio = not has_audio_track(video_file)
+    if no_audio:
+        return True, "无音轨"
+    dur_min = video_duration_sec(video_file) / 60
+    asr_chars = len((asr_text or "").strip())
+    if dur_min > 0 and asr_chars / dur_min < OCR_TRIGGER_CPM:
+        return True, f"ASR字符/时长={asr_chars}/{dur_min:.1f}min<{OCR_TRIGGER_CPM}"
+    return False, f"ASR文本充足({asr_chars}字/{dur_min:.1f}min)"
+
+
+def run_ocr_frames(video_file: str, out_txt: str, out_meta: str) -> dict:
+    """调用 scripts/ocr_frames.py 抽帧+OCR，返回 {ok, text, chars, avg_conf, note}。"""
+    args = [PYTHON_BIN, str(OCR_SCRIPT), "--video", video_file, "--out", out_txt,
+            "--meta", out_meta, "--lang", OCR_LANG, "--scene-thresh", str(OCR_SCENE_THRESH),
+            "--max-frames", str(OCR_MAX_FRAMES), "--conf-thresh", str(OCR_CONF_THRESH)]
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=1800)
+        code = r.returncode
+    except Exception as e:
+        return {"ok": False, "text": "", "chars": 0, "avg_conf": 0.0,
+                "note": f"spawn failed: {e}"}
+    meta = {"ok": False, "chars": 0, "avg_conf": 0.0, "note": ""}
+    try:
+        if os.path.exists(out_meta):
+            with open(out_meta, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+    except Exception:
+        pass
+    text = ""
+    try:
+        if os.path.exists(out_txt):
+            with open(out_txt, "r", encoding="utf-8") as f:
+                text = f.read()
+    except Exception:
+        pass
+    return {"ok": bool(meta.get("ok")) and code == 0, "text": text,
+            "chars": meta.get("chars", len(text.strip())),
+            "avg_conf": meta.get("avg_conf", 0.0),
+            "note": meta.get("note", (r.stderr or "")[-300:])}
+
 
 
 def load_task_progress(sheet_name: str, stem: str) -> dict | None:
@@ -609,6 +705,8 @@ class TaskResult:
     transcode: StepResult = field(default_factory=lambda: StepResult("skipped"))
     transcribe: StepResult = field(default_factory=lambda: StepResult("skipped"))
     analyze: StepResult = field(default_factory=lambda: StepResult("skipped"))
+    ocr: StepResult = field(default_factory=lambda: StepResult("skipped"))  # OCR 抽帧识别结果
+    best_text: str | None = None      # OCR 与 ASR 择优后的最终文本（写入 content 列）
     overall_status: str = "pending"   # "success" | "partial" | "failed" | "no_video"
     error: str | None = None
 
@@ -2129,13 +2227,18 @@ def save_task_progress(result: TaskResult) -> None:
     progress_file = progress_dir / f"task_{result.stem}.json"
 
     # 提取 content 和 keywords（StepResult.file 被借用存文本）
-    content = result.transcribe.file if (
-        result.transcribe.status == "success" and isinstance(result.transcribe.file, str)
-    ) else None
+    # best_text 优先（OCR 与 ASR 择优结果），否则回退 transcribe
+    if getattr(result, "best_text", None):
+        content = result.best_text
+    else:
+        content = result.transcribe.file if (
+            result.transcribe.status == "success" and isinstance(result.transcribe.file, str)
+        ) else None
     keywords = result.analyze.file if (
         result.analyze.status == "success" and isinstance(result.analyze.file, str)
     ) else None
 
+    ocr_status = getattr(result, "ocr", None)
     data = {
         "sheet": result.sheet,
         "id_val": result.id_val,
@@ -2168,6 +2271,13 @@ def save_task_progress(result: TaskResult) -> None:
             "status": result.analyze.status,
             "error": result.analyze.error,
             "retries_used": result.analyze.retries_used,
+        },
+        "ocr": {
+            "status": ocr_status.status if ocr_status else "not_run",
+            "error": ocr_status.error if ocr_status else None,
+            "chars": len(ocr_status.file) if (ocr_status and isinstance(ocr_status.file, str)) else 0,
+            "triggered": bool(ocr_status and ocr_status.status != "skipped"),
+            "retries_used": ocr_status.retries_used if ocr_status else 0,
         },
         "timestamp": datetime.now().isoformat(),
     }
@@ -2692,6 +2802,22 @@ def process_one_task(
                 if ok:
                     skip_steps.add("analyze")
                     result.analyze = StepResult("success", file=cached_kw)
+        # ocr：校验 OCR 文本文件
+        if prior.get("ocr", {}).get("status") == "success":
+            op = ocr_text_path(sheet_name, stem)
+            if op.exists():
+                try:
+                    cached_ocr = op.read_text(encoding="utf-8")
+                except OSError:
+                    cached_ocr = ""
+                ok, _ = validate_ocr_text(cached_ocr)
+                if ok:
+                    skip_steps.add("ocr")
+                    result.ocr = StepResult("success", file=cached_ocr)
+        elif prior.get("ocr", {}).get("status") == "skipped":
+            # auto 模式未触发：直接跳过，复用 ASR
+            skip_steps.add("ocr")
+            result.ocr = StepResult("skipped", error=prior["ocr"].get("error", "prior skipped"))
         if skip_steps:
             with _print_lock:
                 print(
@@ -2839,6 +2965,61 @@ def process_one_task(
             except OSError:
                 pass
 
+    # ── ocr（抽帧识别，PaddleOCR 分支）──
+    # best_text：最终写入 Excel 内容列 / progress content 的文本（OCR 与 ASR 择优后的结果）
+    asr_text = result.transcribe.file if (
+        result.transcribe.status == "success" and isinstance(result.transcribe.file, str)
+    ) else ""
+    best_text = asr_text or None
+
+    if "ocr" in steps:
+        ocr_out = ocr_text_path(sheet_name, stem)
+        ocr_meta = str(ocr_out) + ".meta.json"
+        if "ocr" in skip_steps:
+            if ocr_out.exists():
+                try:
+                    cached = ocr_out.read_text(encoding="utf-8")
+                except OSError:
+                    cached = ""
+                if validate_ocr_text(cached)[0]:
+                    result.ocr = StepResult("success", file=cached)
+                    with _print_lock:
+                        print(c("dim", f"  [{stem}] ♻️ 跳过 ocr，复用 OCR 文本({len(cached)}字符)"), flush=True)
+                else:
+                    result.ocr = StepResult("skipped", error="cached ocr invalid")
+        else:
+            trig_ok, trig_reason = should_trigger_ocr(str(dl_file), asr_text)
+            if not trig_ok:
+                result.ocr = StepResult("skipped", error=trig_reason)
+                with _print_lock:
+                    print(c("dim", f"  [{stem}] ocr 未触发: {trig_reason}"), flush=True)
+            else:
+                with _print_lock:
+                    print(c("cyan", f"  [{stem}] 开始 OCR 抽帧识别 ({trig_reason})"), flush=True)
+                r = run_ocr_frames(str(dl_file), str(ocr_out), str(ocr_meta))
+                if r["ok"] and validate_ocr_text(r["text"])[0]:
+                    result.ocr = StepResult("success", file=r["text"])
+                    asr_chars = len(asr_text.strip())
+                    use_ocr = r["chars"] >= asr_chars and r["avg_conf"] >= OCR_CONF_THRESH
+                    best_text = r["text"] if use_ocr else asr_text
+                    with _print_lock:
+                        print(c("green", f"  [{stem}] OCR done ({r['chars']}字, conf={r['avg_conf']:.2f}) → {'采用OCR' if use_ocr else '回退ASR'}"), flush=True)
+                else:
+                    result.ocr = StepResult("failed", error=r["note"] or "OCR 失败")
+                    best_text = asr_text
+                    log.warning(f"[{stem}] OCR 失败: {r['note']}")
+    else:
+        # ocr 不在 steps 中：从磁盘加载已有 OCR 文本（不重跑），best_text 维持 ASR
+        _op = ocr_text_path(sheet_name, stem)
+        if _op.exists():
+            try:
+                _c = _op.read_text(encoding="utf-8")
+            except OSError:
+                _c = ""
+            if validate_ocr_text(_c)[0]:
+                result.ocr = StepResult("success", file=_c)
+    result.best_text = best_text  # 供 save_task_progress / analyze 使用
+
     # ── AI 分析（transcribe 之后执行）──
     if "analyze" in steps and result.transcribe.status == "success":
         ai_enabled = os.getenv("AI_ENABLED", "true").lower() == "true"
@@ -2849,7 +3030,7 @@ def process_one_task(
                     print(c("dim", f"  [{stem}] ♻️ 跳过 analyze，复用缓存关键词({len(kw)}字符)"), flush=True)
                 result.analyze = StepResult("success", file=kw)
             else:
-                txt = result.transcribe.file
+                txt = best_text if best_text else result.transcribe.file
                 if txt:
                     try:
                         ai_start = time.monotonic()
@@ -3255,7 +3436,9 @@ def run(
                 results.append(result)
                 overall.add_result(result.overall_status)
                 # ── 收集 content / keywords 再保存进度（保存后会释放内存）──
-                if result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
+                if getattr(result, "best_text", None):
+                    content_updates[(result.sheet, result.id_val)] = result.best_text
+                elif result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
                     content_updates[(result.sheet, result.id_val)] = result.transcribe.file
                 if result.analyze.status == "success" and isinstance(result.analyze.file, str):
                     ai_updates[(result.sheet, result.id_val)] = result.analyze.file
@@ -3397,7 +3580,9 @@ def run_from_report(
                 results.append(result)
                 overall.add_result(result.overall_status)
                 # ── 收集 content / keywords 再保存进度（保存后会释放内存）──
-                if result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
+                if getattr(result, "best_text", None):
+                    content_updates[(result.sheet, result.id_val)] = result.best_text
+                elif result.transcribe.status == "success" and isinstance(result.transcribe.file, str):
                     content_updates[(result.sheet, result.id_val)] = result.transcribe.file
                 if result.analyze.status == "success" and isinstance(result.analyze.file, str):
                     ai_updates[(result.sheet, result.id_val)] = result.analyze.file
@@ -3617,6 +3802,41 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             except OSError:
                 pass
 
+    # ── ocr（抽帧识别，PaddleOCR 分支，--input 模式）──
+    asr_text = result.transcribe.file if (
+        result.transcribe.status == 'success' and isinstance(result.transcribe.file, str)
+    ) else ""
+    best_text = asr_text or None
+    if 'ocr' in steps:
+        ocr_out = ocr_text_path(sheet_name, result.stem)
+        ocr_meta = str(ocr_out) + ".meta.json"
+        trig_ok, trig_reason = should_trigger_ocr(str(input_path), asr_text)
+        if not trig_ok:
+            result.ocr = StepResult('skipped', error=trig_reason)
+            print(c("dim", f"  [{result.stem}] ocr 未触发: {trig_reason}"), flush=True)
+        else:
+            print(c("cyan", f"  [{result.stem}] 开始 OCR 抽帧识别 ({trig_reason})"), flush=True)
+            r = run_ocr_frames(str(input_path), str(ocr_out), str(ocr_meta))
+            if r["ok"] and validate_ocr_text(r["text"])[0]:
+                result.ocr = StepResult("success", file=r["text"])
+                use_ocr = r["chars"] >= len(asr_text.strip()) and r["avg_conf"] >= OCR_CONF_THRESH
+                best_text = r["text"] if use_ocr else asr_text
+                print(c("green", f"  [{result.stem}] OCR done ({r['chars']}字, conf={r['avg_conf']:.2f}) → {'采用OCR' if use_ocr else '回退ASR'}"), flush=True)
+            else:
+                result.ocr = StepResult('failed', error=r["note"] or "OCR 失败")
+                best_text = asr_text
+                log.warning(f"[{result.stem}] OCR 失败: {r['note']}")
+    else:
+        _op = ocr_text_path(sheet_name, result.stem)
+        if _op.exists():
+            try:
+                _c = _op.read_text(encoding="utf-8")
+            except OSError:
+                _c = ""
+            if validate_ocr_text(_c)[0]:
+                result.ocr = StepResult("success", file=_c)
+    result.best_text = best_text
+
     # ── AI 分析 ──
     if 'analyze' in steps:
         if result.transcribe.status != 'success':
@@ -3625,7 +3845,7 @@ def run_input_task(input_path, sheet_name, steps, max_retries, retry_delay, forc
             try:
                 ai_start = time.monotonic()
                 analyze_ok, retries, err = step_analyze(
-                    result.transcribe.file, max_retries, retry_delay, analyze_timeout, result.stem
+                    best_text if best_text else result.transcribe.file, max_retries, retry_delay, analyze_timeout, result.stem
                 )
                 if analyze_ok:
                     print(f"  [{result.stem}] {c('green', 'AI 分析完成')}（{fmt_elapsed(time.monotonic() - ai_start)}, {len(analyze_ok)} 字符）", flush=True)
@@ -3810,7 +4030,7 @@ if __name__ == "__main__":
     parser.add_argument("--offset", type=int, default=0, help="跳过前 N 条任务（从 0 开始），默认 0")
     parser.add_argument("--limit", type=int, default=0, help="最多处理 N 条任务，默认 0 表示无限制")
     parser.add_argument(
-        "--step", choices=["download", "transcode", "transcribe", "analyze"],
+        "--step", choices=["download", "transcode", "transcribe", "analyze", "ocr"],
         action="append",
         help="指定执行步骤（可多次指定，如 --step transcode --step transcribe）",
     )
@@ -3972,7 +4192,7 @@ if __name__ == "__main__":
         if _new_root != OUTPUT_DIR:
             _apply_output_dir(_new_root, log_func=log.info)
 
-    steps = args.step if args.step else ["download", "transcode", "transcribe", "analyze"]
+    steps = args.step if args.step else ["download", "transcode", "transcribe", "analyze", "ocr"]
 
     # ── --input 模式：移除 download 步骤 ──
     if args.input and not args.step:
