@@ -73,6 +73,19 @@ function getVersion() {
   return pkg.version;
 }
 
+// 从 package.json 读取仓库地址，用于把 commit hash 渲染成可点击链接
+function getRepoUrl() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(PKG_PATH, 'utf-8'));
+    const url = pkg.repository?.url || pkg.homepage || '';
+    return url.replace(/\.git$/, '');
+  } catch { return ''; }
+}
+const REPO_URL = getRepoUrl();
+function commitLink(hash) {
+  return REPO_URL ? `[\`${hash}\`](${REPO_URL}/commit/${hash})` : `\`${hash}\``;
+}
+
 function bumpVersion(current, type) {
   const parts = current.split('.').map(Number);
   switch (type) {
@@ -166,7 +179,7 @@ function generateChangelogEntry(version, date) {
     lines.push('### BREAKING CHANGES');
     lines.push('');
     for (const c of BREAKING) {
-      lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+      lines.push(`- ${c.subject} (${commitLink(c.hash)})`);
     }
     lines.push('');
   }
@@ -179,7 +192,7 @@ function generateChangelogEntry(version, date) {
     lines.push(`### ${section.label}`);
     lines.push('');
     for (const c of groups[type]) {
-      lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+      lines.push(`- ${c.subject} (${commitLink(c.hash)})`);
     }
     lines.push('');
   }

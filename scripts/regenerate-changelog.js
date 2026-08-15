@@ -33,6 +33,19 @@ function getLastTag() {
   return tags.split('\n').filter(Boolean)[0] || '';
 }
 
+// 从 package.json 读取仓库地址，用于把 commit hash 渲染成可点击链接
+function getRepoUrl() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    const url = pkg.repository?.url || pkg.homepage || '';
+    return url.replace(/\.git$/, '');
+  } catch { return ''; }
+}
+const REPO_URL = getRepoUrl();
+function commitLink(hash) {
+  return REPO_URL ? `[\`${hash}\`](${REPO_URL}/commit/${hash})` : `\`${hash}\``;
+}
+
 const SECTION_MAP = {
   feat:      { label: 'Features' },
   fix:       { label: 'Bug Fixes' },
@@ -86,7 +99,7 @@ function generateEntry(tag, date, range) {
   if (BREAKING.length) {
     lines.push('### BREAKING CHANGES');
     lines.push('');
-    for (const c of BREAKING) lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+    for (const c of BREAKING) lines.push(`- ${c.subject} (${commitLink(c.hash)})`);
     lines.push('');
   }
 
@@ -96,7 +109,7 @@ function generateEntry(tag, date, range) {
     const section = SECTION_MAP[type] || { label: 'Other' };
     lines.push(`### ${section.label}`);
     lines.push('');
-    for (const c of groups[type]) lines.push(`- ${c.subject} (\`${c.hash}\`)`);
+    for (const c of groups[type]) lines.push(`- ${c.subject} (${commitLink(c.hash)})`);
     lines.push('');
   }
 
