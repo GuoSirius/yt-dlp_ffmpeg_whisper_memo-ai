@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.6.2] - 2026-08-15
+
+### Features
+
+- 给 Excel 缺失列自动建列，文件被占用时告警一次并阻塞等待写回 (`9fe8ca4`)
+
+### Bug Fixes
+
+- 识别输出文件未生成时透传 whisper CLI 真实 stderr (`982e9fc`)
+- 代理预检改为按需触发，仅在确有走代理下载的任务时执行 (`b089041`)
+
+### Documentation
+
+- 记录 Excel 缺失列自动创建与占用等待兜底 (`14caf6e`)
+- 记录识别 output file not generated 诊断与 stderr 透传修复 (`e3879f7`)
+- 代理预检按需触发作长期记忆，补今日日志 (`7181daf`)
+- 对齐 README 与 .env.example 的识别模型默认值并修正 FUNSR 拼写 (`6fe50c2`)
+- 给 WHISPER_BACKEND 四种模式补推荐场景与语言速查 (`d51f312`)
+- update (`c62a6e0`)
+- 记录魔戒切换节点解决单视频 SSL EOF 的根因确认 (`01b76ef`)
+
+
 ## [1.6.1] - 2026-08-14
 
 ### Features
