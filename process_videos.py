@@ -1696,7 +1696,11 @@ def _transcribe_local(
         # whisper 输出文件: {stem}.{ext}
         out_file = out_dir / f"{stem}.{out_ext}"
         if not out_file.exists():
-            raise RuntimeError("whisper 输出文件未生成")
+            # 透传 whisper CLI 的真实 stderr，否则失败原因被吞掉（错误透传原则）
+            raise RuntimeError(
+                "whisper 输出文件未生成"
+                + (f"\nstderr:\n{_stderr_text}" if _stderr_text else "")
+            )
         raw = out_file.read_text(encoding="utf-8").strip()
         if WHISPER_OUTPUT_FORMAT == "json":
             import json

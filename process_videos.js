@@ -1680,7 +1680,8 @@ async function transcribeLocal(audioFile, stem, maxRetries, retryDelay, timeout 
     const outExt = WHISPER_OUTPUT_FORMAT === 'json' ? 'json' : 'txt';
     const outFile = path.join(outDir, `${stem}.${outExt}`);
     if (!fs.existsSync(outFile)) {
-      throw new Error('whisper output file not generated');
+      // 透传 whisper CLI 的真实 stderr，否则失败原因被吞掉（错误透传原则）
+      throw Object.assign(new Error('whisper output file not generated'), { stderr });
     }
     const raw = fs.readFileSync(outFile, 'utf-8').trim();
     if (WHISPER_OUTPUT_FORMAT === 'json') {
@@ -1756,7 +1757,8 @@ async function transcribeFasterWhisper(audioFile, stem, maxRetries, retryDelay, 
     const outExt = WHISPER_OUTPUT_FORMAT === 'json' ? 'json' : 'txt';
     const outFile = path.join(outDir, `${stem}.${outExt}`);
     if (!fs.existsSync(outFile)) {
-      throw new Error('whisper-ctranslate2 output file not generated');
+      // 透传 whisper-ctranslate2 CLI 的真实 stderr，否则失败原因被吞掉（错误透传原则）
+      throw Object.assign(new Error('whisper-ctranslate2 output file not generated'), { stderr });
     }
     const raw = fs.readFileSync(outFile, 'utf-8').trim();
     if (WHISPER_OUTPUT_FORMAT === 'json') {
