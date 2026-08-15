@@ -663,9 +663,18 @@ async function runOcrFrames(videoFile, outTxt, outMeta, stem) {
     const phaseStr = p.phase ? ` · ${p.phase}` : '';
     updateLine(`  ${SPINNER[Math.floor(Date.now() / 160) % SPINNER.length]} [${stem || ''}] OCR 抽帧识别中${frameStr}${phaseStr} · ${elapsed}s`);
   }, 200);
-  let r;
+  // spawnWithTimeout 契约：子进程退出 0 时 resolve({stdout,stderr})（无 code 字段）；
+  // 非 0 退出 / 超时 / 启动失败时 reject（Error 带 stderr/stdout）。OCR 成功与否以
+  // ocr_frames.py 写回的 meta.ok 为准，不依赖 spawnWithTimeout 的返回结构。
+  let r = { stdout: '', stderr: '' };
+  let spawnErr = null;
   try {
     r = await spawnWithTimeout(PYTHON_BIN, args, OCR_MAX_FRAMES > 0 ? 1800 : 600, { encoding: 'utf-8' });
+  } catch (e) {
+    // 子进程非 0 退出 / 超时 / 启动失败：ocr_frames.py 已把结果写进 meta（ok=false），
+    // 这里只捕获 stderr 用于诊断，不向上抛，让调用方按 ok=false 正常处理。
+    spawnErr = e;
+    r = { stdout: e.stdout || '', stderr: e.stderr || e.message || '' };
   } finally {
     clearInterval(_ocrTimer);
     clearLine();
@@ -675,8 +684,11 @@ async function runOcrFrames(videoFile, outTxt, outMeta, stem) {
     if (fs.existsSync(outMeta)) meta = JSON.parse(fs.readFileSync(outMeta, 'utf-8'));
   } catch (e) { /* ignore */ }
   const text = fs.existsSync(outTxt) ? fs.readFileSync(outTxt, 'utf-8') : '';
-  return { ok: !!meta.ok && r.code === 0, text, chars: meta.chars || text.trim().length,
-    avgConf: meta.avg_conf || 0, note: meta.note || (r.stderr || '').toString().slice(0, 300) };
+  const note = meta.note
+    || (spawnErr ? (spawnErr.stderr || spawnErr.message || '').toString().slice(0, 300)
+                 : (r.stderr || '').toString().slice(0, 300));
+  return { ok: !!meta.ok, text, chars: meta.chars || text.trim().length,
+    avgConf: meta.avg_conf || 0, note };
 }
 
 function loadTaskProgress(sheetName, stem) {
