@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.6.3] - 2026-08-15
+
+### Bug Fixes
+
+- faster-whisper 子进程注入 PYTHONUTF8 修复 Windows gbk 崩溃，识别失败不再显示裸 null ([`b4fd75d`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/b4fd75d))
+
+### Documentation
+
+- 补记 faster-whisper gbk 崩溃修复日志 ([`99e059d`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/99e059d))
+
+### CI/CD
+
+- 给 changelog 生成脚本补 commit 链接，重生成 CHANGELOG.md ([`9b47075`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/9b47075))
+
+
 ## [1.6.2] - 2026-08-15
 
 ### Features
