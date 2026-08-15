@@ -34,7 +34,10 @@
   },
   "files": [
     "process_videos.js",
+    "process_videos.py",
+    "console_ui.py",
     "console-ui.mjs",
+    "scripts/ocr_frames.py",
     ".env.example",
     "README.md",
     "CHANGELOG.md",
