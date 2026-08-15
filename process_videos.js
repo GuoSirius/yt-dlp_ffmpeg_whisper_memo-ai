@@ -685,6 +685,24 @@ function _ensureExcelLoaded() {
   return _excelWb;
 }
 
+// SheetJS 直接给 ws[cellRef] 赋值不会自动扩展 !ref 范围；超出原范围的单元格在 writeFile 时
+// 会被整片丢弃。新增/写入单元格后必须手动把 !ref 扩展到覆盖该单元格，否则“自动创建列”的列头
+// 与内容落盘后全部丢失（表现为：控制台提示已创建列，但打开 Excel 既看不到列、也看不到内容）。
+function _ensureRefCovers(ws, r, c) {
+  if (!ws || typeof r !== 'number' || typeof c !== 'number') return;
+  let range;
+  if (ws['!ref']) {
+    range = XLSX.utils.decode_range(ws['!ref']);
+    if (r < range.s.r) range.s.r = r;
+    if (c < range.s.c) range.s.c = c;
+    if (r > range.e.r) range.e.r = r;
+    if (c > range.e.c) range.e.c = c;
+  } else {
+    range = { s: { r, c }, e: { r, c } };
+  }
+  ws['!ref'] = XLSX.utils.encode_range(range);
+}
+
 function writeExcelCellByKey(sheetName, key, colName, value) {
   if (!value || !String(value).trim()) return false;
   const wb = _ensureExcelLoaded();
@@ -702,6 +720,7 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
     // 缺失列自动在末列创建（Q1）
     colIdx = headers.length;
     ws[XLSX.utils.encode_cell({ r: 0, c: colIdx })] = { t: 's', v: colName };
+    _ensureRefCovers(ws, 0, colIdx); // 关键：扩展 !ref，否则新列落盘被丢弃
     headers.push(colName);
     if (aoa[0]) aoa[0][colIdx] = colName;
     logInfo(`[${sheetName}] 自动创建列 "${colName}"（末列 #${colIdx + 1}）`);
@@ -730,6 +749,7 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
       // 直接写单元格，保留其它单元格格式（M2：仅更新内存，不落盘）
       const cellRef = XLSX.utils.encode_cell({ r, c: colIdx });
       ws[cellRef] = { t: 's', v: safeValue };
+      _ensureRefCovers(ws, r, colIdx); // 关键：内容写入新列也需扩展 !ref
       _excelDirty = true;
       return true;
     }
@@ -2316,6 +2336,7 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
       // 缺失列自动在末列创建（Q1）
       targetCol = headers.length;
       ws[XLSX.utils.encode_cell({ r: 0, c: targetCol })] = { t: 's', v: colName };
+      _ensureRefCovers(ws, 0, targetCol); // 关键：扩展 !ref，否则新列落盘被丢弃
       headers.push(colName);
       if (aoa[0]) aoa[0][targetCol] = colName;
       logInfo(`[${sheetName}] 自动创建列 "${colName}"（末列 #${targetCol + 1}）`);
@@ -2338,6 +2359,7 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
           const safeText = text.length > EXCEL_MAX_CHARS ? text.slice(0, EXCEL_MAX_CHARS) : text;
           const cellRef = XLSX.utils.encode_cell({ r, c: targetCol });
           ws[cellRef] = { t: 's', v: safeText };
+          _ensureRefCovers(ws, r, targetCol); // 关键：内容写入新列也需扩展 !ref
           if (text.length > EXCEL_MAX_CHARS) {
             logWarn(`[${sheetName}/${key}] ${colName} truncated ${text.length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
           }
