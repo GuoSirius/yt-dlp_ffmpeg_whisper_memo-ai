@@ -266,7 +266,7 @@ cp .env.example .env
 | 平台 | `{平台}_REFERER` | 防盗链 Referer 请求头（如 `BILIBILI_REFERER=https://www.bilibili.com`，B 站下载必备，否则易 403）。仅 B 站生效，留空则不加 |
 | 平台 | `{平台}_CONCURRENT_FRAGMENTS` | 分片并发数（如 `BILIBILI_CONCURRENT_FRAGMENTS=16`），控制 ytdlp 并行拉取的片段数，留空用 ytdlp 默认 |
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
-| 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量 |
+| 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量。（其中进阶调参项代码不单独读取，须经对应的 `WHISPER_EXTRA_ARGS` / `FUNASR_EXTRA_ARGS` 传入） |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
 | 转码 | `TRANSCODE_EXT` | 转码输出音频扩展名（默认 `.wav`），决定 `transcoded/{sheet}/{stem}{ext}` 产物名 |
 | 转码 | `TRANSCODE_ARGS` | 完整 ffmpeg 转码参数链（默认含 `loudnorm` 响度归一化 + soxr 重采样至 16kHz 单声道 pcm_s16le）。不需要响度归一化可参考 `.env.example` 中的备选方案 |
