@@ -8,6 +8,8 @@ data/examples/website_split_demo.xlsx
 
 __pycache__/
 *.bak
+# 本机专属同步工具（硬编码 D:/ 全局安装路径 + WorkBuddy node 路径，不可移植，不进版本库）
+sync_global_copy.mjs
 node_modules/
 .husky/_/
 # cookies/
