@@ -936,10 +936,11 @@ const URL_PLATFORM_MAP = [
     platform: 'bilibili',
     pkey: 'bilibili',
     patterns: [
-      /bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})/,
-      /b23\.tv\/([a-zA-Z0-9]+)/,
-      /player\.bilibili\.com\/player\.html\?[^"'\s]*\bbvid=(BV[a-zA-Z0-9]{10})/,
-      /player\.bilibili\.com\/player\.html\?[^"'\s]*\baid=(\d+)/,
+      /(?:m\.)?bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})/,
+      /(?:m\.)?bilibili\.com\/video\/(av\d+)/,
+      /b23\.tv\/(BV[a-zA-Z0-9]{10})/,
+      /player\.bilibili\.com\/player\.html\?[^\s"']*\bbvid=(BV[a-zA-Z0-9]{10})/,
+      /player\.bilibili\.com\/player\.html\?[^\s"']*\baid=(\d+)/,
     ],
   },
   {
@@ -962,7 +963,8 @@ const URL_PLATFORM_MAP = [
     platform: 'youku',
     pkey: 'youku',
     patterns: [
-      /v\.youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html/,
+      /youku\.com\/v_show\/id_([a-zA-Z0-9=]+)\.html/,
+      /youku\.com\/video\/([a-zA-Z0-9=]+)/,
     ],
   },
 ];

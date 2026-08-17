@@ -848,10 +848,11 @@ _URL_PLATFORM_MAP = [
         "platform": "bilibili",
         "pkey": "bilibili",
         "patterns": [
-            re.compile(r"bilibili\.com/video/(BV[a-zA-Z0-9]{10})"),
-            re.compile(r"b23\.tv/([a-zA-Z0-9]+)"),
-            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\s]*\bbvid=(BV[a-zA-Z0-9]{10})'),
-            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\s]*\baid=(\d+)'),
+            re.compile(r"(?:m\.)?bilibili\.com/video/(BV[a-zA-Z0-9]{10})"),
+            re.compile(r"(?:m\.)?bilibili\.com/video/(av\d+)"),
+            re.compile(r"b23\.tv/(BV[a-zA-Z0-9]{10})"),
+            re.compile(r'player\.bilibili\.com/player\.html\?[^\s"\']*\bbvid=(BV[a-zA-Z0-9]{10})'),
+            re.compile(r'player\.bilibili\.com/player\.html\?[^\s"\']*\baid=(\d+)'),
         ],
     },
     {
@@ -876,10 +877,12 @@ _URL_PLATFORM_MAP = [
         "platform": "youku",
         "pkey": "youku",
         "patterns": [
-            re.compile(r"v\.youku\.com/v_show/id_([a-zA-Z0-9=]+)\.html"),
+            re.compile(r"youku\.com/v_show/id_([a-zA-Z0-9=]+)\.html"),
+            re.compile(r"youku\.com/video/([a-zA-Z0-9=]+)"),
         ],
     },
 ]
+
 
 
 def parse_url(url: str) -> dict | None:

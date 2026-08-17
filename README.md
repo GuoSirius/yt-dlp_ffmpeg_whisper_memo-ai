@@ -653,7 +653,7 @@ node process_videos.js --url "https://www.youtube.com/watch?v=zzJmKPX8a3c" --ste
 - YouTube: 标准页、短链接、Shorts、内嵌页、直播
 - B站: 标准页（BV/av号）、短链接、内嵌页、移动端
 - 腾讯视频: 标准页、内嵌页、移动端
-- 优酷: 标准页
+- 优酷: 标准页、video 路径、www 域名
 
 **文件命名规则：**
 - 默认：`{平台}_{视频ID}`（如 `youtube_zzJmKPX8a3c`）
