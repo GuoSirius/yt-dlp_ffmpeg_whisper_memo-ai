@@ -3405,6 +3405,7 @@ def run(
     base_sheets = target_sheets if (target_sheets and len(target_sheets)) else VIDEO_SHEETS
     sheets = base_sheets if (base_sheets and len(base_sheets)) else get_all_sheet_names(EXCEL_FILE)
     tasks = []
+    id_found = False  # 指定 --id 时，只要任一 sheet 命中即视为正常
     for sheet_name in sheets:
         df = pd.read_excel(str(EXCEL_FILE), sheet_name=sheet_name)
         if target_ids:
@@ -3430,15 +3431,20 @@ def run(
                     mask = mask | (df[COL_TITLE].astype(str).str.strip() == str(_tid))
             df = df[mask]
             if df.empty:
-                available_cols = list(df.columns)
-                log.error(f"Sheet [{sheet_name}] 未找到匹配 --id 的行: {target_ids}")
-                log.error(f"  可用列: {available_cols}")
-                log.error(f"  COL_ID={COL_ID}, COL_TITLE={COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致")
+                # 指定 --id 时，id 只需在任一 sheet 命中；本 sheet 未命中属正常，降级为 info
+                log.info(f"Sheet [{sheet_name}] 无匹配 --id 的行，跳过（id 只需在任一 sheet 命中即可）")
                 continue
+            id_found = True
         # 预计算 stems（同 sheet 内去重）
         precompute_stems(df, sheet_name)
         for _, row in df.iterrows():
             tasks.append((row, sheet_name))
+
+    # 指定 --id 但在所有 sheet 均未命中 → 这才是真正的异常
+    if target_ids and not id_found:
+        log.error(f"所有 sheet 中均未找到匹配 --id 的行: {target_ids}")
+        log.error(f"  COL_ID={COL_ID}, COL_TITLE={COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致")
+        tasks = []
 
     # ── 偏移/限量（全局，跨 sheet） ──
     if offset > 0 or limit > 0:

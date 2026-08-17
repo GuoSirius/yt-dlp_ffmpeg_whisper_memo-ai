@@ -3632,6 +3632,7 @@ async function run({
     ? excelFiles.map(f => path.resolve(f))
     : [EXCEL_FILE];
   let tasks = [];
+  let idFoundAnywhere = false;  // 指定 --id 时，只要任一 sheet 命中即视为正常
   const processedSheets = [];  // 跨文件累积已处理的 sheet 名（供末尾生成报告使用，函数作用域）
   for (const excelFile of files) {
     // 优先级：--sheet > VIDEO_SHEETS > 全部 sheet（留空则处理所有 sheet）
@@ -3664,11 +3665,11 @@ async function run({
         return false;
       });
       if (!rows.length) {
-        logError(`Sheet [${sheetName}] 未找到匹配 --id 的行: ${idSet.join(', ')}`);
-        logError(`  可用列: ${availableCols.join(', ')}`);
-        logError(`  COL_ID=${COL_ID}, COL_TITLE=${COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致`);
+        // 指定 --id 时，id 只需在任一 sheet 命中；本 sheet 未命中属正常，降级为 info
+        logInfo(`Sheet [${sheetName}] 无匹配 --id 的行，跳过（id 只需在任一 sheet 命中即可）`);
         continue;
       }
+      idFoundAnywhere = true;
     }
     precomputeStems(rows, sheetName);
     for (const row of rows) {
@@ -3684,6 +3685,13 @@ async function run({
       tasks.push({ row, sheetName });
     }
   }
+  }
+
+  // 指定 --id 但在所有 sheet 均未命中 → 这才是真正的异常
+  if (targetIds && targetIds.length && !idFoundAnywhere) {
+    logError(`所有 sheet 中均未找到匹配 --id 的行: ${targetIds.join(', ')}`);
+    logError(`  COL_ID=${COL_ID}, COL_TITLE=${COL_TITLE}  →  请确认 .env 中列名是否和 Excel 一致`);
+    tasks = [];
   }
 
   // ── 偏移/限量（全局，跨 sheet） ──
