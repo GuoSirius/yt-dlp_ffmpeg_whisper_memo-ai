@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import sys
 import re
+import shlex
 import hashlib
 import shutil
 import importlib.util
@@ -378,6 +379,10 @@ def _build_platform_config() -> dict:
                 extra_args += ["--js-runtimes", js_rt]
             if rc:
                 extra_args += ["--remote-components", rc]
+            # YOUTUBE_EXTRA_ARGS: 透传任意 yt-dlp 参数（如 --extractor-args "youtube:player_client=..."）；留空则不注入
+            yt_extra = os.getenv(f"{prefix}_EXTRA_ARGS", "")
+            if yt_extra.strip():
+                extra_args += shlex.split(yt_extra)
             if extra_args:
                 cfg["extra_args"] = extra_args
 

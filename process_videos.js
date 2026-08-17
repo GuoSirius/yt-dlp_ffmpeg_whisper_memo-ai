@@ -357,6 +357,21 @@ const _PKEY_ENV_PREFIX = {
   youkuId: 'YOUKU',
 };
 
+// 解析 shell 风格参数字符串（支持双引号/单引号包裹），用于 *_EXTRA_ARGS 透传
+// 例: '--extractor-args "youtube:player_client=android_vr,web"' -> ['--extractor-args', 'youtube:player_client=android_vr,web']
+function parseArgString(s) {
+  if (!s || !s.trim()) return [];
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m[1] !== undefined) out.push(m[1]);
+    else if (m[2] !== undefined) out.push(m[2]);
+    else out.push(m[3]);
+  }
+  return out;
+}
+
 function buildPlatformConfig() {
   const config = {};
   for (const pkey of PLATFORM_PRIORITY) {
@@ -400,6 +415,9 @@ function buildPlatformConfig() {
       const extraArgs = [];
       if (jsRt) extraArgs.push('--js-runtimes', jsRt);
       if (rc) extraArgs.push('--remote-components', rc);
+      // YOUTUBE_EXTRA_ARGS: 透传任意 yt-dlp 参数（如 --extractor-args "youtube:player_client=..."）；留空则不注入
+      const ytExtra = process.env[`${prefix}_EXTRA_ARGS`] || '';
+      if (ytExtra.trim()) extraArgs.push(...parseArgString(ytExtra));
       if (extraArgs.length) cfg.extra_args = extraArgs;
     }
 
