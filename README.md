@@ -263,6 +263,7 @@ cp .env.example .env
 | 平台 | `PROXY_PROBE_TIMEOUT` | 代理预检 TCP 探测超时（毫秒，默认 `2000`），`0` = 关闭。详见「工具预检 · 代理预检」 |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
+| 平台 | `{平台}_EXTRA_ARGS` | 透传任意 yt-dlp 参数（shell 字符串，支持双引号/单引号包裹，如 `--extractor-args "youtube:player_client=android_vr,web_safari,tv,ios,web"`）；留空则不注入。用于缓解 YouTube 限速断流（见下方「故障排查」） |
 | 平台 | `{平台}_REFERER` | 防盗链 Referer 请求头（如 `BILIBILI_REFERER=https://www.bilibili.com`，B 站下载必备，否则易 403）。仅 B 站生效，留空则不加 |
 | 平台 | `{平台}_CONCURRENT_FRAGMENTS` | 分片并发数（如 `BILIBILI_CONCURRENT_FRAGMENTS=16`），控制 ytdlp 并行拉取的片段数，留空用 ytdlp 默认 |
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
