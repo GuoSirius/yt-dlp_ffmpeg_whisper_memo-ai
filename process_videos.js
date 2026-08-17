@@ -225,6 +225,10 @@ const COL_TENCENTVID = process.env.COL_TENCENTVID || 'extra.tencentVid';
 const COL_BILIBILIBVID = process.env.COL_BILIBILIBVID || 'extra.bilibiliBvid';
 const COL_YOUTUBEID = process.env.COL_YOUTUBEID || 'extra.youtubeId';
 const COL_YOUKUID = process.env.COL_YOUKUID || 'extra.youkuId';
+// 视频链接列：单元格内为完整视频链接（标准观看页 / 短链 / 内嵌 iframe 等），
+// 下载时优先解析它，自动识别平台并提取 ID，免去手动区分平台、提取 id 的麻烦。
+// 为空或无法识别平台时，回退到上面的四个显式平台 ID 列。
+const COL_VIDEOLINK = process.env.COL_VIDEOLINK || 'extra.videoLink';
 
 // ============================== 平台配置 ==============================
 const PLATFORM_COL_MAP = {
@@ -878,7 +882,37 @@ function acquireExcelLock() {
   return release.then(() => () => resolveNext());
 }
 
+// ── 未知平台链接聚合（控制台告警 + 落盘，作为后续新增平台下载功能的依据）──
+const unknownPlatformLinks = new Map(); // url -> 出现次数
+function warnUnknownLink(url) {
+  if (!url) return;
+  unknownPlatformLinks.set(url, (unknownPlatformLinks.get(url) || 0) + 1);
+  lockedPrint(styleWarn(`视频链接无法识别所属平台（暂不支持下载），将回退到显式平台 ID 列: ${url}`));
+}
+function flushUnknownPlatformLinks() {
+  if (unknownPlatformLinks.size === 0) return;
+  try {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
+    const ts = new Date().toISOString();
+    const lines = [`=== run ${ts} (${unknownPlatformLinks.size} unique) ===`];
+    for (const [u, c] of unknownPlatformLinks) lines.push(`  ${c}x  ${u}`);
+    fs.appendFileSync(path.join(LOGS_DIR, 'unknown-platform-links.log'), lines.join('\n') + '\n');
+    lockedPrint(styleWarn(`已将 ${unknownPlatformLinks.size} 个无法识别平台的链接记录到 logs/unknown-platform-links.log（可作为新增平台下载功能的依据）`));
+  } catch (e) { /* 落盘失败不影响主流程 */ }
+}
+
 function getVideoId(row) {
+  // 优先级 1：视频链接列。解析其中的完整链接，自动识别平台并提取 ID。
+  const linkVal = row[COL_VIDEOLINK];
+  if (linkVal != null && String(linkVal).trim() !== '') {
+    const parsed = parseUrl(String(linkVal).trim());
+    if (parsed) {
+      return { pkey: parsed.pkey, vid: parsed.videoId, watchUrl: parsed.watchUrl, fromLink: true };
+    }
+    // 链接存在但平台未知 → 告警，继续走显式 ID 列兜底
+    warnUnknownLink(String(linkVal).trim());
+  }
+  // 优先级 2：四个显式平台 ID 列
   for (const pkey of PLATFORM_PRIORITY) {
     const cfg = PLATFORM_CONFIG[pkey];
     const val = row[cfg.field];
@@ -904,6 +938,7 @@ const URL_PLATFORM_MAP = [
     patterns: [
       /bilibili\.com\/video\/(BV[a-zA-Z0-9]{10})/,
       /b23\.tv\/([a-zA-Z0-9]+)/,
+      /player\.bilibili\.com\/player\.html\?[^"'\s]*\bbvid=(BV[a-zA-Z0-9]{10})/,
       /player\.bilibili\.com\/player\.html\?[^"'\s]*\baid=(\d+)/,
     ],
   },
@@ -918,9 +953,9 @@ const URL_PLATFORM_MAP = [
     platform: 'tencent',
     pkey: 'tencent',
     patterns: [
+      /[?&]vid=([a-zA-Z0-9]+)/,
       /v\.qq\.com\/x\/page\/([a-zA-Z0-9]+)\.html/,
       /v\.qq\.com\/x\/cover\/[^/]+\/([a-zA-Z0-9]+)\.html/,
-      /[?&]vid=([a-zA-Z0-9]+)/,
     ],
   },
   {
@@ -2555,6 +2590,12 @@ function printReportSummary(results) {
       if (r.transcode.status === 'failed') { console.log(`    ${c('red', '转码失败:')}`); printLong(r.transcode.error); }
       if (r.transcribe.status === 'failed') { console.log(`    ${c('red', '识别失败:')}`); printLong(r.transcribe.error); }
     }
+  }
+
+  if (unknownPlatformLinks.size) {
+    console.log(`\n${styleWarn('⚠ 无法识别平台的视频链接:')} ${styleCount(unknownPlatformLinks.size, '个')}（已回退到显式平台 ID 列尝试下载）`);
+    for (const [u, c] of unknownPlatformLinks) console.log(`  ${c('dim', c + 'x')} ${u}`);
+    flushUnknownPlatformLinks();
   }
 }
 

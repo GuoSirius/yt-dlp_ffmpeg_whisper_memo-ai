@@ -288,6 +288,10 @@ COL_TENCENTVID = os.getenv("COL_TENCENTVID", "extra.tencentVid")
 COL_BILIBILIBVID = os.getenv("COL_BILIBILIBVID", "extra.bilibiliBvid")
 COL_YOUTUBEID = os.getenv("COL_YOUTUBEID", "extra.youtubeId")
 COL_YOUKUID = os.getenv("COL_YOUKUID", "extra.youkuId")
+# 视频链接列：单元格内为完整视频链接（标准观看页 / 短链 / 内嵌 iframe 等），
+# 下载时优先解析它，自动识别平台并提取 ID，免去手动区分平台、提取 id 的麻烦。
+# 为空或无法识别平台时，回退到上面的四个显式平台 ID 列。
+COL_VIDEOLINK = os.getenv("COL_VIDEOLINK", "extra.videoLink")
 
 # ──────────────────────────────── 平台配置 ──────────────────────────────────
 
@@ -786,7 +790,44 @@ def safe_filename(name: str) -> str:
     return safe or 'unknown'
 
 
+# ── 未知平台链接聚合（控制台告警 + 落盘，作为后续新增平台下载功能的依据）──
+unknown_platform_links: dict[str, int] = {}
+
+
+def warn_unknown_link(url: str) -> None:
+    if not url:
+        return
+    unknown_platform_links[url] = unknown_platform_links.get(url, 0) + 1
+    print(c("yellow", f"⚠ 视频链接无法识别所属平台（暂不支持下载），将回退到显式平台 ID 列: {url}"), flush=True)
+
+
+def flush_unknown_platform_links() -> None:
+    if not unknown_platform_links:
+        return
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().isoformat(timespec="seconds")
+        lines = [f"=== run {ts} ({len(unknown_platform_links)} unique) ==="]
+        for u, n in unknown_platform_links.items():
+            lines.append(f"  {n}x  {u}")
+        with open(LOGS_DIR / "unknown-platform-links.log", "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(c("yellow", f"⚠ 已将 {len(unknown_platform_links)} 个无法识别平台的链接记录到 logs/unknown-platform-links.log（可作为新增平台下载功能的依据）"), flush=True)
+    except Exception:
+        # 落盘失败不影响主流程
+        pass
+
+
 def get_video_id(row: pd.Series) -> tuple[str | None, str | None]:
+    # 优先级 1：视频链接列。解析其中的完整链接，自动识别平台并提取 ID。
+    link_val = row.get(COL_VIDEOLINK)
+    if pd.notna(link_val) and str(link_val).strip():
+        parsed = parse_url(str(link_val).strip())
+        if parsed:
+            return parsed["pkey"], parsed["video_id"]
+        # 链接存在但平台未知 → 告警，继续走显式 ID 列兜底
+        warn_unknown_link(str(link_val).strip())
+    # 优先级 2：四个显式平台 ID 列
     for pkey in PLATFORM_PRIORITY:
         cfg = PLATFORM_CONFIG[pkey]
         val = row.get(cfg["field"])
@@ -809,7 +850,8 @@ _URL_PLATFORM_MAP = [
         "patterns": [
             re.compile(r"bilibili\.com/video/(BV[a-zA-Z0-9]{10})"),
             re.compile(r"b23\.tv/([a-zA-Z0-9]+)"),
-            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\\s]*\\baid=(\\d+)'),
+            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\s]*\bbvid=(BV[a-zA-Z0-9]{10})'),
+            re.compile(r'player\.bilibili\.com/player\.html\?[^"\'\s]*\baid=(\d+)'),
         ],
     },
     {
@@ -825,9 +867,9 @@ _URL_PLATFORM_MAP = [
         "platform": "tencent",
         "pkey": "tencent",
         "patterns": [
+            re.compile(r"[?&]vid=([a-zA-Z0-9]+)"),
             re.compile(r"v\.qq\.com/x/page/([a-zA-Z0-9]+)\.html"),
             re.compile(r"v\.qq\.com/x/cover/[^/]+/([a-zA-Z0-9]+)\.html"),
-            re.compile(r"[?&]vid=([a-zA-Z0-9]+)"),
         ],
     },
     {
@@ -2788,6 +2830,12 @@ def print_report_summary(results: list[TaskResult]):
                 _print_long(r.transcode.error, max_chars=800, indent="       ")
             if r.transcribe.status == "failed":
                 _print_long(r.transcribe.error, max_chars=800, indent="       ")
+
+    if unknown_platform_links:
+        print(f"\n{c('yellow', '⚠ 无法识别平台的视频链接:')} {len(unknown_platform_links)} 个（已回退到显式平台 ID 列尝试下载）")
+        for u, n in unknown_platform_links.items():
+            print(f"  {c('dim', str(n) + 'x')} {u}")
+        flush_unknown_platform_links()
 
 
 # ─────────────────────────────── 单任务处理 ─────────────────────────────────

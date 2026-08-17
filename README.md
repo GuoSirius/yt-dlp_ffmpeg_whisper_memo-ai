@@ -253,6 +253,7 @@ cp .env.example .env
 | 输入 | `EXCEL_FILE` | Excel 文件路径 |
 | 列映射 | `COL_ID` / `COL_TITLE` / `COL_CONTENT` / `COL_KEYWORDS` | 唯一标识列 / 标题列 / 识别文本输出列 / AI 关键词输出列 |
 | 列映射 | `COL_TENCENTVID` / `COL_BILIBILIBVID` / `COL_YOUTUBEID` / `COL_YOUKUID` | 各平台视频 ID 所在列（默认 `extra.tencentVid` / `extra.bilibiliBvid` / `extra.youtubeId` / `extra.youkuId`），至少配置一个 |
+| 列映射 | `COL_VIDEOLINK` | 视频链接列（默认 `extra.videoLink`）。单元格内为**完整视频链接**（标准观看页 / 短链 / 内嵌 `iframe` 等均可），下载时**优先**解析它，自动识别平台并提取 ID，免去手动区分平台、提取 id 的麻烦。链接为空或无法识别平台时，自动回退到上面的四个显式 ID 列。无法识别平台的链接会在控制台告警并写入 `output/logs/unknown-platform-links.log`，作为后续新增平台下载功能的依据 |
 | Sheet | `VIDEO_SHEETS` | 逗号分隔需要处理的 sheet（留空则全部） |
 | 平台 | `PLATFORM_PRIORITY` | 平台重试优先级 |
 | 平台 | `{平台}_URL_TPL` | URL 模板（如 `YOUTUBE_URL_TPL=https://youtu.be/{youtube}`） |
