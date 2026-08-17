@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.1.0] - 2026-08-17
+
+### Features
+
+- 新增视频链接列优先解析下载 ([`9789335`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/9789335))
+
+### Bug Fixes
+
+- 补全视频链接列支持的平台 URL 格式 ([`a1b16bc`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/a1b16bc))
+
+### Documentation
+
+- 更新项目记忆：补全链接列平台 URL 格式 ([`f767800`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/f767800))
+
+
 ## [2.0.3] - 2026-08-15
 
 ### Bug Fixes
