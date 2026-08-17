@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.2.0] - 2026-08-17
+
+### Features
+
+- 支持 YOUTUBE_EXTRA_ARGS 透传任意 yt-dlp 下载参数 ([`8f27355`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/8f27355))
+
+### Bug Fixes
+
+- 同步脚本内容一致时跳过写回，并将 .bak 加入 gitignore ([`b6d7b44`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/b6d7b44))
+- 指定 --id 时未命中 sheet 降级为 info 日志，仅全 sheet 未命中才报 error ([`b29e8d9`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/b29e8d9))
+- 修正 REFERRER 拼写并补全 README 平台配置项 ([`df3db24`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/df3db24))
+
+### Documentation
+
+- update ([`64e077d`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/64e077d))
+- 补充 YOUTUBE_EXTRA_ARGS 环境变量说明（透传 yt-dlp 参数） ([`201c25f`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/201c25f))
+- 更新项目记忆：标注进阶参数调参说明 ([`bb88c7e`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/bb88c7e))
+- 标注进阶参数仅为说明，须经 *_EXTRA_ARGS 传入 ([`74c1d96`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/74c1d96))
+- 更新项目记忆：配置审计与 REFERRER 拼写修复 ([`a0b6903`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/a0b6903))
+- 更新项目记忆：补 .env.example 的 COL_VIDEOLINK ([`b2eeff8`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/b2eeff8))
+- 在 .env.example 补充 COL_VIDEOLINK 视频链接列配置 ([`f0547b7`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/f0547b7))
+
+### Chores
+
+- 将本机专属同步脚本 sync_global_copy.mjs 移出版本库并加入 gitignore ([`0994401`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/0994401))
+
+
 ## [2.1.0] - 2026-08-17
 
 ### Features
