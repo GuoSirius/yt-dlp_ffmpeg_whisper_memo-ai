@@ -21,6 +21,11 @@ for (const rel of FILES) {
   if (!fs.existsSync(dst)) { console.error(`✘ 目标缺失: ${dst}`); ok = false; continue; }
   const raw = fs.readFileSync(src, 'latin1');
   const lf = raw.replace(/\r\n/g, '\n');
+  // 内容一致则跳过，避免无谓生成 .bak
+  if (fs.existsSync(dst) && fs.readFileSync(dst, 'latin1') === lf) {
+    console.log(`· 跳过 ${rel}（内容一致，无需同步）`);
+    continue;
+  }
   // 备份
   fs.copyFileSync(dst, dst + '.bak');
   fs.writeFileSync(dst, lf, 'latin1');
