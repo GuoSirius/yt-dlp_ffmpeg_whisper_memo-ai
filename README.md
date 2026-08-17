@@ -263,6 +263,8 @@ cp .env.example .env
 | 平台 | `PROXY_PROBE_TIMEOUT` | 代理预检 TCP 探测超时（毫秒，默认 `2000`），`0` = 关闭。详见「工具预检 · 代理预检」 |
 | 平台 | `{平台}_FORMAT` / `{平台}_USER_AGENT` | 下载格式 / UA |
 | 平台 | `{平台}_JS_RUNTIMES` / `{平台}_REMOTE_COMPONENTS` | JS 运行时 / 远程组件（YouTube n-sig 求解） |
+| 平台 | `{平台}_REFERER` | 防盗链 Referer 请求头（如 `BILIBILI_REFERER=https://www.bilibili.com`，B 站下载必备，否则易 403）。仅 B 站生效，留空则不加 |
+| 平台 | `{平台}_CONCURRENT_FRAGMENTS` | 分片并发数（如 `BILIBILI_CONCURRENT_FRAGMENTS=16`），控制 ytdlp 并行拉取的片段数，留空用 ytdlp 默认 |
 | 识别 | `WHISPER_BACKEND` | `local`（本地 openai-whisper）/ `faster-whisper`（CTranslate2 加速，推荐）/ `service`（whisper.cpp server）/ `funasr`（阿里 FunASR，中文 WER ~5%，中文场景强烈推荐） |
 | 识别 | `WHISPER_*` / `FUNASR_*` 系列 | 详见下方「Whisper 语音识别」章节——分共享(4) / 本地(11) / faster-whisper(4) / 服务(2) / **funasr 共享(9) + funasr CLI(4) + funasr service(2) = 15** 七组，共 36 个变量 |
 | 工具 | `YTDLP` / `FFMPEG` / `FFPROBE` | 外部工具路径 |
