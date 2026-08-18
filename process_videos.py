@@ -2486,12 +2486,8 @@ def _excel_set_cell(sheet_name: str, key: str, col_name: str, value: str) -> boo
             if str(title_val) == str(key):
                 matched = True
         if matched:
-            # Excel 单元格字符上限 32767，超出需截断
-            EXCEL_MAX_CHARS = 32767
-            safe_value = value[:EXCEL_MAX_CHARS] if len(value) > EXCEL_MAX_CHARS else value
-            if len(value) > EXCEL_MAX_CHARS:
-                log.warning(f"[{sheet_name}/{key}] {col_name} 截断 {len(value)} -> {EXCEL_MAX_CHARS} 字符 (Excel 限制)")
-            ws.cell(row=row[0].row, column=target_col, value=safe_value)
+            # 完整内容写入；超过 32767 的部分由 _try_save_excel 落盘前导出 sidecar 并标注，避免静默截断丢内容。
+            ws.cell(row=row[0].row, column=target_col, value=value)
             return True
 
     log.warning(f"[{sheet_name}] 未找到匹配行 key={key}")
@@ -2535,13 +2531,66 @@ def _end_wait_status(msg: str) -> None:
     _inline_active = False
 
 
+EXCEL_CELL_LIMIT = 32767
+
+
+def _export_oversized_to_sidecar(wb) -> int:
+    """落盘前统一处理超过 32767 字符的单元格：
+    - 完整内容导出到与原表同名的 .fulltext.json（sidecar），绝不丢失；
+    - 主表对应单元格截断到上限内并追加标注，指向 sidecar。
+    原地修改 wb，返回导出的超限单元格数量。"""
+    if wb is None:
+        return 0
+    base = str(EXCEL_FILE)
+    if base.lower().endswith(".xlsx"):
+        base = base[:-5]
+    sidecar_path = base + ".fulltext.json"
+    sidecar_cells: dict = {}
+    count = 0
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and len(v) > EXCEL_CELL_LIMIT:
+                    full = v
+                    count += 1
+                    sidecar_cells[f"{ws.title}!{cell.coordinate}"] = full
+                    marker = f"…(全文{len(full)}字已导出至 {os.path.basename(sidecar_path)})"
+                    avail = max(0, EXCEL_CELL_LIMIT - len(marker))
+                    cell.value = full[:avail] + marker
+    if count > 0:
+        payload = {
+            "source": os.path.basename(str(EXCEL_FILE)),
+            "generatedAt": datetime.now().isoformat(),
+            "note": "Excel 单单元格上限 32767 字符；以下为超出单元格的完整内容，主表对应格已截断并标注。",
+            "cells": sidecar_cells,
+        }
+        with open(sidecar_path, "w", encoding="utf-8") as _f:
+            json.dump(payload, _f, ensure_ascii=False, indent=2)
+    return count
+
+
 def _try_save_excel() -> bool:
     """尝试把缓存落盘；返回是否成功。
     写入失败一律带出真实错误（异常类型/信息），不再一律误报“被占用”。
-    注意：绝不扫描/修改工作簿中已有的单元格（原有数据不可随意删减），仅写入本次新数据。"""
+    落盘前由 _export_oversized_to_sidecar 统一处理超 32767 单元格（导出 sidecar + 主表标注），
+    既不丢内容，也不会把“单元格超长”误报成“被占用”。"""
     global _EXCEL_DIRTY, _excel_lock_warned, _excel_lock_since
     if _EXCEL_WB is None or not _EXCEL_DIRTY:
         return True
+
+    # 落盘前统一处理超 32767 字符的单元格：完整内容导出 sidecar，主表截断并标注。
+    # 既避免 openpyxl 因“单元格超长”抛错被误报成“被占用”，也保留全量数据。
+    try:
+        exported = _export_oversized_to_sidecar(_EXCEL_WB)
+    except Exception as se:  # noqa: BLE001
+        log.warning(f"⚠️ 超限单元格导出 sidecar 失败（将按原样尝试写盘）：{se}")
+        exported = 0
+    if exported > 0:
+        log.info(
+            f"📦 已将 {exported} 个超过 32767 字符的单元格完整内容导出至 "
+            f"{str(EXCEL_FILE)}.fulltext.json（主表对应格已截断并标注，完整内容见 sidecar）"
+        )
 
     def _on_ok():
         if _excel_finalizing:

@@ -812,15 +812,10 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
       if (String(row[titleIdx]) === String(key)) matched = true;
     }
     if (matched) {
-      // Excel 单元格字符上限 32767，超出需截断
-      const EXCEL_MAX_CHARS = 32767;
-      const safeValue = String(value).length > EXCEL_MAX_CHARS ? String(value).slice(0, EXCEL_MAX_CHARS) : value;
-      if (String(value).length > EXCEL_MAX_CHARS) {
-        logWarn(`[${sheetName}/${key}] ${colName} truncated ${String(value).length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
-      }
-      // 直接写单元格，保留其它单元格格式（M2：仅更新内存，不落盘）
+      // Excel 单元格字符上限 32767；此处写入完整内容，超过部分交由 _trySaveWb 在落盘前
+      // 统一导出到 sidecar(.fulltext.json) 并标注，避免静默截断丢内容（不再在写入时截断）。
       const cellRef = XLSX.utils.encode_cell({ r, c: colIdx });
-      ws[cellRef] = { t: 's', v: safeValue };
+      ws[cellRef] = { t: 's', v: String(value) };
       _ensureRefCovers(ws, r, colIdx); // 关键：内容写入新列也需扩展 !ref
       _excelDirty = true;
       return true;
@@ -849,11 +844,69 @@ function _endWaitStatus(msg) {
   _inlineActive = false;
 }
 
+// Excel 单单元格字符硬上限（格式限制，非业务设限）
+const EXCEL_CELL_LIMIT = 32767;
+
+/**
+ * 落盘前统一处理超过 32767 字符的单元格：
+ *   - 完整内容导出到与原表同名的 .fulltext.json（sidecar），绝不丢失；
+ *   - 主表对应单元格截断到上限内并追加标注，指向 sidecar。
+ * 这样既不误报“被占用”，也不删减原有/新写入的数据（全量保留在 sidecar）。
+ * 原地修改 wb，返回导出的超限单元格数量。
+ */
+function _exportOversizedToSidecar(wb) {
+  if (!wb || !Array.isArray(wb.SheetNames) || !wb.SheetNames.length) return 0;
+  const base = EXCEL_FILE.replace(/\.xlsx$/i, '');
+  const sidecarPath = base + '.fulltext.json';
+  const sidecarCells = {};
+  let count = 0;
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws) continue;
+    for (const key of Object.keys(ws)) {
+      if (key[0] === '!') continue;
+      const cell = ws[key];
+      if (!cell || typeof cell.v !== 'string') continue;
+      if (cell.v.length <= EXCEL_CELL_LIMIT) continue;
+      const full = cell.v;
+      count++;
+      sidecarCells[`${name}!${key}`] = full;
+      const marker = `…(全文${full.length}字已导出至 ${path.basename(sidecarPath)})`;
+      const avail = Math.max(0, EXCEL_CELL_LIMIT - marker.length);
+      cell.v = full.slice(0, avail) + marker;
+      cell.w = undefined;
+      cell.t = 's';
+    }
+  }
+  if (count > 0) {
+    const payload = {
+      source: path.basename(EXCEL_FILE),
+      generatedAt: new Date().toISOString(),
+      note: 'Excel 单单元格上限 32767 字符；以下为超出单元格的完整内容，主表对应格已截断并标注。',
+      cells: sidecarCells,
+    };
+    fs.writeFileSync(sidecarPath, JSON.stringify(payload, null, 2), 'utf8');
+  }
+  return count;
+}
+
 // 尝试把缓存落盘；返回是否成功。
 // 写入失败一律带出真实错误码(e.code/message)，不再一律误报“被占用”。
-// 注意：绝不扫描/修改工作簿中已有的单元格（原有数据不可随意删减），仅写入本次新数据。
+// 落盘前由 _exportOversizedToSidecar 统一处理超 32767 单元格（导出 sidecar + 主表标注），
+// 既不丢内容，也不会把“单元格超长”误报成“被占用”。
 function _trySaveWb(wb) {
   if (!wb) return true;
+  // 落盘前统一处理超 32767 字符的单元格：完整内容导出 sidecar，主表截断并标注。
+  // 既避免 writeFile 因“单元格超长”抛错被误报成“被占用”，也保留全量数据。
+  let exported = 0;
+  try {
+    exported = _exportOversizedToSidecar(wb);
+  } catch (se) {
+    logWarn(`⚠️ 超限单元格导出 sidecar 失败（将按原样尝试写盘）：${se.message}`);
+  }
+  if (exported > 0) {
+    logInfo(`📦 已将 ${exported} 个超过 32767 字符的单元格完整内容导出至 ${EXCEL_FILE}.fulltext.json（主表对应格已截断并标注，完整内容见 sidecar）`);
+  }
   const doSave = () => XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
   const onOk = () => {
     if (_excelFinalizing) _endWaitStatus('✅ Excel 已恢复写入'); else logInfo('✅ Excel 已恢复写入');
@@ -2526,17 +2579,11 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
         }
         if (!matched && titleCol !== -1 && String(row[titleCol]) === String(key)) matched = true;
         if (matched) {
-          // Write directly to cell to preserve formatting of other cells
-          // Excel 单元格字符上限 32767，超出需截断
-          const EXCEL_MAX_CHARS = 32767;
-          const safeText = text.length > EXCEL_MAX_CHARS ? text.slice(0, EXCEL_MAX_CHARS) : text;
+          // 直接写单元格，保留其它单元格格式；完整内容写入，超 32767 部分由 _trySaveWb 落盘前导出 sidecar。
           const cellRef = XLSX.utils.encode_cell({ r, c: targetCol });
-          ws[cellRef] = { t: 's', v: safeText };
+          ws[cellRef] = { t: 's', v: text };
           _ensureRefCovers(ws, r, targetCol); // 关键：内容写入新列也需扩展 !ref
-          if (text.length > EXCEL_MAX_CHARS) {
-            logWarn(`[${sheetName}/${key}] ${colName} truncated ${text.length} -> ${EXCEL_MAX_CHARS} chars (Excel limit)`);
-          }
-          logInfo(`[${sheetName}/${key}] ${colName} written (${safeText.length} chars)`);
+          logInfo(`[${sheetName}/${key}] ${colName} written (${text.length} chars)`);
           break;
         }
       }
