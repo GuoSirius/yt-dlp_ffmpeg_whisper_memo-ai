@@ -425,6 +425,8 @@ EXCEL_LOCK_MAX_WAIT = float(os.getenv("EXCEL_LOCK_MAX_WAIT", "300.0"))  # 占用
 _excel_lock_warned = False  # 占用告警去重：只在首次检测到占用时打印一次
 _excel_lock_since = 0.0      # 首次检测到占用的时间戳（秒），用于等待心跳计时
 EXCEL_HEARTBEAT_INTERVAL = 10.0  # 占用期间状态心跳间隔（秒），避免用户以为卡死
+_excel_finalizing = False   # finalize 阶段标志：期间由调用方单行刷新等待计时，避免重复打印
+_inline_active = False      # 单行等待状态是否已输出（TTY 下用于退行清理）
 _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
 # ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
@@ -2512,35 +2514,69 @@ def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bo
         return ok
 
 
+# 单行刷新“等待计时”状态：TTY 下原地覆写同一行（类似进度条），非 TTY 退化为普通行日志。
+def _print_wait_status(msg: str) -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write('\r\x1b[K' + msg)
+        sys.stdout.flush()
+        global _inline_active
+        _inline_active = True
+    else:
+        log.info(msg)
+
+
+def _end_wait_status(msg: str) -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write('\r\x1b[K' + msg + '\n')
+        sys.stdout.flush()
+    else:
+        log.info(msg)
+    global _inline_active
+    _inline_active = False
+
+
 def _try_save_excel() -> bool:
-    """尝试把缓存落盘；返回是否成功。占用时只告警一次、保留脏标记以便下次重试。"""
+    """尝试把缓存落盘；返回是否成功。
+    写入失败一律带出真实错误（异常类型/信息），不再一律误报“被占用”。
+    注意：绝不扫描/修改工作簿中已有的单元格（原有数据不可随意删减），仅写入本次新数据。"""
     global _EXCEL_DIRTY, _excel_lock_warned, _excel_lock_since
     if _EXCEL_WB is None or not _EXCEL_DIRTY:
         return True
-    try:
-        _EXCEL_WB.save(str(EXCEL_FILE))
-        if _excel_lock_warned:
+
+    def _on_ok():
+        if _excel_finalizing:
+            _end_wait_status("✅ Excel 已恢复写入")
+        else:
             log.info("✅ Excel 已恢复写入")
-            _excel_lock_warned = False
-            _excel_lock_since = 0.0
+        _excel_lock_warned = False
+        _excel_lock_since = 0.0
+        global _EXCEL_DIRTY
         _EXCEL_DIRTY = False
         return True
+
+    try:
+        _EXCEL_WB.save(str(EXCEL_FILE))
+        return _on_ok()
     except Exception as e:
+        code = getattr(e, "code", "") or ""
+        emsg = str(e)
         now = time.time()
         if not _excel_lock_warned:
             _excel_lock_since = now
+            # 带出真实错误，便于区分真·占用(EBUSY/EPERM)与其它原因(ENOENT/只读/权限/单元格超长)
+            log.warning(f"⚠️ Excel 写入失败（疑似被占用，也可能并非 Excel 打开）[{code}] {emsg}")
             log.warning(
-                f"⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
-                f"关闭 Excel 查看窗口后会自动恢复"
+                f"   实时写回已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
+                f"若并非被占用请检查路径/权限/只读属性，或是否存在超过 32767 字符的单元格"
             )
             _excel_lock_warned = True
-        else:
-            # 心跳：占用期间每 EXCEL_HEARTBEAT_INTERVAL 打印一次已等待时长，提示“仍在重试、未卡死”
+        elif not _excel_finalizing:
+            # 后台 flush 期间：节流行心跳（避免刷屏），并带上真实错误码
             elapsed = now - _excel_lock_since
             prev_beat = int((elapsed - EXCEL_FLUSH_INTERVAL) // EXCEL_HEARTBEAT_INTERVAL)
             cur_beat = int(elapsed // EXCEL_HEARTBEAT_INTERVAL)
             if cur_beat > prev_beat:
-                log.info(f"⏳ Excel 仍被占用，已等待 {int(elapsed)}s，继续重试（关闭占用程序后自动恢复）")
+                log.info(f"⏳ 仍在等待 Excel 可写（已等待 {int(elapsed)}s）[{code}] 继续重试")
         return False
 
 
@@ -2551,27 +2587,46 @@ def flush_excel() -> None:
 
 
 def finalize_excel() -> None:
-    """任务结束兜底：若 Excel 仍被占用，阻塞等待直到写成功再退出（Q2）。"""
+    """任务结束兜底：若 Excel 仍无法写入，阻塞等待直到写成功再退出（Q2）。
+    等待期间单行刷新计时（类似进度条），不刷屏；超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar 兜底。"""
     if _EXCEL_WB is None:
         return
     if _EXCEL_DIRTY:
         log.info("📝 全部任务完成，正在将结果写回 Excel...")
+    global _excel_finalizing, _inline_active
+    _excel_finalizing = True
     deadline = time.time() + (EXCEL_LOCK_MAX_WAIT if EXCEL_LOCK_MAX_WAIT > 0 else float('inf'))
+    start = time.time()
+    last_line = 0.0
     while _EXCEL_DIRTY:
         if _try_save_excel():
             break
+        waited = time.time() - start
+        remain = "" if EXCEL_LOCK_MAX_WAIT <= 0 else f"，剩余 {max(0, int(EXCEL_LOCK_MAX_WAIT - waited))}s"
+        if sys.stdout.isatty():
+            # 单行原地刷新计时（类似进度条），不刷屏
+            _print_wait_status(f"⏳ 等待 Excel 可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
+        elif time.time() - last_line >= EXCEL_HEARTBEAT_INTERVAL:
+            last_line = time.time()
+            log.info(f"⏳ 等待 Excel 可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
         if time.time() >= deadline:
             try:
                 sidecar = str(EXCEL_FILE) + '.pending.xlsx'
                 _EXCEL_WB.save(sidecar)
-                log.error(
-                    f"⏰ Excel 在 {EXCEL_LOCK_MAX_WAIT}s 内始终被占用，已将全部改动另存到 {sidecar}"
+                _end_wait_status(
+                    f"⏰ Excel 在 {EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，已将全部改动另存到 {sidecar}"
                     f"（该文件未被锁定，可打开后复制回原表）"
                 )
             except Exception as e2:
-                log.error(f"⏰ Excel 始终被占用且 sidecar 另存失败: {e2}，未写数据可能丢失")
+                code2 = getattr(e2, "code", "") or ""
+                _end_wait_status(f"⏰ Excel 始终无法写入且 sidecar 另存失败 [{code2}] {e2}，未写数据可能丢失")
             break
         time.sleep(EXCEL_FLUSH_INTERVAL)
+    _excel_finalizing = False
+    if _inline_active:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        _inline_active = False
 
 
 def _excel_flush_loop() -> None:

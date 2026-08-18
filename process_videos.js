@@ -743,6 +743,7 @@ const EXCEL_LOCK_MAX_WAIT = parseInt(process.env.EXCEL_LOCK_MAX_WAIT || '300', 1
 let _excelLockWarned = false;  // 占用告警去重：只在首次检测到占用时打印一次
 let _excelLockSince = 0;       // 首次检测到占用的时间戳（ms），用于等待心跳计时
 const EXCEL_HEARTBEAT_MS = 10000; // 占用期间状态心跳间隔（ms），避免用户以为卡死
+let _excelFinalizing = false; // finalize 阶段标志：期间由调用方单行刷新等待计时，避免与背景心跳重复打印
 
 function _ensureExcelLoaded() {
   if (_excelWb) return _excelWb;
@@ -829,31 +830,58 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
   return false;
 }
 
-// 尝试把缓存落盘；返回是否成功。占用时只告警一次、保留脏标记以便下次重试。
+// 单行刷新“等待计时”状态：TTY 下原地覆写同一行（类似进度条），非 TTY 退化为普通行日志。
+let _inlineActive = false;
+function _printWaitStatus(msg) {
+  if (process.stdout.isTTY) {
+    process.stdout.write('\r\x1b[K' + msg);
+    _inlineActive = true;
+  } else {
+    logInfo(msg);
+  }
+}
+function _endWaitStatus(msg) {
+  if (process.stdout.isTTY) {
+    process.stdout.write('\r\x1b[K' + msg + '\n');
+  } else {
+    logInfo(msg);
+  }
+  _inlineActive = false;
+}
+
+// 尝试把缓存落盘；返回是否成功。
+// 写入失败一律带出真实错误码(e.code/message)，不再一律误报“被占用”。
+// 注意：绝不扫描/修改工作簿中已有的单元格（原有数据不可随意删减），仅写入本次新数据。
 function _trySaveWb(wb) {
   if (!wb) return true;
-  try {
-    XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
-    if (_excelLockWarned) {
-      logInfo('✅ Excel 已恢复写入');
-      _excelLockWarned = false;
-      _excelLockSince = 0;
-    }
+  const doSave = () => XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
+  const onOk = () => {
+    if (_excelFinalizing) _endWaitStatus('✅ Excel 已恢复写入'); else logInfo('✅ Excel 已恢复写入');
+    _excelLockWarned = false;
+    _excelLockSince = 0;
     _excelDirty = false;
     return true;
+  };
+  try {
+    doSave();
+    return onOk();
   } catch (e) {
+    const code = (e && e.code) || '';
+    const emsg = (e && e.message) ? e.message : String(e);
     const now = Date.now();
     if (!_excelLockWarned) {
       _excelLockSince = now;
-      logWarn(`⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；关闭 Excel 查看窗口后会自动恢复`);
+      // 带出真实错误码，便于区分真·占用(EBUSY/EPERM)与其它原因(ENOENT/只读/权限)
+      logWarn(`⚠️ Excel 写入失败（疑似被占用，也可能并非 Excel 打开）[${code}] ${emsg}`);
+      logWarn(`   实时写回已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；若并非被占用请检查路径/权限/只读属性`);
       _excelLockWarned = true;
-    } else {
-      // 心跳：占用期间每 EXCEL_HEARTBEAT_MS 打印一次已等待时长，提示“仍在重试、未卡死”
+    } else if (!_excelFinalizing) {
+      // 后台 flush 期间：节流行心跳（避免刷屏），并带上真实错误码
       const elapsed = now - _excelLockSince;
       const prevBeat = Math.floor((elapsed - EXCEL_FLUSH_INTERVAL) / EXCEL_HEARTBEAT_MS);
       const curBeat = Math.floor(elapsed / EXCEL_HEARTBEAT_MS);
       if (curBeat > prevBeat) {
-        logInfo(`⏳ Excel 仍被占用，已等待 ${Math.round(elapsed / 1000)}s，继续重试（关闭占用程序后自动恢复）`);
+        logInfo(`⏳ 仍在等待 Excel 可写（已等待 ${Math.round(elapsed / 1000)}s）[${code}] 继续重试`);
       }
     }
     return false;
@@ -869,29 +897,44 @@ function flushExcel() {
   _trySaveExcel();
 }
 
-// 任务结束兜底：若 Excel 仍被占用，阻塞等待直到写成功再退出（Q2）。
-// 超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar .pending.xlsx，绝不静默丢数据。
+// 任务结束兜底：若 Excel 仍无法写入，阻塞等待直到写成功再退出（Q2）。
+// 等待期间单行刷新计时（类似进度条），不刷屏；超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar .pending.xlsx 兜底。
 async function finalizeExcel() {
   if (!_excelWb) return;
   if (_excelDirty) {
     logInfo('📝 全部任务完成，正在将结果写回 Excel...');
   }
+  _excelFinalizing = true;
   const maxMs = EXCEL_LOCK_MAX_WAIT > 0 ? EXCEL_LOCK_MAX_WAIT * 1000 : Infinity;
-  const deadline = Date.now() + maxMs;
+  const start = Date.now();
+  let lastLine = 0;
   while (_excelDirty) {
     if (_trySaveExcel()) break;
-    if (Date.now() >= deadline) {
+    const waited = Date.now() - start;
+    const remain = maxMs === Infinity ? '' : `，剩余 ${Math.max(0, Math.round((maxMs - waited) / 1000))}s`;
+    if (process.stdout.isTTY) {
+      // 单行原地刷新计时（类似进度条），不刷屏
+      _printWaitStatus(`⏳ 等待 Excel 可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
+    } else if (Date.now() - lastLine >= EXCEL_HEARTBEAT_MS) {
+      lastLine = Date.now();
+      logInfo(`⏳ 等待 Excel 可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
+    }
+    if (Date.now() >= start + maxMs) {
       try {
         const sidecar = EXCEL_FILE + '.pending.xlsx';
         XLSX.writeFile(_excelWb, sidecar, { cellDates: true });
-        logError(`⏰ Excel 在 ${EXCEL_LOCK_MAX_WAIT}s 内始终被占用，已将全部改动另存到 ${sidecar}（该文件未被锁定，可打开后复制回原表）`);
+        _endWaitStatus(`⏰ Excel 在 ${EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，已将全部改动另存到 ${sidecar}（该文件未被锁定，可打开后复制回原表）`);
       } catch (e2) {
-        logError(`⏰ Excel 始终被占用且 sidecar 另存失败: ${e2.message}，未写数据可能丢失`);
+        const code2 = (e2 && e2.code) || '';
+        const em2 = (e2 && e2.message) ? e2.message : String(e2);
+        _endWaitStatus(`⏰ Excel 始终无法写入且 sidecar 另存失败 [${code2}] ${em2}，未写数据可能丢失`);
       }
       break;
     }
     await new Promise(r => setTimeout(r, EXCEL_FLUSH_INTERVAL));
   }
+  _excelFinalizing = false;
+  if (_inlineActive) { process.stdout.write('\n'); _inlineActive = false; }
 }
 
 function startExcelFlush() {
