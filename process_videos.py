@@ -423,6 +423,8 @@ _EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
 EXCEL_FLUSH_INTERVAL = float(os.getenv("EXCEL_FLUSH_INTERVAL", "3.0"))
 EXCEL_LOCK_MAX_WAIT = float(os.getenv("EXCEL_LOCK_MAX_WAIT", "300.0"))  # 占用时最多等待秒数，0=无限；超时另存 sidecar .pending.xlsx
 _excel_lock_warned = False  # 占用告警去重：只在首次检测到占用时打印一次
+_excel_lock_since = 0.0      # 首次检测到占用的时间戳（秒），用于等待心跳计时
+EXCEL_HEARTBEAT_INTERVAL = 10.0  # 占用期间状态心跳间隔（秒），避免用户以为卡死
 _print_lock = Lock()  # 控制台打印锁（并发时防止输出交错）
 
 # ─────────────────── 断点续跑 / 产物校验工具 ───────────────────
@@ -2512,7 +2514,7 @@ def write_excel_cell(sheet_name: str, key: str, col_name: str, value: str) -> bo
 
 def _try_save_excel() -> bool:
     """尝试把缓存落盘；返回是否成功。占用时只告警一次、保留脏标记以便下次重试。"""
-    global _EXCEL_DIRTY, _excel_lock_warned
+    global _EXCEL_DIRTY, _excel_lock_warned, _excel_lock_since
     if _EXCEL_WB is None or not _EXCEL_DIRTY:
         return True
     try:
@@ -2520,15 +2522,25 @@ def _try_save_excel() -> bool:
         if _excel_lock_warned:
             log.info("✅ Excel 已恢复写入")
             _excel_lock_warned = False
+            _excel_lock_since = 0.0
         _EXCEL_DIRTY = False
         return True
     except Exception as e:
+        now = time.time()
         if not _excel_lock_warned:
+            _excel_lock_since = now
             log.warning(
                 f"⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
                 f"关闭 Excel 查看窗口后会自动恢复"
             )
             _excel_lock_warned = True
+        else:
+            # 心跳：占用期间每 EXCEL_HEARTBEAT_INTERVAL 打印一次已等待时长，提示“仍在重试、未卡死”
+            elapsed = now - _excel_lock_since
+            prev_beat = int((elapsed - EXCEL_FLUSH_INTERVAL) // EXCEL_HEARTBEAT_INTERVAL)
+            cur_beat = int(elapsed // EXCEL_HEARTBEAT_INTERVAL)
+            if cur_beat > prev_beat:
+                log.info(f"⏳ Excel 仍被占用，已等待 {int(elapsed)}s，继续重试（关闭占用程序后自动恢复）")
         return False
 
 
@@ -2542,6 +2554,8 @@ def finalize_excel() -> None:
     """任务结束兜底：若 Excel 仍被占用，阻塞等待直到写成功再退出（Q2）。"""
     if _EXCEL_WB is None:
         return
+    if _EXCEL_DIRTY:
+        log.info("📝 全部任务完成，正在将结果写回 Excel...")
     deadline = time.time() + (EXCEL_LOCK_MAX_WAIT if EXCEL_LOCK_MAX_WAIT > 0 else float('inf'))
     while _EXCEL_DIRTY:
         if _try_save_excel():

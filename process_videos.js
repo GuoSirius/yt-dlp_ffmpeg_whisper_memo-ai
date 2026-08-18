@@ -741,6 +741,8 @@ const EXCEL_FLUSH_INTERVAL = (parseInt(process.env.EXCEL_FLUSH_INTERVAL || '3', 
 // 占用等待上限：任务结束时若 Excel 仍被占用，最多等待秒数；0=无限等待。超时则另存 sidecar .pending.xlsx 兜底。
 const EXCEL_LOCK_MAX_WAIT = parseInt(process.env.EXCEL_LOCK_MAX_WAIT || '300', 10);
 let _excelLockWarned = false;  // 占用告警去重：只在首次检测到占用时打印一次
+let _excelLockSince = 0;       // 首次检测到占用的时间戳（ms），用于等待心跳计时
+const EXCEL_HEARTBEAT_MS = 10000; // 占用期间状态心跳间隔（ms），避免用户以为卡死
 
 function _ensureExcelLoaded() {
   if (_excelWb) return _excelWb;
@@ -835,13 +837,24 @@ function _trySaveWb(wb) {
     if (_excelLockWarned) {
       logInfo('✅ Excel 已恢复写入');
       _excelLockWarned = false;
+      _excelLockSince = 0;
     }
     _excelDirty = false;
     return true;
   } catch (e) {
+    const now = Date.now();
     if (!_excelLockWarned) {
+      _excelLockSince = now;
       logWarn(`⚠️ Excel 文件被占用（可能正在用 Excel 打开），实时写回已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；关闭 Excel 查看窗口后会自动恢复`);
       _excelLockWarned = true;
+    } else {
+      // 心跳：占用期间每 EXCEL_HEARTBEAT_MS 打印一次已等待时长，提示“仍在重试、未卡死”
+      const elapsed = now - _excelLockSince;
+      const prevBeat = Math.floor((elapsed - EXCEL_FLUSH_INTERVAL) / EXCEL_HEARTBEAT_MS);
+      const curBeat = Math.floor(elapsed / EXCEL_HEARTBEAT_MS);
+      if (curBeat > prevBeat) {
+        logInfo(`⏳ Excel 仍被占用，已等待 ${Math.round(elapsed / 1000)}s，继续重试（关闭占用程序后自动恢复）`);
+      }
     }
     return false;
   }
@@ -860,6 +873,9 @@ function flushExcel() {
 // 超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar .pending.xlsx，绝不静默丢数据。
 async function finalizeExcel() {
   if (!_excelWb) return;
+  if (_excelDirty) {
+    logInfo('📝 全部任务完成，正在将结果写回 Excel...');
+  }
   const maxMs = EXCEL_LOCK_MAX_WAIT > 0 ? EXCEL_LOCK_MAX_WAIT * 1000 : Infinity;
   const deadline = Date.now() + maxMs;
   while (_excelDirty) {
