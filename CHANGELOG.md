@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.2.1] - 2026-08-19
+
+### Bug Fixes
+
+- 完成 Excel 超长写入不破坏源文件的双端改造 ([`c443a9f`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/c443a9f))
+- 清理 Excel 超长处理遗留的过时注释 ([`cfe3ad4`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/cfe3ad4))
+- 清理 Excel 超长写入的遗留注释 ([`9bdfdce`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/9bdfdce))
+- 超限单元格导出 sidecar 保留全量，不再误报占用 ([`aaf8853`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/aaf8853))
+- 修正 Excel 占用误报与等待计时（移除越界截断原有数据） ([`faf380e`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/faf380e))
+- 增加 Excel 占用等待心跳计时提示 ([`c4f830c`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/c4f830c))
+
+### Chores
+
+- 更新 Excel 超长处理相关工作记忆 ([`27d3d8d`](https://github.com/GuoSirius/yt-dlp_ffmpeg_whisper_memo-ai/commit/27d3d8d))
+
+
 ## [2.2.0] - 2026-08-17
 
 ### Features
