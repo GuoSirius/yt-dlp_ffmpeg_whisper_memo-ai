@@ -75,6 +75,26 @@ import requests
 import pandas as pd
 from openpyxl import load_workbook
 
+# ⚠️ 关键补丁：openpyxl 在 openpyxl.cell.cell.Cell.check_string 中硬编码把字符串截断到
+# 32767 字符（cell.py:163 `value = value[:32767]`），这是 Excel 单单元格“文件格式”上限。
+# 但本流水线主表 .xlsx 始终只读、永不写盘，结果统一镜像到 .results.json（JSON 无单格上限），
+# 该限制因此不适用于内存模型。打补丁仅移除截断、保留非法字符守卫，确保主表已有长文本与超长
+# 结果都不被静默截断——否则 --force 重跑读到的源内容/关键词会失真。
+# JS 端 SheetJS 无此内存截断，无需补丁。
+from openpyxl.cell.cell import Cell as _OxlCell, ILLEGAL_CHARACTERS_RE, IllegalCharacterError as _IllegalCharacterError
+def _check_string_no_truncate(self, value):
+    if value is None:
+        return
+    if not isinstance(value, str):
+        value = str(value, self.encoding)
+    value = str(value)
+    # 仅保留非法字符守卫（控制字符会写坏 xlsx），刻意移除 32767 截断
+    if next(ILLEGAL_CHARACTERS_RE.finditer(value), None):
+        raise _IllegalCharacterError(f"{value} cannot be used in worksheets.")
+    return value
+_OxlCell.check_string = _check_string_no_truncate
+
+
 # 从 package.json 读取版本号（与 JS 版保持一致）
 __version__ = "unknown"
 try:
@@ -421,7 +441,7 @@ _EXCEL_FLUSH_STARTED = False  # flush 线程/信号只注册一次
 # 周期落盘间隔（秒）。与 JS 端单位一致（.env 写 EXCEL_FLUSH_INTERVAL=5 双端通用）。
 # 中断时最多丢失该间隔内的实时写修改；值越大磁盘写越少。可用 EXCEL_FLUSH_INTERVAL 覆盖。
 EXCEL_FLUSH_INTERVAL = float(os.getenv("EXCEL_FLUSH_INTERVAL", "3.0"))
-EXCEL_LOCK_MAX_WAIT = float(os.getenv("EXCEL_LOCK_MAX_WAIT", "300.0"))  # 占用时最多等待秒数，0=无限；超时另存 sidecar .pending.xlsx
+EXCEL_LOCK_MAX_WAIT = float(os.getenv("EXCEL_LOCK_MAX_WAIT", "300.0"))  # 占用时最多等待秒数，0=无限；超时如实告知结果可能丢失（主表 .xlsx 始终只读、不被改写）
 _excel_lock_warned = False  # 占用告警去重：只在首次检测到占用时打印一次
 _excel_lock_since = 0.0      # 首次检测到占用的时间戳（秒），用于等待心跳计时
 EXCEL_HEARTBEAT_INTERVAL = 10.0  # 占用期间状态心跳间隔（秒），避免用户以为卡死
@@ -2486,7 +2506,8 @@ def _excel_set_cell(sheet_name: str, key: str, col_name: str, value: str) -> boo
             if str(title_val) == str(key):
                 matched = True
         if matched:
-            # 完整内容写入；超过 32767 的部分由 _try_save_excel 落盘前导出 sidecar 并标注，避免静默截断丢内容。
+            # 完整内容写入内存单元格；主表 .xlsx 只读、永不落盘，最终结果统一镜像到 .results.json
+            #（JSON 无 32767 上限，绝不截断），--force 重跑关键词因此保持准确。
             ws.cell(row=row[0].row, column=target_col, value=value)
             return True
 
@@ -2531,92 +2552,70 @@ def _end_wait_status(msg: str) -> None:
     _inline_active = False
 
 
-EXCEL_CELL_LIMIT = 32767
+def _save_results_to_sidecar(wb) -> bool:
+    """把整簿序列化为同名 .results.json（JSON 无单格字符上限，绝不截断）。
+    主表 .xlsx 保持只读，永不被流水线改写。返回是否成功写入。
 
-
-def _export_oversized_to_sidecar(wb) -> int:
-    """落盘前统一处理超过 32767 字符的单元格：
-    - 完整内容导出到与原表同名的 .fulltext.json（sidecar），绝不丢失；
-    - 主表对应单元格截断到上限内并追加标注，指向 sidecar。
-    原地修改 wb，返回导出的超限单元格数量。"""
+    序列化：每个 sheet 用 ws.iter_rows(values_only=True) 转成“行数组”，完整保留所有单元格
+    （含 >32767 长文本）。源内容读取仍走主表（只读），--force 重跑关键词因此保持准确。
+    """
     if wb is None:
-        return 0
+        return False
     base = str(EXCEL_FILE)
     if base.lower().endswith(".xlsx"):
         base = base[:-5]
-    sidecar_path = base + ".fulltext.json"
-    sidecar_cells: dict = {}
-    count = 0
+    sidecar_path = base + ".results.json"
+    sheets = {}
     for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, str) and len(v) > EXCEL_CELL_LIMIT:
-                    full = v
-                    count += 1
-                    sidecar_cells[f"{ws.title}!{cell.coordinate}"] = full
-                    marker = f"…(全文{len(full)}字已导出至 {os.path.basename(sidecar_path)})"
-                    avail = max(0, EXCEL_CELL_LIMIT - len(marker))
-                    cell.value = full[:avail] + marker
-    if count > 0:
-        payload = {
-            "source": os.path.basename(str(EXCEL_FILE)),
-            "generatedAt": datetime.now().isoformat(),
-            "note": "Excel 单单元格上限 32767 字符；以下为超出单元格的完整内容，主表对应格已截断并标注。",
-            "cells": sidecar_cells,
-        }
-        with open(sidecar_path, "w", encoding="utf-8") as _f:
-            json.dump(payload, _f, ensure_ascii=False, indent=2)
-    return count
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            cells = ["" if v is None else v for v in row]
+            rows.append(cells)
+        sheets[ws.title] = rows
+    payload = {
+        "source": os.path.basename(str(EXCEL_FILE)),
+        "generatedAt": datetime.now().isoformat(),
+        "note": "本文件由 video-pipeline 生成，是主表的结果镜像（JSON 无单格字符上限，绝不截断）。主表 .xlsx 保持只读，不被流水线改写。",
+        "sheets": sheets,
+    }
+    with open(sidecar_path, "w", encoding="utf-8") as _f:
+        json.dump(payload, _f, ensure_ascii=False)
+    return True
 
 
-def _try_save_excel() -> bool:
-    """尝试把缓存落盘；返回是否成功。
-    写入失败一律带出真实错误（异常类型/信息），不再一律误报“被占用”。
-    落盘前由 _export_oversized_to_sidecar 统一处理超 32767 单元格（导出 sidecar + 主表标注），
-    既不丢内容，也不会把“单元格超长”误报成“被占用”。"""
+def _try_save_wb(wb) -> bool:
+    """尝试把缓存落盘到结果 sidecar(.results.json)；返回是否成功。
+    主表 .xlsx 始终只读、不会被打开写入，因此永远不会触发“被占用”误报、也不会被截断。
+    若 sidecar 文件本身被占用/锁定，写入失败会带出真实错误码(e.code/message)。"""
     global _EXCEL_DIRTY, _excel_lock_warned, _excel_lock_since
-    if _EXCEL_WB is None or not _EXCEL_DIRTY:
+    if wb is None or not _EXCEL_DIRTY:
         return True
-
-    # 落盘前统一处理超 32767 字符的单元格：完整内容导出 sidecar，主表截断并标注。
-    # 既避免 openpyxl 因“单元格超长”抛错被误报成“被占用”，也保留全量数据。
-    try:
-        exported = _export_oversized_to_sidecar(_EXCEL_WB)
-    except Exception as se:  # noqa: BLE001
-        log.warning(f"⚠️ 超限单元格导出 sidecar 失败（将按原样尝试写盘）：{se}")
-        exported = 0
-    if exported > 0:
-        log.info(
-            f"📦 已将 {exported} 个超过 32767 字符的单元格完整内容导出至 "
-            f"{str(EXCEL_FILE)}.fulltext.json（主表对应格已截断并标注，完整内容见 sidecar）"
-        )
 
     def _on_ok():
         if _excel_finalizing:
-            _end_wait_status("✅ Excel 已恢复写入")
+            _end_wait_status("✅ 结果已写入 results.json")
         else:
-            log.info("✅ Excel 已恢复写入")
+            log.info("✅ 结果已写入 results.json")
+        global _EXCEL_DIRTY, _excel_lock_warned, _excel_lock_since
+        _EXCEL_DIRTY = False
         _excel_lock_warned = False
         _excel_lock_since = 0.0
-        global _EXCEL_DIRTY
-        _EXCEL_DIRTY = False
         return True
 
     try:
-        _EXCEL_WB.save(str(EXCEL_FILE))
+        _save_results_to_sidecar(wb)
         return _on_ok()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         code = getattr(e, "code", "") or ""
         emsg = str(e)
         now = time.time()
         if not _excel_lock_warned:
             _excel_lock_since = now
-            # 带出真实错误，便于区分真·占用(EBUSY/EPERM)与其它原因(ENOENT/只读/权限/单元格超长)
-            log.warning(f"⚠️ Excel 写入失败（疑似被占用，也可能并非 Excel 打开）[{code}] {emsg}")
+            # 带出真实错误码，便于区分真·占用(EBUSY/EPERM)与其它原因(ENOENT/只读/权限)
+            log.warning(f"⚠️ 结果文件写入失败（疑似被占用，也可能并非 Excel 打开）[{code}] {emsg}")
             log.warning(
-                f"   实时写回已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
-                f"若并非被占用请检查路径/权限/只读属性，或是否存在超过 32767 字符的单元格"
+                f"   结果回写已暂停，将每 {EXCEL_FLUSH_INTERVAL}s 重试；"
+                f"若并非被占用请检查路径/权限/只读属性"
             )
             _excel_lock_warned = True
         elif not _excel_finalizing:
@@ -2625,8 +2624,13 @@ def _try_save_excel() -> bool:
             prev_beat = int((elapsed - EXCEL_FLUSH_INTERVAL) // EXCEL_HEARTBEAT_INTERVAL)
             cur_beat = int(elapsed // EXCEL_HEARTBEAT_INTERVAL)
             if cur_beat > prev_beat:
-                log.info(f"⏳ 仍在等待 Excel 可写（已等待 {int(elapsed)}s）[{code}] 继续重试")
+                log.info(f"⏳ 仍在等待结果文件可写（已等待 {int(elapsed)}s）[{code}] 继续重试")
         return False
+
+
+def _try_save_excel() -> bool:
+    """兼容薄封装：基于全局 _EXCEL_WB 调 _try_save_wb。"""
+    return _try_save_wb(_EXCEL_WB)
 
 
 def flush_excel() -> None:
@@ -2636,12 +2640,12 @@ def flush_excel() -> None:
 
 
 def finalize_excel() -> None:
-    """任务结束兜底：若 Excel 仍无法写入，阻塞等待直到写成功再退出（Q2）。
-    等待期间单行刷新计时（类似进度条），不刷屏；超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar 兜底。"""
+    """任务结束兜底：若结果 sidecar(.results.json) 仍无法写入，阻塞等待直到写成功再退出（Q2）。
+    等待期间单行刷新计时（类似进度条），不刷屏；主表 .xlsx 始终只读、不参与写盘。"""
     if _EXCEL_WB is None:
         return
     if _EXCEL_DIRTY:
-        log.info("📝 全部任务完成，正在将结果写回 Excel...")
+        log.info("📝 全部任务完成，正在将结果写入 results.json...")
     global _excel_finalizing, _inline_active
     _excel_finalizing = True
     deadline = time.time() + (EXCEL_LOCK_MAX_WAIT if EXCEL_LOCK_MAX_WAIT > 0 else float('inf'))
@@ -2654,21 +2658,16 @@ def finalize_excel() -> None:
         remain = "" if EXCEL_LOCK_MAX_WAIT <= 0 else f"，剩余 {max(0, int(EXCEL_LOCK_MAX_WAIT - waited))}s"
         if sys.stdout.isatty():
             # 单行原地刷新计时（类似进度条），不刷屏
-            _print_wait_status(f"⏳ 等待 Excel 可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
+            _print_wait_status(f"⏳ 等待结果文件可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
         elif time.time() - last_line >= EXCEL_HEARTBEAT_INTERVAL:
             last_line = time.time()
-            log.info(f"⏳ 等待 Excel 可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
+            log.info(f"⏳ 等待结果文件可写（已等待 {int(waited)}s{remain}）… 关闭占用程序后自动继续")
         if time.time() >= deadline:
-            try:
-                sidecar = str(EXCEL_FILE) + '.pending.xlsx'
-                _EXCEL_WB.save(sidecar)
-                _end_wait_status(
-                    f"⏰ Excel 在 {EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，已将全部改动另存到 {sidecar}"
-                    f"（该文件未被锁定，可打开后复制回原表）"
-                )
-            except Exception as e2:
-                code2 = getattr(e2, "code", "") or ""
-                _end_wait_status(f"⏰ Excel 始终无法写入且 sidecar 另存失败 [{code2}] {e2}，未写数据可能丢失")
+            # 主表 .xlsx 始终只读、不参与写盘；结果只落 results.json。若 results.json 始终被占用，
+            # 已无“另存 xlsx”兜底（xlsx 同样受 32767 限制且会改主表），只能如实告知可能丢失。
+            _end_wait_status(
+                f"⏰ 结果文件(results.json) 在 {EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，未落盘的结果可能丢失；主表 .xlsx 未被改动"
+            )
             break
         time.sleep(EXCEL_FLUSH_INTERVAL)
     _excel_finalizing = False
