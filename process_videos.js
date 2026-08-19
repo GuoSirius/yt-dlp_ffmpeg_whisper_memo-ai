@@ -812,8 +812,8 @@ function writeExcelCellByKey(sheetName, key, colName, value) {
       if (String(row[titleIdx]) === String(key)) matched = true;
     }
     if (matched) {
-      // Excel 单元格字符上限 32767；此处写入完整内容，超过部分交由 _trySaveWb 在落盘前
-      // 统一导出到 sidecar(.fulltext.json) 并标注，避免静默截断丢内容（不再在写入时截断）。
+      // 主表 .xlsx 只读、永不落盘，此处写入完整内容、不截断；最终结果统一镜像到同名
+      // .results.json（JSON 无 32767 上限，绝不截断）。无 .fulltext.json 拆分/标注逻辑。
       const cellRef = XLSX.utils.encode_cell({ r, c: colIdx });
       ws[cellRef] = { t: 's', v: String(value) };
       _ensureRefCovers(ws, r, colIdx); // 关键：内容写入新列也需扩展 !ref
@@ -844,79 +844,50 @@ function _endWaitStatus(msg) {
   _inlineActive = false;
 }
 
-// Excel 单单元格字符硬上限（格式限制，非业务设限）
-const EXCEL_CELL_LIMIT = 32767;
-
 /**
- * 落盘前统一处理超过 32767 字符的单元格：
- *   - 完整内容导出到与原表同名的 .fulltext.json（sidecar），绝不丢失；
- *   - 主表对应单元格截断到上限内并追加标注，指向 sidecar。
- * 这样既不误报“被占用”，也不删减原有/新写入的数据（全量保留在 sidecar）。
- * 原地修改 wb，返回导出的超限单元格数量。
+ * 把缓存落盘到「结果 sidecar」(JSON)，而不是回写主表 .xlsx。
+ *
+ * 关键约束：Excel 单单元格硬上限 32767 字符，SheetJS/openpyxl 在 writeFile/save 时会校验
+ * 整张表所有单元格——主表里本就存在 >32767 的历史单元格（如 extra.content），任何“整表重写
+ * 主表”都会失败或被迫截断。因此主表改为「只读源」，流水线结果只序列化到同名 .results.json
+ * （JSON 无单格字符上限，绝不截断），主表文件永不被打开写入、永不被截断。
+ *
+ * 序列化：每个 sheet 用 sheet_to_json(header:1) 转成“行数组”，完整保留所有单元格
+ * （含 >32767 长文本）。源内容读取仍走主表（只读），--force 重跑关键词因此保持准确。
  */
-function _exportOversizedToSidecar(wb) {
-  if (!wb || !Array.isArray(wb.SheetNames) || !wb.SheetNames.length) return 0;
-  const base = EXCEL_FILE.replace(/\.xlsx$/i, '');
-  const sidecarPath = base + '.fulltext.json';
-  const sidecarCells = {};
-  let count = 0;
+function _saveResultsToSidecar(wb) {
+  if (!wb || !Array.isArray(wb.SheetNames) || !wb.SheetNames.length) return false;
+  const sidecarPath = EXCEL_FILE.replace(/\.xlsx$/i, '') + '.results.json';
+  const sheets = {};
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
-    if (!ws) continue;
-    for (const key of Object.keys(ws)) {
-      if (key[0] === '!') continue;
-      const cell = ws[key];
-      if (!cell || typeof cell.v !== 'string') continue;
-      if (cell.v.length <= EXCEL_CELL_LIMIT) continue;
-      const full = cell.v;
-      count++;
-      sidecarCells[`${name}!${key}`] = full;
-      const marker = `…(全文${full.length}字已导出至 ${path.basename(sidecarPath)})`;
-      const avail = Math.max(0, EXCEL_CELL_LIMIT - marker.length);
-      cell.v = full.slice(0, avail) + marker;
-      cell.w = undefined;
-      cell.t = 's';
-    }
+    if (!ws) { sheets[name] = []; continue; }
+    sheets[name] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
   }
-  if (count > 0) {
-    const payload = {
-      source: path.basename(EXCEL_FILE),
-      generatedAt: new Date().toISOString(),
-      note: 'Excel 单单元格上限 32767 字符；以下为超出单元格的完整内容，主表对应格已截断并标注。',
-      cells: sidecarCells,
-    };
-    fs.writeFileSync(sidecarPath, JSON.stringify(payload, null, 2), 'utf8');
-  }
-  return count;
+  const payload = {
+    source: path.basename(EXCEL_FILE),
+    generatedAt: new Date().toISOString(),
+    note: '本文件由 video-pipeline 生成，是主表的结果镜像（JSON 无单格字符上限，绝不截断）。主表 .xlsx 保持只读，不被流水线改写。',
+    sheets,
+  };
+  fs.writeFileSync(sidecarPath, JSON.stringify(payload), 'utf8');
+  return true;
 }
 
-// 尝试把缓存落盘；返回是否成功。
-// 写入失败一律带出真实错误码(e.code/message)，不再一律误报“被占用”。
-// 落盘前由 _exportOversizedToSidecar 统一处理超 32767 单元格（导出 sidecar + 主表标注），
-// 既不丢内容，也不会把“单元格超长”误报成“被占用”。
+// 尝试把缓存落盘到结果 sidecar(.results.json)；返回是否成功。
+// 主表 .xlsx 始终只读、不会被打开写入，因此永远不会触发“被占用”误报、也不会被截断。
+// 若 sidecar 文件本身被占用/锁定，写入失败会带出真实错误码(e.code/message)。
 function _trySaveWb(wb) {
   if (!wb) return true;
-  // 落盘前统一处理超 32767 字符的单元格：完整内容导出 sidecar，主表截断并标注。
-  // 既避免 writeFile 因“单元格超长”抛错被误报成“被占用”，也保留全量数据。
-  let exported = 0;
-  try {
-    exported = _exportOversizedToSidecar(wb);
-  } catch (se) {
-    logWarn(`⚠️ 超限单元格导出 sidecar 失败（将按原样尝试写盘）：${se.message}`);
-  }
-  if (exported > 0) {
-    logInfo(`📦 已将 ${exported} 个超过 32767 字符的单元格完整内容导出至 ${EXCEL_FILE}.fulltext.json（主表对应格已截断并标注，完整内容见 sidecar）`);
-  }
-  const doSave = () => XLSX.writeFile(wb, EXCEL_FILE, { cellDates: true });
   const onOk = () => {
-    if (_excelFinalizing) _endWaitStatus('✅ Excel 已恢复写入'); else logInfo('✅ Excel 已恢复写入');
+    if (_excelFinalizing) _endWaitStatus('✅ 结果已写入 results.json'); else logInfo('✅ 结果已写入 results.json');
     _excelLockWarned = false;
     _excelLockSince = 0;
     _excelDirty = false;
     return true;
   };
   try {
-    doSave();
+    _saveResultsToSidecar(wb);
     return onOk();
   } catch (e) {
     const code = (e && e.code) || '';
@@ -925,8 +896,8 @@ function _trySaveWb(wb) {
     if (!_excelLockWarned) {
       _excelLockSince = now;
       // 带出真实错误码，便于区分真·占用(EBUSY/EPERM)与其它原因(ENOENT/只读/权限)
-      logWarn(`⚠️ Excel 写入失败（疑似被占用，也可能并非 Excel 打开）[${code}] ${emsg}`);
-      logWarn(`   实时写回已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；若并非被占用请检查路径/权限/只读属性`);
+      logWarn(`⚠️ 结果文件写入失败（疑似被占用，也可能并非 Excel 打开）[${code}] ${emsg}`);
+      logWarn(`   结果回写已暂停，将每 ${EXCEL_FLUSH_INTERVAL / 1000}s 重试；若并非被占用请检查路径/权限/只读属性`);
       _excelLockWarned = true;
     } else if (!_excelFinalizing) {
       // 后台 flush 期间：节流行心跳（避免刷屏），并带上真实错误码
@@ -934,7 +905,7 @@ function _trySaveWb(wb) {
       const prevBeat = Math.floor((elapsed - EXCEL_FLUSH_INTERVAL) / EXCEL_HEARTBEAT_MS);
       const curBeat = Math.floor(elapsed / EXCEL_HEARTBEAT_MS);
       if (curBeat > prevBeat) {
-        logInfo(`⏳ 仍在等待 Excel 可写（已等待 ${Math.round(elapsed / 1000)}s）[${code}] 继续重试`);
+        logInfo(`⏳ 仍在等待结果文件可写（已等待 ${Math.round(elapsed / 1000)}s）[${code}] 继续重试`);
       }
     }
     return false;
@@ -950,12 +921,12 @@ function flushExcel() {
   _trySaveExcel();
 }
 
-// 任务结束兜底：若 Excel 仍无法写入，阻塞等待直到写成功再退出（Q2）。
-// 等待期间单行刷新计时（类似进度条），不刷屏；超过 EXCEL_LOCK_MAX_WAIT 秒则另存 sidecar .pending.xlsx 兜底。
+// 任务结束兜底：若结果 sidecar(.results.json) 仍无法写入，阻塞等待直到写成功再退出（Q2）。
+// 等待期间单行刷新计时（类似进度条），不刷屏；主表 .xlsx 始终只读、不参与写盘。
 async function finalizeExcel() {
   if (!_excelWb) return;
   if (_excelDirty) {
-    logInfo('📝 全部任务完成，正在将结果写回 Excel...');
+    logInfo('📝 全部任务完成，正在将结果写入 results.json...');
   }
   _excelFinalizing = true;
   const maxMs = EXCEL_LOCK_MAX_WAIT > 0 ? EXCEL_LOCK_MAX_WAIT * 1000 : Infinity;
@@ -967,21 +938,15 @@ async function finalizeExcel() {
     const remain = maxMs === Infinity ? '' : `，剩余 ${Math.max(0, Math.round((maxMs - waited) / 1000))}s`;
     if (process.stdout.isTTY) {
       // 单行原地刷新计时（类似进度条），不刷屏
-      _printWaitStatus(`⏳ 等待 Excel 可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
+      _printWaitStatus(`⏳ 等待结果文件可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
     } else if (Date.now() - lastLine >= EXCEL_HEARTBEAT_MS) {
       lastLine = Date.now();
-      logInfo(`⏳ 等待 Excel 可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
+      logInfo(`⏳ 等待结果文件可写（已等待 ${Math.round(waited / 1000)}s${remain}）… 关闭占用程序后自动继续`);
     }
     if (Date.now() >= start + maxMs) {
-      try {
-        const sidecar = EXCEL_FILE + '.pending.xlsx';
-        XLSX.writeFile(_excelWb, sidecar, { cellDates: true });
-        _endWaitStatus(`⏰ Excel 在 ${EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，已将全部改动另存到 ${sidecar}（该文件未被锁定，可打开后复制回原表）`);
-      } catch (e2) {
-        const code2 = (e2 && e2.code) || '';
-        const em2 = (e2 && e2.message) ? e2.message : String(e2);
-        _endWaitStatus(`⏰ Excel 始终无法写入且 sidecar 另存失败 [${code2}] ${em2}，未写数据可能丢失`);
-      }
+      // 主表 .xlsx 始终只读、不参与写盘；结果只落 results.json。若 results.json 始终被占用，
+      // 已无“另存 xlsx”兜底（xlsx 同样受 32767 限制且会丢主表），只能如实告知可能丢失。
+      _endWaitStatus(`⏰ 结果文件(results.json) 在 ${EXCEL_LOCK_MAX_WAIT}s 内始终无法写入，未落盘的结果可能丢失；主表 .xlsx 未被改动`);
       break;
     }
     await new Promise(r => setTimeout(r, EXCEL_FLUSH_INTERVAL));
@@ -2538,11 +2503,15 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
   if (!updates.size && !keywordsDict?.size) return;
 
   logInfo(`write ${updates.size} content + ${keywordsDict?.size || 0} keywords to Excel...`);
-  // M2：先把实时写缓存落盘，让下面的全量读以磁盘为权威来源（避免覆盖实时写结果）
+  // 主表 .xlsx 只读、永不被流水线写盘；复用内存中的 _excelWb（已含实时写缓存）作为权威源，
+  // 不再从磁盘重读主表（重读不仅多余，还会丢弃尚未落盘的实时写缓存、无谓触发 32767 校验）。
+  // 若尚未加载，_ensureExcelLoaded 会只读加载主表（读取是允许的，仅写入被禁止）。
   flushExcel();
-  const wb = XLSX.readFile(EXCEL_FILE, { cellFormula: true, cellDates: true });
-  _excelWb = wb;          // 复用为权威缓存，供 finalizeExcel 在占用时重试
-  _excelDirty = false;
+  const wb = _ensureExcelLoaded();
+  if (!wb) {
+    logWarn('Excel 未加载，跳过批量写回');
+    return;
+  }
 
   /**
    * Write text values to a specific column, matching rows by id or title.
@@ -2579,7 +2548,7 @@ function writeAllContentsToExcel(results, keywordsDict = null, contentDict = nul
         }
         if (!matched && titleCol !== -1 && String(row[titleCol]) === String(key)) matched = true;
         if (matched) {
-          // 直接写单元格，保留其它单元格格式；完整内容写入，超 32767 部分由 _trySaveWb 落盘前导出 sidecar。
+          // 直接写单元格，保留其它单元格格式；完整内容写入、不截断。主表只读，结果统一镜像到 .results.json。
           const cellRef = XLSX.utils.encode_cell({ r, c: targetCol });
           ws[cellRef] = { t: 's', v: text };
           _ensureRefCovers(ws, r, targetCol); // 关键：内容写入新列也需扩展 !ref
