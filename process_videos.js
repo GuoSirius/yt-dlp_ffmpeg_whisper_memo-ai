@@ -738,7 +738,7 @@ let _excelDirty = false;         // 是否有未落盘修改
 let _excelFlushStarted = false;  // 只启动一次
 // 周期落盘间隔：env 变量 EXCEL_FLUSH_INTERVAL 单位为「秒」，与 Python 端完全一致；此处转成 ms 供 setInterval 使用。
 const EXCEL_FLUSH_INTERVAL = (parseInt(process.env.EXCEL_FLUSH_INTERVAL || '3', 10)) * 1000;
-// 占用等待上限：任务结束时若 Excel 仍被占用，最多等待秒数；0=无限等待。超时则另存 sidecar .pending.xlsx 兜底。
+// 占用等待上限：任务结束时若 results.json 仍被占用，最多等待秒数；0=无限等待。超时则如实告知可能丢失，主表 .xlsx 不动。
 const EXCEL_LOCK_MAX_WAIT = parseInt(process.env.EXCEL_LOCK_MAX_WAIT || '300', 10);
 let _excelLockWarned = false;  // 占用告警去重：只在首次检测到占用时打印一次
 let _excelLockSince = 0;       // 首次检测到占用的时间戳（ms），用于等待心跳计时
